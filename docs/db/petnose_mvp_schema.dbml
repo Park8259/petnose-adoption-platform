@@ -89,7 +89,7 @@ Table dog_images {
 Table verification_logs {
   id bigint [pk, increment]
   dog_id char(36) [not null, ref: > dogs.id]
-  dog_image_id bigint [ref: > dog_images.id, note: "Nullable for future HANDOVER_COMPARE rows that store a submitted image directly on the log."]
+  dog_image_id bigint [ref: > dog_images.id, note: "Nullable after V4. Current handover API is stateless and does not create verification log rows."]
   requested_by_user_id bigint [not null, ref: > users.id]
   submitted_image_path varchar(500) [note: "Relative path for the image submitted to this verification; DOG_REGISTRATION duplicates dog_images.file_path for audit convenience."]
   submitted_image_mime_type varchar(100)
