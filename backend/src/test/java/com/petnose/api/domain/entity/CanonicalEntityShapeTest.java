@@ -2,7 +2,7 @@ package com.petnose.api.domain.entity;
 
 import com.petnose.api.domain.enums.DogImageType;
 import com.petnose.api.domain.enums.DogStatus;
-import com.petnose.api.domain.enums.NoseVerificationStatus;
+import com.petnose.api.domain.enums.VerificationPurpose;
 import jakarta.persistence.Column;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
@@ -65,7 +65,19 @@ class CanonicalEntityShapeTest {
     void verificationLogEntityDoesNotExposeUpdatedAtOrEmbeddingVector() {
         Set<String> fields = declaredFieldNames(VerificationLog.class);
 
-        assertThat(fields).contains("result", "similarityScore", "candidateDogId", "model", "dimension", "failureReason");
+        assertThat(fields).contains(
+                "result",
+                "purpose",
+                "similarityScore",
+                "candidateDogId",
+                "model",
+                "dimension",
+                "failureReason",
+                "submittedImagePath",
+                "submittedImageMimeType",
+                "submittedImageFileSize",
+                "submittedImageSha256"
+        );
         assertThat(fields).doesNotContain(join("updated", "At"), "embedding", join("embedding", "Vector"), "vector");
     }
 
@@ -102,54 +114,62 @@ class CanonicalEntityShapeTest {
     }
 
     @Test
-    void noseVerificationAttemptEntityAndMigrationAlignWithAdoptionPostFlow() throws Exception {
-        Set<String> fields = declaredFieldNames(NoseVerificationAttempt.class);
-        Column requestedByUserId = NoseVerificationAttempt.class.getDeclaredField("requestedByUserId").getAnnotation(Column.class);
-        Column noseImagePath = NoseVerificationAttempt.class.getDeclaredField("noseImagePath").getAnnotation(Column.class);
-        Column consumedAt = NoseVerificationAttempt.class.getDeclaredField("consumedAt").getAnnotation(Column.class);
-        Enumerated result = NoseVerificationAttempt.class.getDeclaredField("result").getAnnotation(Enumerated.class);
+    void verificationLogEntityAndMigrationSupportDogIdCenteredVerificationHistory() throws Exception {
+        Set<String> fields = declaredFieldNames(VerificationLog.class);
+        Column dogId = VerificationLog.class.getDeclaredField("dogId").getAnnotation(Column.class);
+        Column dogImageId = VerificationLog.class.getDeclaredField("dogImageId").getAnnotation(Column.class);
+        Column requestedByUserId = VerificationLog.class.getDeclaredField("requestedByUserId").getAnnotation(Column.class);
+        Column submittedImagePath = VerificationLog.class.getDeclaredField("submittedImagePath").getAnnotation(Column.class);
+        Enumerated result = VerificationLog.class.getDeclaredField("result").getAnnotation(Enumerated.class);
+        Enumerated purpose = VerificationLog.class.getDeclaredField("purpose").getAnnotation(Enumerated.class);
 
         assertThat(fields).contains(
                 "id",
+                "dogId",
+                "dogImageId",
                 "requestedByUserId",
-                "noseImagePath",
-                "noseImageMimeType",
-                "noseImageFileSize",
-                "noseImageSha256",
+                "submittedImagePath",
+                "submittedImageMimeType",
+                "submittedImageFileSize",
+                "submittedImageSha256",
                 "result",
                 "similarityScore",
                 "candidateDogId",
                 "model",
                 "dimension",
                 "failureReason",
-                "expiresAt",
-                "consumedAt",
-                "consumedByPostId",
                 "createdAt"
         );
+        assertThat(dogId.nullable()).isFalse();
+        assertThat(dogImageId.nullable()).isTrue();
         assertThat(requestedByUserId.nullable()).isFalse();
-        assertThat(noseImagePath.length()).isEqualTo(500);
-        assertThat(noseImagePath.nullable()).isFalse();
-        assertThat(consumedAt.nullable()).isTrue();
+        assertThat(submittedImagePath.length()).isEqualTo(500);
+        assertThat(submittedImagePath.nullable()).isTrue();
         assertThat(result.value()).isEqualTo(EnumType.STRING);
-        assertThat(NoseVerificationStatus.values()).containsExactly(
-                NoseVerificationStatus.PENDING,
-                NoseVerificationStatus.VERIFIED,
-                NoseVerificationStatus.DUPLICATE_SUSPECTED,
-                NoseVerificationStatus.FAILED
+        assertThat(purpose.value()).isEqualTo(EnumType.STRING);
+        assertThat(VerificationPurpose.values()).containsExactly(
+                VerificationPurpose.DOG_REGISTRATION,
+                VerificationPurpose.HANDOVER_COMPARE
         );
 
-        String migration = resourceText("db/migration/V3__add_nose_verification_attempts.sql");
+        String migration = resourceText("db/migration/V4__remove_nose_verification_attempts_and_align_verification_logs.sql");
         assertThat(migration).contains(
-                "CREATE TABLE nose_verification_attempts",
-                "requested_by_user_id BIGINT NOT NULL",
-                "nose_image_path VARCHAR(500) NOT NULL",
-                "result VARCHAR(40) NOT NULL",
-                "expires_at TIMESTAMP NOT NULL",
-                "consumed_at TIMESTAMP NULL",
-                "consumed_by_post_id BIGINT NULL",
-                "CHECK (result IN ('PENDING', 'PASSED', 'DUPLICATE_SUSPECTED', 'EMBED_FAILED', 'QDRANT_SEARCH_FAILED', 'QDRANT_UPSERT_FAILED'))"
+                "MODIFY dog_image_id BIGINT NULL",
+                "ADD COLUMN submitted_image_path VARCHAR(500) NULL",
+                "ADD COLUMN purpose VARCHAR(40) NOT NULL DEFAULT 'DOG_REGISTRATION'",
+                "'HANDOVER_COMPARE'",
+                "DROP TABLE " + join("nose", "_verification_attempts")
         );
+    }
+
+    @Test
+    void removedPrecheckAttemptTypesAreNotActive() {
+        assertThatThrownBy(() -> Class.forName("com.petnose.api.domain.entity." + join("Nose", "VerificationAttempt")))
+                .isInstanceOf(ClassNotFoundException.class);
+        assertThatThrownBy(() -> Class.forName("com.petnose.api.repository." + join("Nose", "VerificationAttempt") + "Repository"))
+                .isInstanceOf(ClassNotFoundException.class);
+        assertThatThrownBy(() -> Class.forName("com.petnose.api.domain.enums." + join("Nose", "VerificationStatus")))
+                .isInstanceOf(ClassNotFoundException.class);
     }
 
     @Test

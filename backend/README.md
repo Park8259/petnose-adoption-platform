@@ -3,10 +3,10 @@
 ## 역할
 
 플랫폼의 메인 오케스트레이터입니다.  
-사용자 인증/인가, 분양 전 비문 검증, 호환 강아지 등록, 입양 게시글 관리 등 모든 비즈니스 로직을 처리합니다.
+사용자 인증/인가, 강아지 등록/비문 중복 검사, 입양 게시글 관리, 인도 시점 비문 확인 등 모든 비즈니스 로직을 처리합니다.
 MySQL, Qdrant, Python Embed 서비스와 통신합니다.
 
-시스템 구조는 [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md)를 참고하세요.
+시스템 구조는 [docs/reference/ARCHITECTURE.md](../docs/reference/ARCHITECTURE.md)를 참고하세요.
 
 ---
 
@@ -27,11 +27,11 @@ MySQL, Qdrant, Python Embed 서비스와 통신합니다.
 |---|---|
 | 기동 및 actuator health | 구현됨 |
 | MySQL 연결 | 구현됨 (Flyway 마이그레이션, JPA ddl-auto: none) |
-| DB 마이그레이션 | Flyway 활성화 — `V1__baseline.sql`, `V2__align_adoption_post_content_constraints.sql`, `V3__add_nose_verification_attempts.sql` |
+| DB 마이그레이션 | Flyway 활성화 — `V1__baseline.sql`, `V2__align_adoption_post_content_constraints.sql`, historical `V3__add_nose_verification_attempts.sql`, `V4__remove_nose_verification_attempts_and_align_verification_logs.sql` |
 | Python embed 클라이언트 | 구현됨 (`EmbedClient`) |
 | Qdrant 컬렉션 초기화 | 구현됨 (`QdrantInitializer`) |
 | Dev 테스트 엔드포인트 | 구현됨 (`/api/dev/*`, **dev profile 전용**) |
-| 도메인 비즈니스 로직 | 구현됨 (auth, nose verification, dog registration/query compatibility, adoption post, handover verification) |
+| 도메인 비즈니스 로직 | 구현됨 (auth, dog registration/query, dog_id-based adoption post, handover verification) |
 
 ---
 
@@ -88,6 +88,8 @@ gradle test --no-daemon --stacktrace
 | `UPLOAD_BASE_PATH` | 이미지 저장 루트 경로 (`uploads_data` 볼륨 마운트 경로) | `/var/uploads` |
 | `MAX_UPLOAD_SIZE_MB` | 단일 파일 최대 크기 (Nginx, Spring 동일 적용) | `20` |
 
+기본값은 dev/CI mock smoke 기준입니다. 실제 모델 MVP 검증은 `infra/docker/compose.real-model.yaml`을 포함해 `EMBED_MODEL=dog-nose-identification2`, `EMBED_VECTOR_DIM=2048`, `QDRANT_COLLECTION=dog_nose_embeddings_real_v1`, `QDRANT_VECTOR_DIM=2048` 조합을 사용합니다.
+
 ---
 
 ## Dev 엔드포인트
@@ -123,7 +125,9 @@ gradle test --no-daemon --stacktrace
 `dog_images.file_path` 컬럼에는 **볼륨 루트를 제외한 상대 경로**만 기록합니다.  
 외부 URL: `GET /files/{relative_path}` (Nginx 직접 서빙)
 
-자세한 정책: [docs/FILE_STORAGE_AND_URL_POLICY.md](../docs/FILE_STORAGE_AND_URL_POLICY.md)
+`POST /api/dogs/register`는 NOSE 이미지를 저장하고 Qdrant upsert까지 수행합니다. `POST /api/adoption-posts`는 이미 등록된 `dog_id`와 required `profile_image`를 받아 PROFILE 이미지만 저장하며, embed service 또는 Qdrant upsert를 다시 호출하지 않습니다.
+
+자세한 정책: [docs/reference/FILE_STORAGE_AND_URL_POLICY.md](../docs/reference/FILE_STORAGE_AND_URL_POLICY.md)
 
 ---
 

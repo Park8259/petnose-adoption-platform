@@ -1,15 +1,11 @@
 package com.petnose.api.service;
 
-import com.petnose.api.client.EmbedClient;
-import com.petnose.api.client.QdrantDogVectorClient;
 import com.petnose.api.domain.entity.AdoptionPost;
 import com.petnose.api.domain.entity.Dog;
 import com.petnose.api.domain.entity.DogImage;
-import com.petnose.api.domain.entity.NoseVerificationAttempt;
 import com.petnose.api.domain.entity.User;
 import com.petnose.api.domain.entity.VerificationLog;
 import com.petnose.api.domain.enums.AdoptionPostStatus;
-import com.petnose.api.domain.enums.DogGender;
 import com.petnose.api.domain.enums.DogImageType;
 import com.petnose.api.domain.enums.DogStatus;
 import com.petnose.api.domain.enums.VerificationResult;
@@ -26,11 +22,9 @@ import com.petnose.api.exception.ApiException;
 import com.petnose.api.repository.AdoptionPostRepository;
 import com.petnose.api.repository.DogImageRepository;
 import com.petnose.api.repository.DogRepository;
-import com.petnose.api.repository.NoseVerificationAttemptRepository;
 import com.petnose.api.repository.UserRepository;
 import com.petnose.api.repository.VerificationLogRepository;
 import lombok.RequiredArgsConstructor;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
@@ -38,12 +32,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
-import java.time.Instant;
-import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.time.format.DateTimeParseException;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -70,13 +60,7 @@ public class AdoptionPostService {
     private final VerificationLogRepository verificationLogRepository;
     private final DogImageRepository dogImageRepository;
     private final AdoptionPostRepository adoptionPostRepository;
-    private final NoseVerificationAttemptRepository noseVerificationAttemptRepository;
     private final FileStorageService fileStorageService;
-    private final EmbedClient embedClient;
-    private final QdrantDogVectorClient qdrantDogVectorClient;
-
-    @Value("${qdrant.vector-dimension}")
-    private int expectedVectorDimension;
 
     @Transactional(readOnly = true)
     public AdoptionPostListResponse findPublicPosts(String statusParam, String pageParam, String sizeParam) {
@@ -152,16 +136,17 @@ public class AdoptionPostService {
     public AdoptionPostCreateResponse create(Long currentUserId, AdoptionPostCreateRequest request) {
         validateRequest(request);
         AdoptionPostStatus requestedStatus = AdoptionPostStatus.fromCreateRequest(request.status());
-        Instant now = Instant.now();
 
         User currentUser = userRepository.findById(currentUserId)
                 .orElseThrow(() -> new ApiException(HttpStatus.UNAUTHORIZED, "UNAUTHORIZED", "인증이 필요합니다."));
         validateUser(currentUser);
 
-        NoseVerificationAttempt attempt = validateNoseVerificationAttempt(currentUser, request.noseVerificationId(), now);
-        Dog dog = createDog(currentUser.getId(), request);
-        DogImage noseImage = createNoseImage(dog.getId(), attempt);
-        VerificationLog verificationLog = createVerificationLog(currentUser.getId(), dog.getId(), noseImage.getId(), attempt);
+        Dog dog = dogRepository.findById(request.dogId().trim())
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "DOG_NOT_FOUND", "강아지를 찾을 수 없습니다."));
+        validateDogOwner(currentUser, dog);
+        validateDogStatus(dog);
+        validateLatestVerificationLog(dog.getId());
+        validateNoActivePost(dog.getId());
         saveRequiredProfileImage(dog.getId(), request.profileImage());
 
         AdoptionPost post = new AdoptionPost();
@@ -176,10 +161,6 @@ public class AdoptionPostService {
         post.setClosedAt(null);
 
         AdoptionPost saved = adoptionPostRepository.save(post);
-        attempt.setConsumedAt(now);
-        attempt.setConsumedByPostId(saved.getId());
-        noseVerificationAttemptRepository.save(attempt);
-        upsertDogVector(dog, attempt);
 
         return new AdoptionPostCreateResponse(
                 saved.getId(),
@@ -222,16 +203,9 @@ public class AdoptionPostService {
         if (request == null) {
             throw validationFailed("request는 필수입니다.");
         }
-        if (request.noseVerificationId() == null) {
-            throw validationFailed("nose_verification_id는 필수입니다.");
+        if (request.dogId() == null || request.dogId().isBlank()) {
+            throw validationFailed("dog_id는 필수입니다.");
         }
-        if (request.dogName() == null || request.dogName().isBlank()) {
-            throw validationFailed("dog_name은 필수입니다.");
-        }
-        if (request.breed() == null || request.breed().isBlank()) {
-            throw validationFailed("breed는 필수입니다.");
-        }
-        DogGender.from(request.gender());
         if (request.title() == null || request.title().isBlank()) {
             throw validationFailed("title은 필수입니다.");
         }
@@ -265,128 +239,9 @@ public class AdoptionPostService {
         }
     }
 
-    private NoseVerificationAttempt validateNoseVerificationAttempt(
-            User currentUser,
-            Long noseVerificationId,
-            Instant now
-    ) {
-        NoseVerificationAttempt attempt = noseVerificationAttemptRepository.findByIdForUpdate(noseVerificationId)
-                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "NOSE_VERIFICATION_NOT_FOUND", "비문 검증 정보를 찾을 수 없습니다."));
-        if (!currentUser.getId().equals(attempt.getRequestedByUserId())) {
-            throw new ApiException(HttpStatus.FORBIDDEN, "NOSE_VERIFICATION_OWNER_MISMATCH", "현재 사용자의 비문 검증 정보가 아닙니다.");
-        }
-        if (attempt.getConsumedAt() != null) {
-            throw new ApiException(HttpStatus.CONFLICT, "NOSE_VERIFICATION_ALREADY_CONSUMED", "이미 분양글 작성에 사용된 비문 검증입니다.");
-        }
-        if (attempt.getExpiresAt().isBefore(now) || attempt.getExpiresAt().equals(now)) {
-            throw new ApiException(HttpStatus.BAD_REQUEST, "NOSE_VERIFICATION_EXPIRED", "비문 검증 유효 시간이 만료되었습니다.");
-        }
-        if (attempt.getResult() == VerificationResult.DUPLICATE_SUSPECTED) {
-            throw new ApiException(
-                    HttpStatus.BAD_REQUEST,
-                    "DUPLICATE_DOG_CANNOT_BE_POSTED",
-                    "중복 의심 비문 검증은 분양 게시글을 생성할 수 없습니다."
-            );
-        }
-        if (attempt.getResult() != VerificationResult.PASSED) {
-            throw new ApiException(HttpStatus.BAD_REQUEST, "DOG_NOT_VERIFIED", "비문 인증을 통과한 강아지만 게시할 수 있습니다.");
-        }
-        return attempt;
-    }
-
-    private Dog createDog(Long ownerUserId, AdoptionPostCreateRequest request) {
-        Dog dog = new Dog();
-        dog.setId(java.util.UUID.randomUUID().toString());
-        dog.setOwnerUserId(ownerUserId);
-        dog.setName(request.dogName().trim());
-        dog.setBreed(request.breed().trim());
-        dog.setGender(DogGender.from(request.gender()));
-        dog.setBirthDate(parseBirthDate(request.birthDate()));
-        dog.setDescription(blankToNull(request.description()));
-        dog.setStatus(DogStatus.REGISTERED);
-        return dogRepository.save(dog);
-    }
-
-    private DogImage createNoseImage(String dogId, NoseVerificationAttempt attempt) {
-        DogImage image = new DogImage();
-        image.setDogId(dogId);
-        image.setImageType(DogImageType.NOSE);
-        image.setFilePath(attempt.getNoseImagePath());
-        image.setMimeType(attempt.getNoseImageMimeType());
-        image.setFileSize(attempt.getNoseImageFileSize());
-        image.setSha256(attempt.getNoseImageSha256());
-        return dogImageRepository.save(image);
-    }
-
-    private VerificationLog createVerificationLog(Long currentUserId, String dogId, Long noseImageId, NoseVerificationAttempt attempt) {
-        VerificationLog log = new VerificationLog();
-        log.setDogId(dogId);
-        log.setDogImageId(noseImageId);
-        log.setRequestedByUserId(currentUserId);
-        log.setResult(VerificationResult.PASSED);
-        log.setSimilarityScore(attempt.getSimilarityScore());
-        log.setCandidateDogId(attempt.getCandidateDogId());
-        log.setModel(attempt.getModel());
-        log.setDimension(attempt.getDimension());
-        log.setFailureReason(attempt.getFailureReason());
-        return verificationLogRepository.save(log);
-    }
-
-    private void upsertDogVector(Dog dog, NoseVerificationAttempt attempt) {
-        FileStorageService.StoredFile noseStored = fileStorageService.readStoredImage(
-                attempt.getNoseImagePath(),
-                attempt.getNoseImageMimeType(),
-                attempt.getNoseImageFileSize(),
-                attempt.getNoseImageSha256()
-        );
-        EmbedClient.EmbedResponse embedResponse = requestEmbeddingOrFail(noseStored);
-        validateEmbeddingDimensionOrFail(embedResponse);
-
-        Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("dog_id", dog.getId());
-        payload.put("user_id", dog.getOwnerUserId());
-        payload.put("breed", dog.getBreed());
-        payload.put("nose_image_path", attempt.getNoseImagePath());
-        payload.put("registered_at", Instant.now().toString());
-        payload.put("is_active", true);
-
-        try {
-            qdrantDogVectorClient.upsert(dog.getId(), embedResponse.vector(), payload);
-        } catch (QdrantDogVectorClient.QdrantClientException e) {
-            throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "QDRANT_UPSERT_FAILED", "벡터 인덱스 동기화에 실패했습니다.");
-        }
-    }
-
-    private EmbedClient.EmbedResponse requestEmbeddingOrFail(FileStorageService.StoredFile noseStored) {
-        try {
-            return embedClient.embed(noseStored.bytes(), noseStored.originalFilename(), noseStored.mimeType());
-        } catch (EmbedClient.EmbedClientException e) {
-            if (e.getUpstreamStatus() != null && e.getUpstreamStatus() == 400) {
-                throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_NOSE_IMAGE", "비문 이미지 처리에 실패했습니다.");
-            }
-            throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "EMBED_SERVICE_UNAVAILABLE", "임베딩 서비스를 사용할 수 없습니다.");
-        }
-    }
-
-    private void validateEmbeddingDimensionOrFail(EmbedClient.EmbedResponse embedResponse) {
-        if (embedResponse.vector() == null || embedResponse.vector().isEmpty()) {
-            throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "EMPTY_EMBEDDING", "임베딩 결과가 비어 있습니다.");
-        }
-        if (embedResponse.dimension() != expectedVectorDimension) {
-            throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "EMBEDDING_DIMENSION_MISMATCH", "임베딩 차원이 시스템 설정과 일치하지 않습니다.");
-        }
-    }
-
     private void validateDogStatus(Dog dog) {
-        if (dog.getStatus() == DogStatus.DUPLICATE_SUSPECTED) {
-            throw new ApiException(
-                    HttpStatus.BAD_REQUEST,
-                    "DUPLICATE_DOG_CANNOT_BE_POSTED",
-                    "중복 의심 강아지는 분양 게시글을 생성할 수 없습니다."
-            );
-        }
         if (dog.getStatus() != DogStatus.REGISTERED) {
-            throw new ApiException(HttpStatus.BAD_REQUEST, "DOG_NOT_VERIFIED", "비문 인증을 통과한 강아지만 게시할 수 있습니다.");
+            throw new ApiException(HttpStatus.BAD_REQUEST, "DOG_NOT_REGISTERED", "등록 완료된 강아지만 분양 게시글을 생성할 수 있습니다.");
         }
     }
 
@@ -395,11 +250,7 @@ public class AdoptionPostService {
                 .orElseThrow(() -> new ApiException(HttpStatus.BAD_REQUEST, "DOG_NOT_VERIFIED", "비문 인증 이력이 없습니다."));
 
         if (latest.getResult() == VerificationResult.DUPLICATE_SUSPECTED) {
-            throw new ApiException(
-                    HttpStatus.BAD_REQUEST,
-                    "DUPLICATE_DOG_CANNOT_BE_POSTED",
-                    "최신 비문 인증 결과가 중복 의심입니다."
-            );
+            throw new ApiException(HttpStatus.BAD_REQUEST, "DOG_NOT_VERIFIED", "최신 비문 인증 결과가 중복 의심입니다.");
         }
         if (latest.getResult() != VerificationResult.PASSED) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "DOG_NOT_VERIFIED", "최신 비문 인증 결과가 통과 상태가 아닙니다.");
@@ -408,13 +259,13 @@ public class AdoptionPostService {
 
     private void validateNoActivePost(String dogId) {
         if (adoptionPostRepository.existsByDogIdAndStatusIn(dogId, ACTIVE_STATUSES)) {
-            throw new ApiException(HttpStatus.CONFLICT, "ACTIVE_POST_ALREADY_EXISTS", "이미 활성 분양 게시글이 있습니다.");
+            throw new ApiException(HttpStatus.CONFLICT, "DOG_ALREADY_HAS_ACTIVE_POST", "이미 활성 분양 게시글이 있습니다.");
         }
     }
 
     private void validateNoOtherActivePost(String dogId, Long currentPostId) {
         if (adoptionPostRepository.existsByDogIdAndStatusInAndIdNot(dogId, ACTIVE_STATUSES, currentPostId)) {
-            throw new ApiException(HttpStatus.CONFLICT, "ACTIVE_POST_ALREADY_EXISTS", "이미 활성 분양 게시글이 있습니다.");
+            throw new ApiException(HttpStatus.CONFLICT, "DOG_ALREADY_HAS_ACTIVE_POST", "이미 활성 분양 게시글이 있습니다.");
         }
     }
 
@@ -428,24 +279,6 @@ public class AdoptionPostService {
         image.setFileSize(stored.fileSize());
         image.setSha256(stored.sha256());
         dogImageRepository.save(image);
-    }
-
-    private LocalDate parseBirthDate(String birthDate) {
-        if (birthDate == null || birthDate.isBlank()) {
-            return null;
-        }
-        try {
-            return LocalDate.parse(birthDate);
-        } catch (DateTimeParseException e) {
-            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_BIRTH_DATE", "birth_date는 YYYY-MM-DD 형식이어야 합니다.");
-        }
-    }
-
-    private String blankToNull(String value) {
-        if (value == null || value.isBlank()) {
-            return null;
-        }
-        return value.trim();
     }
 
     private AdoptionPostStatus parseStatusUpdateRequest(AdoptionPostStatusUpdateRequest request) {

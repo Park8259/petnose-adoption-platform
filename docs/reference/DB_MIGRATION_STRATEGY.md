@@ -33,10 +33,11 @@ Current runtime migrations:
 
 - `V1__baseline.sql`: simplified MVP baseline tables.
 - `V2__align_adoption_post_content_constraints.sql`: aligns `adoption_posts.title` with the 200-character API policy and makes `adoption_posts.content` `NOT NULL`.
-- `V3__add_nose_verification_attempts.sql`: adds one-time pre-post nose verification attempts used by multipart adoption post creation.
+- `V3__add_nose_verification_attempts.sql`: historical pre-refactor migration that added the auxiliary pre-post verification table.
+- `V4__remove_nose_verification_attempts_and_align_verification_logs.sql`: removes the auxiliary table and aligns `verification_logs` with dog-centered verification history.
 
 V2 assumes existing `adoption_posts` rows were created through the current API/service policy. If a manually inserted legacy row has a title longer than 200 characters or null content, clean that data before applying V2.
-V3 assumes the baseline `users`, `dogs`, `dog_images`, `verification_logs`, and `adoption_posts` tables already exist.
+V3 assumes the baseline `users`, `dogs`, `dog_images`, `verification_logs`, and `adoption_posts` tables already exist. V4 assumes V3 has run, then returns the final runtime app table set to the canonical 5-table model. Historical attempt rows are not promoted because active adoption post creation is now `dog_id` based.
 
 Naming:
 
@@ -47,8 +48,8 @@ V{version}__{description}.sql
 Examples:
 
 ```text
-V4__expire_stale_nose_verification_attempts.sql
 V5__add_post_creation_audit.sql
+V6__add_safe_operational_index.sql
 ```
 
 ## Environment Policy

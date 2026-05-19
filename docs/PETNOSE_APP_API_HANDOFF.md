@@ -6,38 +6,45 @@
 
 1. 회원가입: `POST /api/auth/register`
 2. 로그인: `POST /api/auth/login`
-3. 분양글 작성 버튼
-4. 비문 촬영
-5. 비문 검증: `POST /api/nose-verifications`
-6. `allowed=false`이면 작성 차단
-7. `allowed=true`이면 `nose_verification_id`를 작성 form state에 저장
-8. 분양글 작성 화면에서 dog 정보, title/content, `profile_image` 입력
-9. 분양글 생성: `POST /api/adoption-posts`
-10. 공개 분양글 생성 완료
-11. 인도 시점 비문 확인: `POST /api/adoption-posts/{post_id}/handover-verifications`
-12. `matched=true`이면 완료 버튼 활성화
-13. 완료 처리: `PATCH /api/adoption-posts/{post_id}/status` with `COMPLETED`
+3. 분양할 강아지 정보와 비문 촬영
+4. 강아지 등록/비문 중복 검사: `POST /api/dogs/register`
+5. `registration_allowed=false`이면 작성 차단
+6. `registration_allowed=true`이면 반환된 `dog_id`를 작성 form state에 저장
+7. 분양글 작성 화면에서 title/content/status 입력
+8. 분양글 생성: `POST /api/adoption-posts`
+9. 공개 분양글 생성 완료
+10. 인도 시점 비문 확인: `POST /api/adoption-posts/{post_id}/handover-verifications`
+11. `matched=true`이면 완료 버튼 활성화
+12. 완료 처리: `PATCH /api/adoption-posts/{post_id}/status` with `COMPLETED`
 
-## Nose Verification
+## Dog Registration
 
 ```http
-POST /api/nose-verifications
+POST /api/dogs/register
 Authorization: Bearer <JWT>
 Content-Type: multipart/form-data
 ```
 
 Form-data:
 
+- `name`: required
+- `breed`: required
+- `gender`: required, `MALE`, `FEMALE`, or `UNKNOWN`
+- `birth_date`: optional, `YYYY-MM-DD`
+- `description`: optional
 - `nose_image`: required
 
 App-facing response fields:
 
 ```json
 {
-  "nose_verification_id": 1001,
-  "allowed": true,
-  "decision": "PASSED",
-  "message": "비문 인증을 통과했습니다. 분양글 작성을 진행할 수 있습니다."
+  "dog_id": "uuid",
+  "registration_allowed": true,
+  "status": "REGISTERED",
+  "verification_status": "VERIFIED",
+  "embedding_status": "COMPLETED",
+  "qdrant_point_id": "uuid",
+  "message": "중복 의심 개체가 없어 등록이 완료되었습니다."
 }
 ```
 
@@ -45,19 +52,19 @@ Duplicate suspected:
 
 ```json
 {
-  "nose_verification_id": 1002,
-  "allowed": false,
-  "decision": "DUPLICATE_SUSPECTED",
-  "message": "기존 등록견과 동일 개체로 의심되어 분양글 작성이 제한됩니다."
+  "dog_id": "uuid",
+  "registration_allowed": false,
+  "status": "DUPLICATE_SUSPECTED",
+  "qdrant_point_id": null,
+  "message": "기존 등록견과 동일 개체로 의심되어 등록이 제한됩니다."
 }
 ```
 
 Notes:
 
-- 이 단계는 dog 또는 adoption post를 생성하지 않는다.
-- `profile_image`는 받지 않는다.
-- 앱은 `allowed=false`이면 분양글 작성을 막는다.
-- 응답은 내부 검색 payload나 raw vector를 노출하지 않는다.
+- 이 단계가 dog identity 등록, embedding 생성, Qdrant duplicate search, Qdrant upsert의 유일한 active entrypoint다.
+- 정상 등록이면 Qdrant point id는 `dog_id`다.
+- duplicate suspected이면 Qdrant upsert를 하지 않는다.
 
 ## Adoption Post Create
 
@@ -67,34 +74,27 @@ Authorization: Bearer <JWT>
 Content-Type: multipart/form-data
 ```
 
-Form-data:
+Form fields:
 
-- `nose_verification_id`: required
-- `dog_name`: required
-- `breed`: required
-- `gender`: required, `MALE`, `FEMALE`, or `UNKNOWN`
-- `birth_date`: optional, `YYYY-MM-DD`
-- `dog_description`: optional
-- `title`: required
-- `content`: required
-- `status`: optional, `DRAFT` or `OPEN`
-- `profile_image`: required
+- `dog_id`: required. `POST /api/dogs/register` 성공 응답의 `dog_id`.
+- `title`: required.
+- `content`: required.
+- `status`: optional, `DRAFT` 또는 `OPEN`. 생략 시 `DRAFT`.
+- `profile_image`: required file. 분양글 대표 이미지.
 
 Notes:
 
-- request에 `dog_id`를 보내지 않는다.
 - request에 `nose_image`를 보내지 않는다.
-- `profile_image`는 공개 분양글 목록/상세의 대표 이미지다.
-- `profile_image` 누락 시 `PROFILE_IMAGE_REQUIRED`를 반환한다.
+- 분양글 생성 시 dog, NOSE dog image, verification log를 새로 만들지 않는다.
+- `profile_image`는 `dog_images.image_type=PROFILE`로 저장한다.
+- 분양글 생성 시 embed service 호출이나 Qdrant upsert를 수행하지 않는다.
+- `dog_id`는 current user 소유의 `REGISTERED` dog여야 한다.
+- dog의 latest verification result는 `PASSED`여야 한다.
+- 같은 dog에 active post가 이미 있으면 생성할 수 없다.
 
-## Deprecated Compatibility
+## Handover Verification
 
-`POST /api/dogs/register`는 backend compatibility endpoint로만 유지한다.
-
-- 새 앱 MVP flow에서는 사용하지 않는다.
-- 새 앱 MVP flow에서는 `profile_image`를 이 endpoint로 보내지 않는다.
-- `profile_image`는 `POST /api/adoption-posts`에서 required로 등록한다.
-- compatibility response의 `profile_image_url`은 `null`일 수 있다.
+인도 시점 확인은 `post_id -> adoption_posts.dog_id -> Qdrant point id = dog_id` 순서로 expected dog vector를 찾는다. `post_id`는 게시글 식별자일 뿐 Qdrant id가 아니다.
 
 ## Auth Phone Format
 

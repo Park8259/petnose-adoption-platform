@@ -33,6 +33,10 @@
 - `docs/db/V20260508__mvp_canonical_schema.sql`
 - `docs/PROJECT_KNOWLEDGE_INDEX.md`
 
+## Pre-Share Schema Count Note
+
+schema count 불일치는 해결되었다. pre-adoption nose verification ticket은 `verification_logs`로 통합되었고 current MVP app table은 5개다. 상세 refactor 기록은 `docs/reference/MVP_SCHEMA_TABLE_COUNT_REVIEW.md`를 확인한다.
+
 ## Task-Specific Routing
 
 | 작업 종류 | 먼저 읽을 문서 |
@@ -53,12 +57,11 @@
 - 활성 role은 `USER` / `ADMIN`만 사용한다.
 - `SHELTER` / `ADOPTER`는 active role이 아니다.
 - `publisher_profiles`, `shelter_profiles`, `seller_profiles`, `auth_logs`, `reports`, `refresh_tokens`는 active MVP에 없다.
-- 활성 domain table은 아래 6개다.
+- 활성 domain table은 아래 5개다.
   - `users`
   - `dogs`
   - `dog_images`
   - `verification_logs`
-  - `nose_verification_attempts`
   - `adoption_posts`
 - `users`가 `display_name`, `contact_phone`, `region`, `is_active`를 직접 가진다.
 - MySQL이 source of truth다.
@@ -85,7 +88,6 @@
 - `POST /api/auth/login`
 - `GET /api/users/me`
 - `PATCH /api/users/me/profile`
-- `POST /api/nose-verifications`
 - `POST /api/dogs/register`
 - `GET /api/dogs/me`
 - `GET /api/dogs/{dog_id}`
@@ -98,13 +100,14 @@
 
 상세 request/response, error code, visibility rule은 `docs/PETNOSE_MVP_API_CONTRACT.md`가 기준이다.
 
-Pre-post nose verification과 dog registration ownership은 JWT-principal-only다.
+Dog registration과 adoption post creation ownership은 JWT-principal-only다.
 
 - request `user_id`는 active API contract input이 아니다.
-- 신규 Flutter 분양글 작성 flow는 `POST /api/nose-verifications`에서 `nose_image`만 검증하고, 반환된 `nose_verification_id`를 `POST /api/adoption-posts`에 전달한다.
-- 신규 Flutter 분양글 작성 flow에서 dog 기본 정보와 required `profile_image`는 `POST /api/adoption-posts`에 보낸다.
-- `POST /api/dogs/register`는 deprecated compatibility endpoint로 유지된다.
-- adoption post creation은 JWT principal과 `nose_verification_id` owner를 함께 검증한다.
+- 신규 Flutter 분양글 작성 flow는 `POST /api/dogs/register`에서 dog 기본 정보와 `nose_image`를 등록하고 duplicate suspicion을 검사한다.
+- `POST /api/dogs/register` 성공 시 반환된 `dog_id`가 `POST /api/adoption-posts` request의 기준이다.
+- `POST /api/adoption-posts`는 multipart request로 required `profile_image`를 받고 `dog_images.image_type=PROFILE` row를 저장한다.
+- adoption post creation은 JWT principal과 `dog.owner_user_id`를 함께 검증한다.
+- adoption post creation은 embed service 호출이나 Qdrant upsert를 수행하지 않는다.
 
 Dog Query API는 current `develop`에 구현되어 있다.
 
@@ -120,6 +123,8 @@ Dog Query API는 current `develop`에 구현되어 있다.
 
 - `POST /api/adoption-posts/{post_id}/handover-verifications`는 stateless API로 구현되어 있다.
 - 새로 촬영한 `nose_image`를 `adoption_posts.dog_id`에 연결된 expected dog와 비교한다.
+- Qdrant point id는 `post_id`가 아니라 `dog_id`다.
+- handover lookup path는 `post_id -> adoption_posts.dog_id -> Qdrant point id = dog_id`다.
 - Spring Boot가 Python Embed와 Qdrant 호출을 오케스트레이션한다.
 - Flutter는 Python Embed, Qdrant, MySQL을 직접 호출하지 않는다.
 - 이 흐름은 DB table을 추가하지 않는다.

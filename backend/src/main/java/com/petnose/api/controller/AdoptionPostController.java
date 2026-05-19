@@ -53,13 +53,7 @@ public class AdoptionPostController {
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<AdoptionPostCreateResponse> create(
             @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorizationHeader,
-            @RequestParam(value = "nose_verification_id", required = false) Long noseVerificationId,
-            @RequestParam(value = "dog_name", required = false) String dogName,
-            @RequestParam(value = "breed", required = false) String breed,
-            @RequestParam(value = "gender", required = false) String gender,
-            @RequestParam(value = "birth_date", required = false) String birthDate,
-            @RequestParam(value = "dog_description", required = false) String dogDescription,
-            @RequestParam(value = "description", required = false) String description,
+            @RequestParam(value = "dog_id", required = false) String dogId,
             @RequestParam(value = "title", required = false) String title,
             @RequestParam(value = "content", required = false) String content,
             @RequestParam(value = "status", required = false) String status,
@@ -67,12 +61,7 @@ public class AdoptionPostController {
     ) {
         Long currentUserId = authService.currentActiveUserId(authorizationHeader);
         AdoptionPostCreateRequest request = new AdoptionPostCreateRequest(
-                noseVerificationId,
-                dogName,
-                breed,
-                gender,
-                birthDate,
-                dogDescription == null ? description : dogDescription,
+                dogId,
                 title,
                 content,
                 status,

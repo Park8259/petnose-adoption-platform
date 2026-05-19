@@ -43,18 +43,17 @@ Base URL: `http://<host>/api`
 | 2 | `POST /api/auth/login` | 구현됨 | Bearer access token과 current user payload를 받는다. |
 | 3 | `GET /api/users/me` | 구현됨 | profile readiness field를 읽는다. |
 | 4 | `PATCH /api/users/me/profile` | 구현됨 | 누락된 `display_name`과 선택적 phone/region을 채운다. |
-| 5 | `POST /api/nose-verifications` | 구현됨 | 분양글 작성 전 비문 검증을 수행하고 `nose_verification_id`를 반환한다. |
-| 6 | `allowed=false` | 구현됨 | duplicate suspected 화면으로 분기하고 post creation을 막는다. |
-| 7 | `allowed=true` | 구현됨 | post creation에 `nose_verification_id`를 사용한다. |
-| 8 | `POST /api/adoption-posts` | 구현됨 | `nose_verification_id`, dog 기본 정보, required `profile_image`로 `DRAFT` 또는 `OPEN` post를 만든다. |
+| 5 | `POST /api/dogs/register` | 구현됨 | dog identity 등록, 비문 embedding, Qdrant duplicate search, Qdrant upsert의 유일한 진입점이다. |
+| 6 | `registration_allowed=false` | 구현됨 | duplicate suspected 화면으로 분기하고 post creation을 막는다. Qdrant upsert는 수행하지 않는다. |
+| 7 | `registration_allowed=true` | 구현됨 | response `dog_id`를 분양글 작성 form state에 저장한다. Qdrant point id도 같은 `dog_id`다. |
+| 8 | `POST /api/adoption-posts` | 구현됨 | 이미 등록된 `dog_id`, title, content, status, required `profile_image`로 `DRAFT` 또는 `OPEN` post를 만든다. |
 | 9 | `GET /api/dogs/me` | 구현됨 | current user의 dog 목록과 post 생성 가능 여부를 읽는다. |
 | 10 | `GET /api/dogs/{dog_id}` | 구현됨 | owner detail 또는 public dog detail을 렌더링한다. |
 | 11 | `GET /api/adoption-posts` | 구현됨 | nose image 없이 public post list를 렌더링한다. |
 | 12 | `GET /api/adoption-posts/{post_id}` | 구현됨 | nose image 없이 public post detail을 렌더링한다. |
 | 13 | `GET /api/adoption-posts/me` | 구현됨 | current user의 post만 나열한다. |
 | 14 | `PATCH /api/adoption-posts/{post_id}/status` | 구현됨 | owner-only post status management를 수행한다. |
-| 15 | `POST /api/adoption-posts/{post_id}/handover-verifications` | 구현됨 | stateless handover-time identity check로 MVP trust/safety flow에 포함된다. |
-| 16 | `POST /api/dogs/register` | deprecated compatibility | 기존 등록 호환 endpoint다. 신규 Flutter 분양글 작성 flow에서는 사용하지 않는다. |
+| 15 | `POST /api/adoption-posts/{post_id}/handover-verifications` | 구현됨 | `post_id -> adoption_posts.dog_id -> Qdrant point id = dog_id`로 1:1 identity check를 수행한다. |
 
 handover verification endpoint는 MVP trust/safety flow의 일부다. 이 contract 밖의 더 넓은 API 확장은 follow-up scope로 남긴다.
 
@@ -256,101 +255,9 @@ Error codes:
 - `USER_INACTIVE`
 - `VALIDATION_FAILED`
 
-## Nose Verifications
-
-### 분양글 작성 전 Nose Verification 생성
-
-```http
-POST /api/nose-verifications
-Content-Type: multipart/form-data
-Authorization: Bearer <JWT>
-```
-
-Authentication policy:
-
-- `Authorization: Bearer <JWT>`가 필요하다.
-- 요청자는 JWT principal로 resolve된 current active user다.
-- missing, malformed, invalid, or expired JWT는 `UNAUTHORIZED`를 반환한다.
-- token subject가 existing user로 resolve되지 않으면 `USER_NOT_FOUND`를 반환한다.
-- inactive current user는 HTTP `403`과 `USER_INACTIVE`를 반환한다.
-
-Form fields:
-
-- `nose_image`: file, required
-
-Response `201`, verification passed:
-
-```json
-{
-  "nose_verification_id": 1001,
-  "allowed": true,
-  "decision": "PASSED",
-  "registration_allowed": true,
-  "status": "PASSED",
-  "verification_status": "VERIFIED",
-  "embedding_status": "COMPLETED",
-  "max_similarity_score": 0.41,
-  "nose_image_url": "/files/nose-verifications/{attempt_key}/nose/20260508_010203_nose.jpg",
-  "top_match": null,
-  "expires_at": "2026-05-18T01:02:03Z",
-  "message": "비문 인증을 통과했습니다. 분양글 작성을 진행할 수 있습니다."
-}
-```
-
-Response `200`, duplicate suspected:
-
-```json
-{
-  "nose_verification_id": 1002,
-  "allowed": false,
-  "decision": "DUPLICATE_SUSPECTED",
-  "registration_allowed": false,
-  "status": "DUPLICATE_SUSPECTED",
-  "verification_status": "DUPLICATE_SUSPECTED",
-  "embedding_status": "SKIPPED_DUPLICATE",
-  "max_similarity_score": 0.99782,
-  "nose_image_url": "/files/nose-verifications/{attempt_key}/nose/...",
-  "top_match": {
-    "dog_id": "existing-dog-id",
-    "similarity_score": 0.99782,
-    "breed": "말티즈"
-  },
-  "expires_at": "2026-05-18T01:02:03Z",
-  "message": "기존 등록견과 동일 개체로 의심되어 분양글 작성이 제한됩니다."
-}
-```
-
-Contract notes:
-
-- 이 endpoint는 신규 Flutter 분양글 작성 flow의 첫 단계다.
-- 이 endpoint는 dog나 adoption post를 생성하지 않는다.
-- 이 endpoint는 Qdrant upsert를 수행하지 않는다. 중복 확인을 위한 search만 수행한다.
-- 정상 검증이면 `nose_verification_id`를 다음 `POST /api/adoption-posts` 요청에 사용한다.
-- `nose_verification_id`는 한 번만 사용할 수 있고, current implementation 기준 생성 후 24시간 뒤 만료된다.
-- duplicate suspected response는 HTTP `200`과 `allowed=false`를 사용한다.
-- `registration_allowed`와 `status`는 compatibility field로 유지되며, 앱 신규 flow에서는 `allowed`와 `decision`을 우선 사용한다.
-- duplicate suspected attempt는 adoption post 생성에 사용할 수 없다.
-- `profile_image`는 이 endpoint에서 받지 않는다. 대표 이미지는 adoption post 생성 단계에서 업로드한다.
-- `top_match`는 `dog_id`, `similarity_score`, `breed`만 포함하고 raw nose image URL은 포함하지 않는다.
-- response는 raw vector, Qdrant payload, 다른 dog의 `nose_image_url`을 노출하지 않는다.
-
-Error codes:
-
-- `UNAUTHORIZED`
-- `USER_NOT_FOUND`
-- `USER_INACTIVE`
-- `NOSE_IMAGE_REQUIRED`
-- `VALIDATION_FAILED`
-- `INVALID_NOSE_IMAGE`
-- `EMBED_SERVICE_UNAVAILABLE`
-- `EMPTY_EMBEDDING`
-- `EMBEDDING_DIMENSION_MISMATCH`
-- `QDRANT_SEARCH_FAILED`
-- `QDRANT_UPSERT_FAILED`
-
 ## Dog Registration
 
-### Nose Image로 Dog 등록(deprecated compatibility)
+### Nose Image로 Dog 등록
 
 ```http
 POST /api/dogs/register
@@ -360,7 +267,7 @@ Authorization: Bearer <JWT>
 
 Authentication policy:
 
-- 이 endpoint는 기존 앱/테스트 호환을 위해 유지된다. 신규 분양글 작성 flow는 `POST /api/nose-verifications`를 사용한다.
+- 이 endpoint는 dog identity 등록과 비문 중복 검사의 유일한 active MVP 진입점이다.
 - `Authorization: Bearer <JWT>`가 필요하다.
 - `owner_user_id`는 JWT principal로 resolve된 current active user에서만 결정한다.
 - `user_id`는 active API contract 입력값이 아니다.
@@ -398,7 +305,7 @@ Response `201`, normal registration:
 }
 ```
 
-Compatibility normal registration fields:
+Normal registration fields:
 
 - `dog_id`
 - `registration_allowed`
@@ -411,9 +318,9 @@ Compatibility normal registration fields:
 
 App integration notes:
 
-- New Flutter adoption-post creation should not depend on this endpoint. Use `POST /api/nose-verifications` and pass the returned `nose_verification_id` to `POST /api/adoption-posts`.
-- This compatibility endpoint no longer accepts or stores `profile_image`; `profile_image_url` remains in the response shape as `null`.
-- Existing clients that still call this endpoint can use `dog_id`, `registration_allowed`, `status`, `verification_status`, `embedding_status`, `top_match`, and `message` for legacy UI flow.
+- Flutter adoption-post creation uses the returned `dog_id` when `registration_allowed=true`.
+- Dog registration does not accept or store `profile_image`; dog profile image is uploaded later through `POST /api/adoption-posts` and stored as `dog_images.image_type=PROFILE`.
+- Clients should use `dog_id`, `registration_allowed`, `status`, `verification_status`, `embedding_status`, `top_match`, and `message` for the active registration UI flow.
 - Current response also includes diagnostic fields such as `qdrant_point_id`, `model`, `dimension`, `max_similarity_score`, and owner-scoped `nose_image_url`; app screens should not require these for normal flow rendering.
 
 Response `200`, duplicate suspected:
@@ -457,7 +364,7 @@ Duplicate suspected contract:
 
 Duplicate threshold policy:
 
-- pre-post nose verification and compatibility dog registration duplicate detection use Qdrant cosine search score.
+- dog registration duplicate detection uses Qdrant cosine search score.
 - current MVP duplicate threshold is `0.70`.
 - duplicate if Qdrant score `>= 0.70`.
 - not duplicate if Qdrant score `< 0.70`.
@@ -654,18 +561,13 @@ Authorization: Bearer <JWT>
 Content-Type: multipart/form-data
 ```
 
-Form-data:
+Form fields:
 
-- `nose_verification_id`: number, required
-- `dog_name`: string, required, non-blank
-- `breed`: string, required, non-blank
-- `gender`: required, `MALE`, `FEMALE`, or `UNKNOWN`
-- `birth_date`: `YYYY-MM-DD`, optional
-- `dog_description`: string, optional
-- `title`: string, required, non-blank, max 200 after trim
-- `content`: string, required, non-blank
-- `status`: optional, `DRAFT` or `OPEN`; default `DRAFT`
-- `profile_image`: file, required
+- `dog_id`: string, required. `POST /api/dogs/register`에서 정상 등록된 dog id다.
+- `title`: string, required, non-blank, max 200 after trim.
+- `content`: string, required, non-blank.
+- `status`: optional, `DRAFT` or `OPEN`; default `DRAFT`.
+- `profile_image`: file, required. 분양글 대표 이미지이며 `dog_images.image_type=PROFILE` row로 저장된다.
 
 Response `201`:
 
@@ -684,21 +586,20 @@ Response `201`:
 Contract notes:
 
 - JWT principal이 필요하다.
-- `nose_verification_id`는 `POST /api/nose-verifications`에서 받은 값을 사용한다.
-- `nose_verification_id`는 current user 소유여야 한다.
-- `nose_verification_id`는 `PASSED` 결과이고 만료되지 않았으며 아직 사용되지 않아야 한다.
-- post 생성 성공 시 해당 `nose_verification_id`는 consumed 처리되어 재사용할 수 없다.
-- dog는 이 요청의 `dog_name`, `breed`, `gender`, optional `birth_date`, `dog_description`으로 생성된다.
-- `nose_verification_id`의 stored nose image는 생성된 dog의 `dog_images.image_type=NOSE` row로 연결된다.
+- `dog_id`는 존재해야 한다.
+- `dog.owner_user_id`는 JWT principal user id와 일치해야 한다.
+- `dog.status`는 `REGISTERED`여야 한다.
+- 해당 dog의 latest `verification_logs.result`는 `PASSED`여야 한다.
+- 같은 dog에 `DRAFT`, `OPEN`, `RESERVED` active post가 이미 있으면 생성할 수 없다.
 - post 생성 전 `users.display_name`은 non-blank여야 한다.
 - `title`은 required, non-blank이며 trim 후 최대 200자다.
 - `content`는 required, non-blank이며 trim 후 저장된다.
-- `profile_image`는 필수이며 누락 시 `PROFILE_IMAGE_REQUIRED`를 반환한다.
-- `profile_image`는 `dog_images.image_type=PROFILE` row로 저장되고 public list/detail의 `profile_image_url`로 노출된다.
-- `DUPLICATE_SUSPECTED` attempt는 대상이 될 수 없다.
-- Qdrant upsert는 dog_id가 확정된 뒤 `point_id=dog_id`로 수행한다.
+- 분양글 생성은 새 `dogs` row 또는 새 NOSE `dog_images` row를 만들지 않는다.
+- 분양글 생성은 `profile_image`를 저장하고 `dog_images.image_type=PROFILE` row를 만든다.
+- 분양글 생성은 embed service를 호출하지 않고 Qdrant upsert도 수행하지 않는다.
+- `DUPLICATE_SUSPECTED` 또는 failed registration dog는 대상이 될 수 없다.
 - create는 `DRAFT` 또는 `OPEN`을 받는다. `status`를 생략하면 기본값은 `DRAFT`다.
-- create-time service errors include `USER_PROFILE_REQUIRED`, `PROFILE_IMAGE_REQUIRED`, `NOSE_VERIFICATION_NOT_FOUND`, `NOSE_VERIFICATION_OWNER_MISMATCH`, `NOSE_VERIFICATION_ALREADY_CONSUMED`, `NOSE_VERIFICATION_EXPIRED`, `DOG_NOT_VERIFIED`, `DUPLICATE_DOG_CANNOT_BE_POSTED`, `INVALID_POST_STATUS`, and `VALIDATION_FAILED`.
+- create-time service errors include `USER_PROFILE_REQUIRED`, `PROFILE_IMAGE_REQUIRED`, `DOG_NOT_FOUND`, `DOG_OWNER_MISMATCH`, `DOG_NOT_REGISTERED`, `DOG_NOT_VERIFIED`, `DOG_ALREADY_HAS_ACTIVE_POST`, `INVALID_POST_STATUS`, and `VALIDATION_FAILED`.
 
 ### 공개 분양글 목록(Public Adoption Post List)
 
@@ -1021,6 +922,8 @@ Response `200`, no match candidate:
 Decision algorithm:
 
 - `expected_dog_id = adoption_posts.dog_id`
+- Qdrant point id는 `expected_dog_id`와 같은 `dog_id`다. `post_id`를 Qdrant id로 사용하지 않는다.
+- Lookup path는 `post_id -> adoption_posts.dog_id -> Qdrant point id = dog_id`다.
 - Python Embed는 handover image에서 `vector`, `dimension`, `model`만 반환한다.
 - Qdrant가 cosine similarity `score`를 생성하고 Spring이 threshold policy를 적용한다.
 - Spring은 handover image embedding vector로 Qdrant search를 수행하되, query filter를 `is_active=true`와 `dog_id=expected_dog_id`로 제한한다.
@@ -1093,14 +996,11 @@ Failure behavior:
 - `POST_OWNER_MISMATCH`: current user가 post owner가 아니다.
 - `DOG_NOT_FOUND`: adoption post가 참조하는 dog가 존재하지 않는다.
 - `DOG_OWNER_MISMATCH`: current user가 dog owner가 아니다.
-- `DOG_NOT_VERIFIED`: expected dog가 required verified/registered eligibility를 만족하지 않는다.
-- `DUPLICATE_DOG_CANNOT_BE_POSTED`: duplicate suspected dog는 adoption post를 만들 수 없다.
-- `ACTIVE_POST_ALREADY_EXISTS`: 같은 dog에 `DRAFT`, `OPEN`, `RESERVED` active post가 이미 존재한다.
-- `NOSE_VERIFICATION_NOT_FOUND`: `nose_verification_id`가 존재하지 않는다.
-- `NOSE_VERIFICATION_OWNER_MISMATCH`: `nose_verification_id`가 current user 소유가 아니다.
-- `NOSE_VERIFICATION_ALREADY_CONSUMED`: 이미 분양글 생성에 사용된 `nose_verification_id`다.
-- `NOSE_VERIFICATION_EXPIRED`: `nose_verification_id`의 유효 시간이 만료되었다.
+- `DOG_NOT_REGISTERED`: dog status가 `REGISTERED`가 아니어서 adoption post를 만들 수 없다.
+- `DOG_NOT_VERIFIED`: dog의 latest verification log가 `PASSED`가 아니다.
+- `DOG_ALREADY_HAS_ACTIVE_POST`: 같은 dog에 `DRAFT`, `OPEN`, `RESERVED` active post가 이미 존재한다.
 - `USER_PROFILE_REQUIRED`: adoption post 생성 또는 publish 전에 non-blank `users.display_name`이 필요하다.
+- `PROFILE_IMAGE_REQUIRED`: adoption post 생성 multipart request에 `profile_image`가 없거나 비어 있다.
 - `INVALID_POST_STATUS`: 지원하지 않거나 malformed status value다.
 - `INVALID_STATUS_TRANSITION`: 요청한 status transition이 허용되지 않는다.
 - `INVALID_PAGE_REQUEST`: page 또는 size parameter가 supported range 밖이다.
@@ -1116,7 +1016,7 @@ Failure behavior:
 
 ### Local Verification Examples
 
-`<JWT>`, `<nose_verification_id>`, `<dog_id>`, `<post_id>`를 local test value로 바꿔 사용한다.
+`<JWT>`, `<dog_id>`, `<post_id>`를 local test value로 바꿔 사용한다.
 
 ```bash
 curl -X POST "http://localhost/api/auth/register" \
@@ -1135,17 +1035,16 @@ curl -X PATCH "http://localhost/api/users/me/profile" \
   -H "Content-Type: application/json" \
   -d '{"display_name":"초코보호자","contact_phone":"01012345678","region":"대구시 달서구"}'
 
-curl -X POST "http://localhost/api/nose-verifications" \
+curl -X POST "http://localhost/api/dogs/register" \
   -H "Authorization: Bearer <JWT>" \
+  -F "name=초코" \
+  -F "breed=말티즈" \
+  -F "gender=MALE" \
   -F "nose_image=@/path/to/nose.jpg"
 
 curl -X POST "http://localhost/api/adoption-posts" \
   -H "Authorization: Bearer <JWT>" \
-  -F "nose_verification_id=<nose_verification_id>" \
-  -F "dog_name=초코" \
-  -F "breed=말티즈" \
-  -F "gender=MALE" \
-  -F "dog_description=사람을 좋아합니다" \
+  -F "dog_id=<dog_id>" \
   -F "title=말티즈 가족을 찾습니다" \
   -F "content=상세 내용..." \
   -F "status=OPEN" \
@@ -1166,14 +1065,6 @@ curl "http://localhost/api/adoption-posts?status=COMPLETED&page=0&size=20"
 curl -H "Authorization: Bearer <JWT>" \
   "http://localhost/api/adoption-posts/me?page=0&size=20"
 
-# Deprecated compatibility only. New adoption-post creation should use /api/nose-verifications.
-curl -X POST "http://localhost/api/dogs/register" \
-  -H "Authorization: Bearer <JWT>" \
-  -F "name=초코" \
-  -F "breed=말티즈" \
-  -F "gender=MALE" \
-  -F "nose_image=@/path/to/nose.jpg"
-
 curl -X PATCH "http://localhost/api/adoption-posts/<post_id>/status" \
   -H "Authorization: Bearer <JWT>" \
   -H "Content-Type: application/json" \
@@ -1191,9 +1082,9 @@ curl -X POST "http://localhost/api/adoption-posts/<post_id>/handover-verificatio
 
 ## JWT Principal Status
 
-Nose verification과 dog registration ownership은 principal-only다. `POST /api/nose-verifications`는 attempt owner를 JWT principal에서 resolve하고, deprecated compatibility `POST /api/dogs/register`는 dog `owner_user_id`를 JWT principal에서 resolve한다. Adoption post creation도 JWT principal과 `nose_verification_id` owner를 함께 검증한다.
+Dog registration과 adoption post ownership은 principal-only다. `POST /api/dogs/register`는 dog `owner_user_id`를 JWT principal에서 resolve하고, adoption post creation은 request `dog_id`의 owner와 JWT principal을 비교한다.
 
-이 변경은 duplicate detection pipeline behavior를 바꾸지 않는다. 신규 작성 flow에서는 `nose_verification_id`가 adoption post 생성 권한의 연결 토큰 역할을 한다.
+이 변경은 duplicate detection pipeline behavior를 `POST /api/dogs/register`에 집중시킨다. 신규 작성 flow에서는 등록된 `dog_id`가 adoption post 생성 권한의 연결 기준이다.
 
 ## Removed APIs and Concepts
 

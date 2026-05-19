@@ -78,9 +78,14 @@ CREATE TABLE dog_images (
 CREATE TABLE verification_logs (
     id BIGINT NOT NULL AUTO_INCREMENT,
     dog_id CHAR(36) NOT NULL,
-    dog_image_id BIGINT NOT NULL,
+    dog_image_id BIGINT NULL,
     requested_by_user_id BIGINT NOT NULL,
+    submitted_image_path VARCHAR(500) NULL,
+    submitted_image_mime_type VARCHAR(100) NULL,
+    submitted_image_file_size BIGINT NULL,
+    submitted_image_sha256 CHAR(64) NULL,
     result VARCHAR(40) NOT NULL,
+    purpose VARCHAR(40) NOT NULL DEFAULT 'DOG_REGISTRATION',
     similarity_score DECIMAL(6, 5) NULL,
     candidate_dog_id CHAR(36) NULL,
     model VARCHAR(100) NULL,
@@ -88,11 +93,15 @@ CREATE TABLE verification_logs (
     failure_reason VARCHAR(1000) NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
+    KEY idx_verification_logs_submitted_image_path (submitted_image_path),
     KEY idx_verification_logs_dog_id (dog_id),
     KEY idx_verification_logs_image_id (dog_image_id),
     KEY idx_verification_logs_user_id (requested_by_user_id),
     KEY idx_verification_logs_result (result),
+    KEY idx_verification_logs_purpose (purpose),
     KEY idx_verification_logs_candidate (candidate_dog_id),
+    KEY idx_verification_logs_expires_at (expires_at),
+    KEY idx_verification_logs_consumed_by_post_id (consumed_by_post_id),
     CONSTRAINT fk_verification_logs_dog
         FOREIGN KEY (dog_id) REFERENCES dogs (id),
     CONSTRAINT fk_verification_logs_image
@@ -103,7 +112,9 @@ CREATE TABLE verification_logs (
         FOREIGN KEY (candidate_dog_id) REFERENCES dogs (id)
             ON DELETE SET NULL,
     CONSTRAINT chk_verification_logs_result
-        CHECK (result IN ('PENDING', 'PASSED', 'DUPLICATE_SUSPECTED', 'EMBED_FAILED', 'QDRANT_SEARCH_FAILED', 'QDRANT_UPSERT_FAILED'))
+        CHECK (result IN ('PENDING', 'PASSED', 'DUPLICATE_SUSPECTED', 'EMBED_FAILED', 'QDRANT_SEARCH_FAILED', 'QDRANT_UPSERT_FAILED')),
+    CONSTRAINT chk_verification_logs_purpose
+        CHECK (purpose IN ('DOG_REGISTRATION', 'HANDOVER_COMPARE'))
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
   COLLATE = utf8mb4_unicode_ci;
@@ -130,43 +141,6 @@ CREATE TABLE adoption_posts (
         FOREIGN KEY (dog_id) REFERENCES dogs (id),
     CONSTRAINT chk_adoption_posts_status
         CHECK (status IN ('DRAFT', 'OPEN', 'RESERVED', 'COMPLETED', 'CLOSED'))
-) ENGINE = InnoDB
-  DEFAULT CHARSET = utf8mb4
-  COLLATE = utf8mb4_unicode_ci;
-
-CREATE TABLE nose_verification_attempts (
-    id BIGINT NOT NULL AUTO_INCREMENT,
-    requested_by_user_id BIGINT NOT NULL,
-    nose_image_path VARCHAR(500) NOT NULL,
-    nose_image_mime_type VARCHAR(100) NULL,
-    nose_image_file_size BIGINT NULL,
-    nose_image_sha256 CHAR(64) NULL,
-    result VARCHAR(40) NOT NULL,
-    similarity_score DECIMAL(6, 5) NULL,
-    candidate_dog_id CHAR(36) NULL,
-    model VARCHAR(100) NULL,
-    dimension INT NULL,
-    failure_reason VARCHAR(1000) NULL,
-    expires_at TIMESTAMP NOT NULL,
-    consumed_at TIMESTAMP NULL,
-    consumed_by_post_id BIGINT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (id),
-    UNIQUE KEY uk_nose_verification_attempts_nose_image_path (nose_image_path),
-    KEY idx_nose_verification_attempts_requested_by_user_id (requested_by_user_id),
-    KEY idx_nose_verification_attempts_result (result),
-    KEY idx_nose_verification_attempts_expires_at (expires_at),
-    KEY idx_nose_verification_attempts_consumed_by_post_id (consumed_by_post_id),
-    KEY idx_nose_verification_attempts_candidate_dog_id (candidate_dog_id),
-    CONSTRAINT fk_nose_verification_attempts_user
-        FOREIGN KEY (requested_by_user_id) REFERENCES users (id),
-    CONSTRAINT fk_nose_verification_attempts_candidate_dog
-        FOREIGN KEY (candidate_dog_id) REFERENCES dogs (id)
-            ON DELETE SET NULL,
-    CONSTRAINT fk_nose_verification_attempts_consumed_post
-        FOREIGN KEY (consumed_by_post_id) REFERENCES adoption_posts (id),
-    CONSTRAINT chk_nose_verification_attempts_result
-        CHECK (result IN ('PENDING', 'PASSED', 'DUPLICATE_SUSPECTED', 'EMBED_FAILED', 'QDRANT_SEARCH_FAILED', 'QDRANT_UPSERT_FAILED'))
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
   COLLATE = utf8mb4_unicode_ci;

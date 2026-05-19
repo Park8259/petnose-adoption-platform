@@ -40,10 +40,6 @@ public class FileStorageService {
         return storeImageAt("dogs/%s/profile".formatted(dogId), file);
     }
 
-    public StoredFile storeNoseVerificationImage(String verificationKey, MultipartFile file) {
-        return storeImageAt("nose-verifications/%s/nose".formatted(verificationKey), file);
-    }
-
     private StoredFile storeImageAt(String relativeDirectory, MultipartFile file) {
         if (file == null || file.isEmpty()) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_IMAGE", "이미지 파일이 비어 있습니다.");

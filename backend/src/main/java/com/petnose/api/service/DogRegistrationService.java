@@ -120,6 +120,11 @@ public class DogRegistrationService {
         verificationLog.setDogId(dogId);
         verificationLog.setDogImageId(noseImage.getId());
         verificationLog.setRequestedByUserId(userId);
+        verificationLog.setSubmittedImagePath(noseStored.relativePath());
+        verificationLog.setSubmittedImageMimeType(noseStored.mimeType());
+        verificationLog.setSubmittedImageFileSize(noseStored.fileSize());
+        verificationLog.setSubmittedImageSha256(noseStored.sha256());
+        verificationLog.setPurpose(VerificationPurpose.DOG_REGISTRATION);
         verificationLog.setResult(VerificationResult.PENDING);
         verificationLogRepository.save(verificationLog);
 

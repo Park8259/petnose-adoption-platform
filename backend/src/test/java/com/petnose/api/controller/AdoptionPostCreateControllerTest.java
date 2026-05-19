@@ -1,30 +1,27 @@
 package com.petnose.api.controller;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.petnose.api.client.EmbedClient;
 import com.petnose.api.client.QdrantDogVectorClient;
 import com.petnose.api.domain.entity.AdoptionPost;
 import com.petnose.api.domain.entity.Dog;
 import com.petnose.api.domain.entity.DogImage;
-import com.petnose.api.domain.entity.NoseVerificationAttempt;
 import com.petnose.api.domain.entity.User;
 import com.petnose.api.domain.entity.VerificationLog;
 import com.petnose.api.domain.enums.AdoptionPostStatus;
+import com.petnose.api.domain.enums.DogGender;
 import com.petnose.api.domain.enums.DogImageType;
 import com.petnose.api.domain.enums.DogStatus;
 import com.petnose.api.domain.enums.UserRole;
+import com.petnose.api.domain.enums.VerificationPurpose;
 import com.petnose.api.domain.enums.VerificationResult;
 import com.petnose.api.repository.AdoptionPostRepository;
 import com.petnose.api.repository.DogImageRepository;
 import com.petnose.api.repository.DogRepository;
-import com.petnose.api.repository.NoseVerificationAttemptRepository;
 import com.petnose.api.repository.UserRepository;
 import com.petnose.api.repository.VerificationLogRepository;
-import com.petnose.api.service.FileStorageService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -33,29 +30,23 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.context.ActiveProfiles;
-import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
-import org.springframework.test.web.servlet.request.MockMultipartHttpServletRequestBuilder;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.nullValue;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyList;
-import static org.mockito.ArgumentMatchers.anyMap;
-import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.reset;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -69,7 +60,7 @@ class AdoptionPostCreateControllerTest {
     private static final String JWT_SECRET = "test-petnose-jwt-secret-change-me-32bytes";
 
     @Autowired
-    private MockMvc mockMvc;
+    private org.springframework.test.web.servlet.MockMvc mockMvc;
 
     @Autowired
     private ObjectMapper objectMapper;
@@ -89,12 +80,6 @@ class AdoptionPostCreateControllerTest {
     @Autowired
     private AdoptionPostRepository adoptionPostRepository;
 
-    @Autowired
-    private NoseVerificationAttemptRepository noseVerificationAttemptRepository;
-
-    @Autowired
-    private FileStorageService fileStorageService;
-
     @MockBean
     private EmbedClient embedClient;
 
@@ -105,28 +90,28 @@ class AdoptionPostCreateControllerTest {
 
     @BeforeEach
     void setUp() {
-        noseVerificationAttemptRepository.deleteAll();
         adoptionPostRepository.deleteAll();
         verificationLogRepository.deleteAll();
         dogImageRepository.deleteAll();
         dogRepository.deleteAll();
         userRepository.deleteAll();
         reset(embedClient, qdrantDogVectorClient);
-        when(embedClient.embed(any(byte[].class), anyString(), anyString()))
-                .thenReturn(new EmbedClient.EmbedResponse(List.of(0.1, 0.2, 0.3), 128, "dog-nose-identification2:s101_224"));
         sequence = 0;
     }
 
     @Test
-    void createOpenPostConsumesPassedAttemptCreatesDogImagesAndExposesProfileImagePublicly() throws Exception {
+    void createOpenPostUsesRegisteredDogIdStoresProfileImageAndDoesNotEmbedOrUpsertAgain() throws Exception {
         User user = saveUser("초코 보호자", true);
-        NoseVerificationAttempt attempt = saveNoseVerificationAttempt(user, VerificationResult.PASSED, Instant.now().plusSeconds(3600), null);
+        Dog dog = saveDog(user, DogStatus.REGISTERED);
+        DogImage noseImage = saveNoseImage(dog);
+        saveVerificationLog(user, dog, noseImage, VerificationResult.PASSED);
+        String token = tokenFor(user);
 
-        ResultActions result = createPost(tokenFor(user), attempt.getId(), "말티즈 초코 가족을 찾습니다", "활발하고 사람을 좋아하는 아이입니다.", "OPEN");
+        ResultActions result = createPost(token, dog.getId(), "말티즈 초코 가족을 찾습니다", "활발하고 사람을 좋아하는 아이입니다.", "OPEN");
 
         result.andExpect(status().isCreated())
                 .andExpect(jsonPath("$.post_id").isNumber())
-                .andExpect(jsonPath("$.dog_id").isString())
+                .andExpect(jsonPath("$.dog_id").value(dog.getId()))
                 .andExpect(jsonPath("$.title").value("말티즈 초코 가족을 찾습니다"))
                 .andExpect(jsonPath("$.content").value("활발하고 사람을 좋아하는 아이입니다."))
                 .andExpect(jsonPath("$.status").value("OPEN"))
@@ -135,77 +120,53 @@ class AdoptionPostCreateControllerTest {
                 .andExpect(jsonPath("$.author_user_id").doesNotExist());
 
         AdoptionPost saved = adoptionPostRepository.findAll().getFirst();
-        Dog dog = dogRepository.findById(saved.getDogId()).orElseThrow();
+        assertThat(saved.getDogId()).isEqualTo(dog.getId());
         assertThat(saved.getAuthorUserId()).isEqualTo(user.getId());
-        assertThat(saved.getStatus()).isEqualTo(AdoptionPostStatus.OPEN);
-        assertThat(dog.getOwnerUserId()).isEqualTo(user.getId());
-        assertThat(dog.getName()).isEqualTo("초코");
-        assertThat(dog.getBreed()).isEqualTo("Maltese");
-        assertThat(dog.getDescription()).isEqualTo("밝은 아이입니다.");
-        assertThat(dog.getStatus()).isEqualTo(DogStatus.REGISTERED);
+        assertThat(dogRepository.count()).isEqualTo(1);
+        assertThat(dogImageRepository.count()).isEqualTo(2);
+        assertThat(verificationLogRepository.count()).isEqualTo(1);
 
-        List<DogImage> noseImages = dogImageRepository.findByDogIdInAndImageTypeOrderByDogIdAscUploadedAtDescIdDesc(
-                Set.of(dog.getId()),
-                DogImageType.NOSE
-        );
-        List<DogImage> profileImages = dogImageRepository.findByDogIdInAndImageTypeOrderByDogIdAscUploadedAtDescIdDesc(
-                Set.of(dog.getId()),
-                DogImageType.PROFILE
-        );
-        assertThat(noseImages).hasSize(1);
-        assertThat(noseImages.getFirst().getFilePath()).isEqualTo(attempt.getNoseImagePath());
+        List<DogImage> profileImages = dogImageRepository.findAll().stream()
+                .filter(image -> image.getImageType() == DogImageType.PROFILE)
+                .toList();
         assertThat(profileImages).hasSize(1);
-        assertThat(profileImages.getFirst().getFilePath()).contains("/profile/");
+        DogImage profileImage = profileImages.getFirst();
+        assertThat(profileImage.getDogId()).isEqualTo(dog.getId());
+        assertThat(profileImage.getFilePath()).contains("/profile/");
+        assertThat(profileImage.getMimeType()).isEqualTo("image/jpeg");
+        assertThat(profileImage.getFileSize()).isGreaterThan(0);
+        assertThat(profileImage.getSha256()).isNotBlank();
 
-        VerificationLog log = verificationLogRepository.findFirstByDogIdOrderByCreatedAtDescIdDesc(dog.getId()).orElseThrow();
-        assertThat(log.getDogImageId()).isEqualTo(noseImages.getFirst().getId());
-        assertThat(log.getResult()).isEqualTo(VerificationResult.PASSED);
-
-        NoseVerificationAttempt consumed = noseVerificationAttemptRepository.findById(attempt.getId()).orElseThrow();
-        assertThat(consumed.getConsumedAt()).isNotNull();
-        assertThat(consumed.getConsumedByPostId()).isEqualTo(saved.getId());
-
-        ArgumentCaptor<String> pointIdCaptor = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<Map<String, Object>> payloadCaptor = ArgumentCaptor.forClass(Map.class);
-        verify(qdrantDogVectorClient).upsert(pointIdCaptor.capture(), anyList(), payloadCaptor.capture());
-        assertThat(pointIdCaptor.getValue()).isEqualTo(dog.getId());
-        assertThat(payloadCaptor.getValue()).containsEntry("dog_id", dog.getId());
-
-        String profileUrl = "/files/" + profileImages.getFirst().getFilePath();
+        String profileImageUrl = "/files/" + profileImage.getFilePath();
         mockMvc.perform(get("/api/adoption-posts")
                         .param("status", "OPEN")
                         .param("page", "0")
                         .param("size", "20"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.items[0].profile_image_url").value(profileUrl))
-                .andExpect(jsonPath("$.items[0].nose_image_url").doesNotExist());
-
+                .andExpect(jsonPath("$.items[0].post_id").value(saved.getId()))
+                .andExpect(jsonPath("$.items[0].profile_image_url").value(profileImageUrl));
         mockMvc.perform(get("/api/adoption-posts/{post_id}", saved.getId()))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.profile_image_url").value(profileUrl))
-                .andExpect(jsonPath("$.nose_image_url").doesNotExist());
-    }
+                .andExpect(jsonPath("$.post_id").value(saved.getId()))
+                .andExpect(jsonPath("$.profile_image_url").value(profileImageUrl));
+        mockMvc.perform(get("/api/adoption-posts/me")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                        .param("page", "0")
+                        .param("size", "20"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items[0].post_id").value(saved.getId()))
+                .andExpect(jsonPath("$.items[0].profile_image_url").value(profileImageUrl));
 
-    @Test
-    void createRequiresProfileImage() throws Exception {
-        User user = saveUser("초코 보호자", true);
-        NoseVerificationAttempt attempt = saveNoseVerificationAttempt(user, VerificationResult.PASSED, Instant.now().plusSeconds(3600), null);
-
-        createPost(tokenFor(user), attempt.getId(), "제목", "내용", "OPEN", null)
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error_code").value("PROFILE_IMAGE_REQUIRED"))
-                .andExpect(jsonPath("$.details").value(nullValue()));
-
-        assertThat(adoptionPostRepository.count()).isZero();
-        assertThat(dogRepository.count()).isZero();
+        verifyNoInteractions(embedClient, qdrantDogVectorClient);
     }
 
     @Test
     void createDefaultsToDraftWhenStatusIsOmitted() throws Exception {
         User user = saveUser("초코 보호자", true);
-        NoseVerificationAttempt attempt = saveNoseVerificationAttempt(user, VerificationResult.PASSED, Instant.now().plusSeconds(3600), null);
+        Dog dog = saveDog(user, DogStatus.REGISTERED);
+        saveVerificationLog(user, dog, saveNoseImage(dog), VerificationResult.PASSED);
 
-        createPost(tokenFor(user), attempt.getId(), "임시 제목", "임시 내용", null)
+        createPost(tokenFor(user), dog.getId(), "임시 제목", "임시 내용", null)
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.status").value("DRAFT"))
                 .andExpect(jsonPath("$.published_at").value(nullValue()));
@@ -216,52 +177,64 @@ class AdoptionPostCreateControllerTest {
     }
 
     @Test
-    void rejectDuplicateSuspectedNoseVerificationAttempt() throws Exception {
+    void rejectWhenProfileImageIsMissing() throws Exception {
         User user = saveUser("초코 보호자", true);
-        NoseVerificationAttempt attempt = saveNoseVerificationAttempt(user, VerificationResult.DUPLICATE_SUSPECTED, Instant.now().plusSeconds(3600), null);
+        Dog dog = saveDog(user, DogStatus.REGISTERED);
+        saveVerificationLog(user, dog, saveNoseImage(dog), VerificationResult.PASSED);
 
-        createPost(tokenFor(user), attempt.getId(), "제목", "내용", "OPEN")
+        createPost(tokenFor(user), dog.getId(), "제목", "내용", "OPEN", null)
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error_code").value("DUPLICATE_DOG_CANNOT_BE_POSTED"));
-
-        assertThat(adoptionPostRepository.count()).isZero();
-        assertThat(dogRepository.count()).isZero();
+                .andExpect(jsonPath("$.error_code").value("PROFILE_IMAGE_REQUIRED"));
     }
 
     @Test
-    void rejectWhenNoseVerificationWasAlreadyConsumed() throws Exception {
-        User user = saveUser("초코 보호자", true);
-        NoseVerificationAttempt attempt = saveNoseVerificationAttempt(user, VerificationResult.PASSED, Instant.now().plusSeconds(3600), Instant.now());
-
-        createPost(tokenFor(user), attempt.getId(), "제목", "내용", "OPEN")
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.error_code").value("NOSE_VERIFICATION_ALREADY_CONSUMED"));
-    }
-
-    @Test
-    void rejectWhenNoseVerificationBelongsToOtherUser() throws Exception {
+    void rejectWhenDogBelongsToOtherUser() throws Exception {
         User owner = saveUser("원래 보호자", true);
         User currentUser = saveUser("다른 사용자", true);
-        NoseVerificationAttempt attempt = saveNoseVerificationAttempt(owner, VerificationResult.PASSED, Instant.now().plusSeconds(3600), null);
+        Dog dog = saveDog(owner, DogStatus.REGISTERED);
+        saveVerificationLog(owner, dog, saveNoseImage(dog), VerificationResult.PASSED);
 
-        createPost(tokenFor(currentUser), attempt.getId(), "제목", "내용", "OPEN")
+        createPost(tokenFor(currentUser), dog.getId(), "제목", "내용", "OPEN")
                 .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.error_code").value("NOSE_VERIFICATION_OWNER_MISMATCH"));
+                .andExpect(jsonPath("$.error_code").value("DOG_OWNER_MISMATCH"));
     }
 
     @Test
-    void rejectWhenNoseVerificationExpired() throws Exception {
+    void rejectWhenDogIsDuplicateSuspected() throws Exception {
         User user = saveUser("초코 보호자", true);
-        NoseVerificationAttempt attempt = saveNoseVerificationAttempt(user, VerificationResult.PASSED, Instant.now().minusSeconds(1), null);
+        Dog dog = saveDog(user, DogStatus.DUPLICATE_SUSPECTED);
+        saveVerificationLog(user, dog, saveNoseImage(dog), VerificationResult.DUPLICATE_SUSPECTED);
 
-        createPost(tokenFor(user), attempt.getId(), "제목", "내용", "OPEN")
+        createPost(tokenFor(user), dog.getId(), "제목", "내용", "OPEN")
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error_code").value("NOSE_VERIFICATION_EXPIRED"));
+                .andExpect(jsonPath("$.error_code").value("DOG_NOT_REGISTERED"));
+    }
+
+    @Test
+    void rejectWhenPassedVerificationLogIsMissing() throws Exception {
+        User user = saveUser("초코 보호자", true);
+        Dog dog = saveDog(user, DogStatus.REGISTERED);
+
+        createPost(tokenFor(user), dog.getId(), "제목", "내용", "OPEN")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error_code").value("DOG_NOT_VERIFIED"));
+    }
+
+    @Test
+    void rejectWhenDogAlreadyHasActivePost() throws Exception {
+        User user = saveUser("초코 보호자", true);
+        Dog dog = saveDog(user, DogStatus.REGISTERED);
+        saveVerificationLog(user, dog, saveNoseImage(dog), VerificationResult.PASSED);
+        savePost(user, dog, AdoptionPostStatus.OPEN);
+
+        createPost(tokenFor(user), dog.getId(), "제목", "내용", "OPEN")
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error_code").value("DOG_ALREADY_HAS_ACTIVE_POST"));
     }
 
     @Test
     void rejectWhenAuthorizationHeaderIsMissing() throws Exception {
-        createPost(null, 999L, "제목", "내용", "OPEN")
+        createPost(null, UUID.randomUUID().toString(), "제목", "내용", "OPEN")
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.error_code").value("UNAUTHORIZED"));
     }
@@ -269,34 +242,29 @@ class AdoptionPostCreateControllerTest {
     @Test
     void rejectInactiveCurrentUser() throws Exception {
         User user = saveUser("초코 보호자", false);
-        NoseVerificationAttempt attempt = saveNoseVerificationAttempt(user, VerificationResult.PASSED, Instant.now().plusSeconds(3600), null);
+        Dog dog = saveDog(user, DogStatus.REGISTERED);
 
-        createPost(tokenFor(user), attempt.getId(), "제목", "내용", "OPEN")
+        createPost(tokenFor(user), dog.getId(), "제목", "내용", "OPEN")
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.error_code").value("USER_INACTIVE"));
     }
 
-    private ResultActions createPost(String token, Long noseVerificationId, String title, String content, String status) throws Exception {
-        return createPost(token, noseVerificationId, title, content, status, profileImage());
+    private ResultActions createPost(String token, String dogId, String title, String content, String status) throws Exception {
+        return createPost(token, dogId, title, content, status, profileImage());
     }
 
     private ResultActions createPost(
             String token,
-            Long noseVerificationId,
+            String dogId,
             String title,
             String content,
             String status,
             MockMultipartFile profileImage
     ) throws Exception {
-        MockMultipartHttpServletRequestBuilder request = multipart("/api/adoption-posts");
-        request.contentType(MediaType.MULTIPART_FORM_DATA);
-        if (noseVerificationId != null) {
-            request.param("nose_verification_id", String.valueOf(noseVerificationId));
+        var request = multipart("/api/adoption-posts");
+        if (dogId != null) {
+            request.param("dog_id", dogId);
         }
-        request.param("dog_name", "초코");
-        request.param("breed", "Maltese");
-        request.param("gender", "UNKNOWN");
-        request.param("dog_description", "밝은 아이입니다.");
         if (title != null) {
             request.param("title", title);
         }
@@ -315,6 +283,15 @@ class AdoptionPostCreateControllerTest {
         return mockMvc.perform(request);
     }
 
+    private MockMultipartFile profileImage() {
+        return new MockMultipartFile(
+                "profile_image",
+                "profile.jpg",
+                MediaType.IMAGE_JPEG_VALUE,
+                new byte[]{1, 2, 3, 4, 5}
+        );
+    }
+
     private User saveUser(String displayName, boolean active) {
         User user = new User();
         user.setEmail("user-%d@example.com".formatted(++sequence));
@@ -324,42 +301,60 @@ class AdoptionPostCreateControllerTest {
         user.setContactPhone("01012341234");
         user.setRegion("Seoul");
         user.setActive(active);
-        return userRepository.save(user);
+        return userRepository.saveAndFlush(user);
     }
 
-    private NoseVerificationAttempt saveNoseVerificationAttempt(
-            User user,
-            VerificationResult result,
-            Instant expiresAt,
-            Instant consumedAt
-    ) {
-        FileStorageService.StoredFile stored = fileStorageService.storeNoseVerificationImage(
-                UUID.randomUUID().toString(),
-                noseImage()
-        );
-
-        NoseVerificationAttempt attempt = new NoseVerificationAttempt();
-        attempt.setRequestedByUserId(user.getId());
-        attempt.setNoseImagePath(stored.relativePath());
-        attempt.setNoseImageMimeType(stored.mimeType());
-        attempt.setNoseImageFileSize(stored.fileSize());
-        attempt.setNoseImageSha256(stored.sha256());
-        attempt.setResult(result);
-        attempt.setCandidateDogId(result == VerificationResult.DUPLICATE_SUSPECTED ? "existing-dog" : null);
-        attempt.setModel("dog-nose-identification2:s101_224");
-        attempt.setDimension(128);
-        attempt.setExpiresAt(expiresAt);
-        attempt.setConsumedAt(consumedAt);
-        attempt.setConsumedByPostId(consumedAt == null ? null : 999L);
-        return noseVerificationAttemptRepository.save(attempt);
+    private Dog saveDog(User owner, DogStatus status) {
+        Dog dog = new Dog();
+        dog.setId(UUID.randomUUID().toString());
+        dog.setOwnerUserId(owner.getId());
+        dog.setName("초코");
+        dog.setBreed("Maltese");
+        dog.setGender(DogGender.UNKNOWN);
+        dog.setBirthDate(LocalDate.of(2024, 1, 1));
+        dog.setDescription("밝은 아이입니다.");
+        dog.setStatus(status);
+        return dogRepository.saveAndFlush(dog);
     }
 
-    private static MockMultipartFile noseImage() {
-        return new MockMultipartFile("nose_image", "nose.jpg", MediaType.IMAGE_JPEG_VALUE, "nose-bytes".getBytes(StandardCharsets.UTF_8));
+    private DogImage saveNoseImage(Dog dog) {
+        DogImage image = new DogImage();
+        image.setDogId(dog.getId());
+        image.setImageType(DogImageType.NOSE);
+        image.setFilePath("dogs/%s/nose/nose.jpg".formatted(dog.getId()));
+        image.setMimeType("image/jpeg");
+        image.setFileSize(3L);
+        image.setSha256("nosehash%s".formatted(++sequence));
+        return dogImageRepository.saveAndFlush(image);
     }
 
-    private static MockMultipartFile profileImage() {
-        return new MockMultipartFile("profile_image", "profile.jpg", MediaType.IMAGE_JPEG_VALUE, "profile-bytes".getBytes(StandardCharsets.UTF_8));
+    private VerificationLog saveVerificationLog(User user, Dog dog, DogImage noseImage, VerificationResult result) {
+        VerificationLog log = new VerificationLog();
+        log.setDogId(dog.getId());
+        log.setDogImageId(noseImage.getId());
+        log.setRequestedByUserId(user.getId());
+        log.setSubmittedImagePath(noseImage.getFilePath());
+        log.setSubmittedImageMimeType(noseImage.getMimeType());
+        log.setSubmittedImageFileSize(noseImage.getFileSize());
+        log.setSubmittedImageSha256(noseImage.getSha256());
+        log.setPurpose(VerificationPurpose.DOG_REGISTRATION);
+        log.setResult(result);
+        log.setModel("dog-nose-identification2:s101_224");
+        log.setDimension(2048);
+        return verificationLogRepository.saveAndFlush(log);
+    }
+
+    private AdoptionPost savePost(User author, Dog dog, AdoptionPostStatus status) {
+        AdoptionPost post = new AdoptionPost();
+        post.setAuthorUserId(author.getId());
+        post.setDogId(dog.getId());
+        post.setTitle("Existing post");
+        post.setContent("Already active.");
+        post.setStatus(status);
+        if (status == AdoptionPostStatus.OPEN || status == AdoptionPostStatus.RESERVED || status == AdoptionPostStatus.COMPLETED) {
+            post.setPublishedAt(LocalDateTime.now());
+        }
+        return adoptionPostRepository.saveAndFlush(post);
     }
 
     private String tokenFor(User user) throws Exception {

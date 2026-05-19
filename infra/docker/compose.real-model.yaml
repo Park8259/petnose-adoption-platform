@@ -1,4 +1,6 @@
 # Optional override for real embedding model mode.
+# This file intentionally forces the real-model runtime values so mock
+# defaults from .env.example cannot leak into an MVP real-model run.
 # Usage example:
 #   docker compose --env-file infra/docker/.env \
 #     -f infra/docker/compose.yaml \
@@ -10,10 +12,16 @@ services:
   python-embed:
     build:
       args:
-        INSTALL_REAL_MODEL_DEPS: ${PYTHON_EMBED_INSTALL_REAL_DEPS:-1}
+        INSTALL_REAL_MODEL_DEPS: "1"
     environment:
-      EMBED_MODEL: ${EMBED_MODEL:-dog-nose-identification2}
+      EMBED_MODEL: dog-nose-identification2
+      EMBED_VECTOR_DIM: "2048"
       EMBED_DEVICE: ${EMBED_DEVICE:-cpu}
       DOG_NOSE_MODEL_DIR: /models/dog_nose_identification2
     volumes:
       - ${DOG_NOSE_MODEL_DIR_HOST:-../../../dog_nose_identification2/dog_nose_identification2}:/models/dog_nose_identification2:ro
+
+  spring-api:
+    environment:
+      QDRANT_COLLECTION: dog_nose_embeddings_real_v1
+      QDRANT_VECTOR_DIM: "2048"

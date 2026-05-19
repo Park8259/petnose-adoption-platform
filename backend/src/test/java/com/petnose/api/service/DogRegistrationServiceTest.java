@@ -150,6 +150,7 @@ class DogRegistrationServiceTest {
         assertThat(log.getCandidateDogId()).isNull();
         assertThat(log.getModel()).isEqualTo("dog-nose-identification2:s101_224");
         assertThat(log.getDimension()).isEqualTo(2048);
+        assertThat(log.getSubmittedImagePath()).isEqualTo("dogs/dog-1/nose/nose.jpg");
 
         assertThat(response.registrationAllowed()).isTrue();
         assertThat(response.status()).isEqualTo("REGISTERED");
@@ -180,6 +181,7 @@ class DogRegistrationServiceTest {
         assertThat(log.getCandidateDogId()).isEqualTo("candidate-dog");
         assertThat(log.getModel()).isEqualTo("dog-nose-identification2:s101_224");
         assertThat(log.getDimension()).isEqualTo(2048);
+        assertThat(log.getSubmittedImagePath()).isEqualTo("dogs/dog-1/nose/nose.jpg");
 
         assertThat(response.registrationAllowed()).isFalse();
         assertThat(response.status()).isEqualTo("DUPLICATE_SUSPECTED");

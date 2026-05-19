@@ -479,7 +479,7 @@ class AdoptionPostOwnerManagementControllerTest {
 
         statusPatch(tokenFor(user), post.getId(), "OPEN")
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error_code").value("DOG_NOT_VERIFIED"));
+                .andExpect(jsonPath("$.error_code").value("DOG_NOT_REGISTERED"));
     }
 
     @Test
@@ -505,7 +505,7 @@ class AdoptionPostOwnerManagementControllerTest {
 
         statusPatch(tokenFor(user), currentPost.getId(), "OPEN")
                 .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.error_code").value("ACTIVE_POST_ALREADY_EXISTS"));
+                .andExpect(jsonPath("$.error_code").value("DOG_ALREADY_HAS_ACTIVE_POST"));
     }
 
     @Test

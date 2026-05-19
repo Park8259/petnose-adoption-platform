@@ -29,6 +29,8 @@
 | Migration 참고 | `reference/DB_MIGRATION_STRATEGY.md` | Flyway/runtime migration 작업 |
 | Vector/Storage 참고 | `reference/STORAGE_AND_VECTOR_BOUNDARY.md` | Qdrant/Python Embed/file storage 경계 판단 |
 | Spring-Python 참고 | `reference/SPRING_PYTHON_EMBED_CONTRACT.md` | Spring Boot ↔ Python Embed 연동 작업 |
+| 공유 전 점검 | `reference/MVP_SCHEMA_TABLE_COUNT_REVIEW.md` | 5-table vs 6-table 기준 충돌 확인 |
+| 로컬 정리 | `reference/LOCAL_CLEANUP_GUIDE.md` | ignored/generated 파일 수동 정리 |
 | 운영 증거 | `ops-evidence/dev-cd-validation-log.md` | 배포/운영 검증 이력 확인 |
 | Archive | `archive/**` | 과거 문서 확인용. active 기준으로 사용 금지 |
 
@@ -40,6 +42,7 @@
 - `docs/reference/**` 문서와 active canonical 문서가 충돌하면 active canonical 문서가 우선한다.
 - 코드 구현 상태와 문서가 충돌하면 먼저 감사/검증 프롬프트로 확인한다.
 - DBML/SQL/코드/API 동작을 바꾸는 결론은 문서 정리 작업만으로 확정하지 않는다.
+- table count가 5-table 기준과 6-table 구현 기준으로 충돌하면 `reference/MVP_SCHEMA_TABLE_COUNT_REVIEW.md`를 먼저 확인하고 기능 코드나 migration을 바로 삭제하지 않는다.
 
 ## Codex 재사용 지시문
 

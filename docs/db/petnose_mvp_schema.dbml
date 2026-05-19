@@ -37,6 +37,11 @@ Enum verification_result {
   QDRANT_UPSERT_FAILED
 }
 
+Enum verification_purpose {
+  DOG_REGISTRATION
+  HANDOVER_COMPARE
+}
+
 Enum adoption_post_status {
   DRAFT
   OPEN
@@ -61,8 +66,8 @@ Table dogs {
   id char(36) [pk, note: "UUID string. Also used as Qdrant point id."]
   owner_user_id bigint [not null, ref: > users.id]
   name varchar(100) [not null]
-  breed varchar(100) [note: "DB nullable for operational/import flexibility. POST /api/adoption-posts and compatibility POST /api/dogs/register require a non-blank breed."]
-  gender dog_gender [note: "DB nullable for operational/import flexibility. POST /api/adoption-posts and compatibility POST /api/dogs/register require MALE, FEMALE, or UNKNOWN. UNKNOWN is an explicit API value, not a DB default."]
+  breed varchar(100) [note: "DB nullable for operational/import flexibility. POST /api/dogs/register requires a non-blank breed."]
+  gender dog_gender [note: "DB nullable for operational/import flexibility. POST /api/dogs/register requires MALE, FEMALE, or UNKNOWN. UNKNOWN is an explicit API value, not a DB default."]
   birth_date date
   description text
   status dog_status [not null, default: "PENDING"]
@@ -84,33 +89,19 @@ Table dog_images {
 Table verification_logs {
   id bigint [pk, increment]
   dog_id char(36) [not null, ref: > dogs.id]
-  dog_image_id bigint [not null, ref: > dog_images.id]
+  dog_image_id bigint [ref: > dog_images.id, note: "Nullable for future HANDOVER_COMPARE rows that store a submitted image directly on the log."]
   requested_by_user_id bigint [not null, ref: > users.id]
+  submitted_image_path varchar(500) [note: "Relative path for the image submitted to this verification; DOG_REGISTRATION duplicates dog_images.file_path for audit convenience."]
+  submitted_image_mime_type varchar(100)
+  submitted_image_file_size bigint
+  submitted_image_sha256 char(64)
   result verification_result [not null]
+  purpose verification_purpose [not null, default: "DOG_REGISTRATION"]
   similarity_score decimal(6,5)
   candidate_dog_id char(36) [ref: > dogs.id]
   model varchar(100)
   dimension int
   failure_reason varchar(1000)
-  created_at timestamp [not null, default: `CURRENT_TIMESTAMP`]
-}
-
-Table nose_verification_attempts {
-  id bigint [pk, increment]
-  requested_by_user_id bigint [not null, ref: > users.id]
-  nose_image_path varchar(500) [not null, unique, note: "Stored pre-post nose image path. Linked to dog_images.NOSE when adoption post creation succeeds."]
-  nose_image_mime_type varchar(100)
-  nose_image_file_size bigint
-  nose_image_sha256 char(64)
-  result verification_result [not null]
-  similarity_score decimal(6,5)
-  candidate_dog_id char(36) [ref: > dogs.id]
-  model varchar(100)
-  dimension int
-  failure_reason varchar(1000)
-  expires_at timestamp [not null]
-  consumed_at timestamp
-  consumed_by_post_id bigint [ref: > adoption_posts.id]
   created_at timestamp [not null, default: `CURRENT_TIMESTAMP`]
 }
 

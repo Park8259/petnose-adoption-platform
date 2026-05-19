@@ -68,7 +68,7 @@ Spring Boot, Python, MySQL, Qdrant는 Docker 내부 네트워크에서만 통신
 ### MySQL
 
 - **관계형 데이터의 Source of Truth.**
-- `users`, `dogs`, `dog_images`, `verification_logs`, `nose_verification_attempts`, `adoption_posts` 데이터를 보관합니다.
+- `users`, `dogs`, `dog_images`, `verification_logs`, `adoption_posts` 데이터를 보관합니다.
 
 ### Nginx
 
@@ -83,19 +83,20 @@ Spring Boot, Python, MySQL, Qdrant는 Docker 내부 네트워크에서만 통신
 
 ## 주요 흐름
 
-### 분양 전 비문 검증과 분양글 생성
+### Dog 등록/비문 중복 검사와 분양글 생성
 
 ```
-Flutter → POST /api/nose-verifications (nose 이미지 포함)
+Flutter → POST /api/dogs/register (dog 정보 + nose 이미지 포함)
   → Spring Boot: 이미지 저장 (uploads 볼륨, 상대경로 DB 기록)
   → Spring Boot → Python Embed: POST /embed (이미지 바이트)
   ← Python Embed: { "vector": [...] }
-  → Spring Boot → Qdrant: duplicate search only
-  → Spring Boot → MySQL: INSERT INTO nose_verification_attempts
-  ← Spring Boot → Flutter: { "nose_verification_id": 1001, "allowed": true, "decision": "PASSED", ... }
-Flutter → POST /api/adoption-posts (nose_verification_id, dog 기본 정보, required profile_image)
-  → Spring Boot → MySQL: INSERT INTO dogs, dog_images(NOSE / PROFILE), verification_logs, adoption_posts; consume attempt
-  → Spring Boot → Qdrant: point id = dogs.id 로 vector upsert
+  → Spring Boot → Qdrant: duplicate search
+  → Spring Boot → MySQL: INSERT/UPDATE dogs, dog_images(NOSE), verification_logs(DOG_REGISTRATION)
+  → Spring Boot → Qdrant: registration_allowed=true일 때 point id = dog_id 로 vector upsert
+  ← Spring Boot → Flutter: { "dog_id": "...", "registration_allowed": true, "qdrant_point_id": "...", ... }
+Flutter → POST /api/adoption-posts (dog_id, title, content, status, profile_image)
+  → Spring Boot: profile_image 저장 (uploads 볼륨, 상대경로 DB 기록)
+  → Spring Boot → MySQL: validate registered dog + latest PASSED verification; INSERT INTO dog_images(PROFILE), adoption_posts
   ← Spring Boot → Flutter: { "post_id": 501, "dog_id": "...", ... }
 ```
 
@@ -106,12 +107,13 @@ Flutter → POST /api/adoption-posts (nose_verification_id, dog 기본 정보, r
 ```
 Flutter → POST /api/adoption-posts/{post_id}/handover-verifications (이미지 포함)
   → Spring Boot → Python Embed: 임베딩 변환
-  → Spring Boot → Qdrant: 유사도 검색 (top-K)
-  → Spring Boot: adoption_posts.dog_id 기준 expected dog와 비교
+  → Spring Boot: post_id로 adoption_posts.dog_id 조회
+  → Spring Boot → Qdrant: point id/payload 기준 dog_id 1:1 후보 검색
+  → Spring Boot: expected dog와 비교
   ← Spring Boot → Flutter: { "matched": true, "decision": "MATCHED", ... }
 ```
 
-이 흐름은 handover image를 저장하지 않고, `verification_logs` row를 생성하지 않으며, `adoption_posts.status` 또는 `dogs.status`를 변경하지 않습니다.
+현재 구현은 handover image를 저장하지 않고, `verification_logs` row를 생성하지 않으며, `adoption_posts.status` 또는 `dogs.status`를 변경하지 않습니다. 향후 완료형 handover flow를 확장하더라도 Qdrant id는 `post_id`가 아니라 `dog_id`입니다.
 
 ---
 
