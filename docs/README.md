@@ -30,6 +30,7 @@
 | Vector/Storage 참고 | `reference/STORAGE_AND_VECTOR_BOUNDARY.md` | Qdrant/Python Embed/file storage 경계 판단 |
 | Spring-Python 참고 | `reference/SPRING_PYTHON_EMBED_CONTRACT.md` | Spring Boot ↔ Python Embed 연동 작업 |
 | 공유 전 점검 | `reference/MVP_SCHEMA_TABLE_COUNT_REVIEW.md` | 5-table vs 6-table 기준 충돌 확인 |
+| 실제 runtime E2E | `reference/MVP_BACKEND_FLOW_HANDOFF.md` | `scripts/verify-real-model-mvp-flow.ps1`로 real-model Docker flow 검증 |
 | 로컬 정리 | `reference/LOCAL_CLEANUP_GUIDE.md` | ignored/generated 파일 수동 정리 |
 | 운영 증거 | `ops-evidence/dev-cd-validation-log.md` | 배포/운영 검증 이력 확인 |
 | Archive | `archive/**` | 과거 문서 확인용. active 기준으로 사용 금지 |
