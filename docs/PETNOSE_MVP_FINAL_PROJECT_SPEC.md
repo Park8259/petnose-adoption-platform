@@ -100,7 +100,7 @@ service가 생성하는 `dog_images` row는 정상적으로 `mime_type`, `file_s
 
 ## Verification Logs
 
-`verification_logs`는 dog registration verification history와 future handover comparison history의 source of truth다.
+`verification_logs`는 current dog registration verification history의 source of truth다. Schema와 enum은 `purpose=HANDOVER_COMPARE`를 허용하지만, current MVP handover verification API는 stateless safety check이며 `verification_logs` row를 생성하지 않는다.
 
 Columns:
 

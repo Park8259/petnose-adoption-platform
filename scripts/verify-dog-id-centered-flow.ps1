@@ -2,7 +2,9 @@
 
 [CmdletBinding()]
 param(
-    [string]$ExpectedBranch = "refactor/dog-id-centered-adoption-flow"
+    [AllowNull()]
+    [AllowEmptyString()]
+    [string]$ExpectedBranch = ""
 )
 
 Set-StrictMode -Version Latest
@@ -253,8 +255,9 @@ function Assert-ForbiddenKeywordAbsent {
     )
 
     $matches = @(Find-FixedStringMatches -Needle $Keyword)
-    if ($matches.Count -gt 0) {
-        throw "Forbidden keyword '$Keyword' found outside allowed usage:$([Environment]::NewLine)$(Format-MatchList -Matches $matches)"
+    $invalid = @($matches | Where-Object { -not (Test-HistoricalMatchAllowed -Match $_ -Keyword $Keyword) })
+    if ($invalid.Count -gt 0) {
+        throw "Forbidden keyword '$Keyword' found in active location:$([Environment]::NewLine)$(Format-MatchList -Matches $invalid)"
     }
 }
 
@@ -356,6 +359,13 @@ function Test-CanonicalSchema {
 
     Assert-NotRegex -Text $sql -Pattern "(?im)CREATE\s+TABLE\s+`?nose_verification_attempts`?\s*\(" -Subject $sqlPath
     Assert-NotRegex -Text $dbml -Pattern "(?im)^Table\s+`?nose_verification_attempts`?\s*\{" -Subject $dbmlPath
+    Assert-NotContainsAny -Text $sql -Needles @("expires_at", "consumed_at", "consumed_by_post_id") -Subject $sqlPath
+    Assert-NotContainsAny -Text $dbml -Needles @("expires_at", "consumed_at", "consumed_by_post_id") -Subject $dbmlPath
+    Assert-Contains -Text $sql -Needle "submitted_image_path VARCHAR(500) NULL" -Subject $sqlPath
+    Assert-Contains -Text $sql -Needle "submitted_image_mime_type VARCHAR(100) NULL" -Subject $sqlPath
+    Assert-Contains -Text $sql -Needle "submitted_image_file_size BIGINT NULL" -Subject $sqlPath
+    Assert-Contains -Text $sql -Needle "submitted_image_sha256 CHAR(64) NULL" -Subject $sqlPath
+    Assert-Contains -Text $sql -Needle "purpose VARCHAR(40) NOT NULL DEFAULT 'DOG_REGISTRATION'" -Subject $sqlPath
 }
 
 Push-Location $RepoRoot
@@ -364,14 +374,24 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to read current git branch."
     }
-
-    Write-Host "Current branch: $currentBranch" -ForegroundColor Green
-    Write-Host "Gradle command: $GradleFile" -ForegroundColor Green
-    if ($currentBranch -eq "develop") {
-        throw "Refusing to run on develop. Switch to the refactor branch first."
+    $currentBranchDisplay = $currentBranch
+    if ([string]::IsNullOrWhiteSpace($currentBranchDisplay)) {
+        $currentBranchDisplay = "(detached HEAD)"
     }
-    if ($ExpectedBranch -and $currentBranch -ne $ExpectedBranch) {
-        throw "Expected branch '$ExpectedBranch', but current branch is '$currentBranch'."
+    $expectedBranchName = ""
+    if ($null -ne $ExpectedBranch) {
+        $expectedBranchName = $ExpectedBranch.Trim()
+    }
+
+    Write-Host "Current branch: $currentBranchDisplay" -ForegroundColor Green
+    if ([string]::IsNullOrWhiteSpace($expectedBranchName)) {
+        Write-Host "Expected branch: not enforced" -ForegroundColor Green
+    } else {
+        Write-Host "Expected branch: $expectedBranchName" -ForegroundColor Green
+    }
+    Write-Host "Gradle command: $GradleFile" -ForegroundColor Green
+    if (-not [string]::IsNullOrWhiteSpace($expectedBranchName) -and $currentBranch -ne $expectedBranchName) {
+        throw "Expected branch '$expectedBranchName', but current branch is '$currentBranchDisplay'."
     }
 
     Invoke-Step -Name "git status --short" -Command {

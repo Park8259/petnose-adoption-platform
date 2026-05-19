@@ -100,8 +100,6 @@ CREATE TABLE verification_logs (
     KEY idx_verification_logs_result (result),
     KEY idx_verification_logs_purpose (purpose),
     KEY idx_verification_logs_candidate (candidate_dog_id),
-    KEY idx_verification_logs_expires_at (expires_at),
-    KEY idx_verification_logs_consumed_by_post_id (consumed_by_post_id),
     CONSTRAINT fk_verification_logs_dog
         FOREIGN KEY (dog_id) REFERENCES dogs (id),
     CONSTRAINT fk_verification_logs_image

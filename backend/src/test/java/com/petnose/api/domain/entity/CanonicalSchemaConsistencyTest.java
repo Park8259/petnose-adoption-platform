@@ -1,0 +1,264 @@
+package com.petnose.api.domain.entity;
+
+import org.junit.jupiter.api.Test;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+class CanonicalSchemaConsistencyTest {
+
+    private static final Set<String> ACTIVE_TABLES = Set.of(
+            "users",
+            "dogs",
+            "dog_images",
+            "verification_logs",
+            "adoption_posts"
+    );
+    private static final Set<String> VERIFICATION_LOG_COLUMNS = Set.of(
+            "id",
+            "dog_id",
+            "dog_image_id",
+            "requested_by_user_id",
+            "submitted_image_path",
+            "submitted_image_mime_type",
+            "submitted_image_file_size",
+            "submitted_image_sha256",
+            "result",
+            "purpose",
+            "similarity_score",
+            "candidate_dog_id",
+            "model",
+            "dimension",
+            "failure_reason",
+            "created_at"
+    );
+    private static final List<String> RETIRED_PRECHECK_FIELDS = List.of(
+            "expires_at",
+            "consumed_at",
+            "consumed_by_post_id"
+    );
+    private static final Pattern CREATE_TABLE = Pattern.compile(
+            "(?is)CREATE\\s+TABLE\\s+`?([a-z_]+)`?\\s*\\((.*?)\\)\\s*ENGINE\\s*="
+    );
+    private static final Pattern TABLE_COLUMN = Pattern.compile("^`?([a-z][a-z0-9_]*)`?\\s+");
+    private static final Pattern INDEX_COLUMNS = Pattern.compile(
+            "(?im)^\\s*(?:PRIMARY\\s+KEY|UNIQUE\\s+KEY\\s+`?[a-z0-9_]+`?|KEY\\s+`?[a-z0-9_]+`?|INDEX\\s+`?[a-z0-9_]+`?)\\s*\\(([^)]*)\\)"
+    );
+    private static final Pattern FOREIGN_KEY_COLUMNS = Pattern.compile("(?is)FOREIGN\\s+KEY\\s*\\(([^)]*)\\)");
+    private static final Pattern CHECK_CONSTRAINT = Pattern.compile("(?is)CHECK\\s*\\((.*?)\\)");
+    private static final Pattern CHECK_IDENTIFIER = Pattern.compile("(?i)\\b([a-z][a-z0-9_]*)\\b");
+    private static final Pattern DBML_TABLE = Pattern.compile("(?im)^Table\\s+`?([a-z_]+)`?\\s*\\{");
+    private static final Set<String> CHECK_KEYWORDS = Set.of(
+            "and",
+            "or",
+            "not",
+            "null",
+            "is",
+            "in",
+            "true",
+            "false"
+    );
+
+    @Test
+    void activeCleanSqlCreatesExactlyCanonicalTables() throws Exception {
+        String sql = canonicalSql();
+
+        assertThat(tableDefinitions(sql).keySet()).containsExactlyInAnyOrderElementsOf(ACTIVE_TABLES);
+        assertThat(sql).doesNotContain(removedAttemptTableName());
+    }
+
+    @Test
+    void activeCleanSqlVerificationLogsUseDogIdCenteredRuntimeColumns() throws Exception {
+        String sql = canonicalSql();
+        Map<String, Set<String>> columnsByTable = columnsByTable(sql);
+        String verificationLogs = tableDefinitions(sql).get("verification_logs");
+
+        assertThat(columnsByTable.get("verification_logs"))
+                .containsExactlyInAnyOrderElementsOf(VERIFICATION_LOG_COLUMNS)
+                .doesNotContain(RETIRED_PRECHECK_FIELDS.toArray(String[]::new));
+        assertThat(verificationLogs).contains(
+                "dog_image_id BIGINT NULL",
+                "purpose VARCHAR(40) NOT NULL DEFAULT 'DOG_REGISTRATION'",
+                "similarity_score DECIMAL(6, 5) NULL"
+        );
+    }
+
+    @Test
+    void activeCleanSqlIndexesForeignKeysAndChecksReferenceDeclaredColumns() throws Exception {
+        Map<String, String> tableBodies = tableDefinitions(canonicalSql());
+        Map<String, Set<String>> columnsByTable = columnsByTable(tableBodies);
+
+        tableBodies.forEach((tableName, body) -> {
+            Set<String> declaredColumns = columnsByTable.get(tableName);
+            assertReferencedColumnsExist(tableName, "index", body, INDEX_COLUMNS, declaredColumns);
+            assertReferencedColumnsExist(tableName, "foreign key", body, FOREIGN_KEY_COLUMNS, declaredColumns);
+            assertCheckColumnsExist(tableName, body, declaredColumns);
+        });
+    }
+
+    @Test
+    void activeDbmlMatchesCanonicalTableAndEnumScope() throws Exception {
+        String dbml = canonicalDbml();
+
+        assertThat(dbmlTableNames(dbml)).containsExactlyInAnyOrderElementsOf(ACTIVE_TABLES);
+        assertThat(dbml).doesNotContain(removedAttemptTableName());
+        assertThat(dbml).doesNotContain(RETIRED_PRECHECK_FIELDS.toArray(String[]::new));
+        assertThat(dbmlEnumValues(dbml, "dog_image_type")).containsExactly("NOSE", "PROFILE");
+        assertThat(dbmlEnumValues(dbml, "verification_purpose"))
+                .containsExactly("DOG_REGISTRATION", "HANDOVER_COMPARE");
+    }
+
+    private static void assertReferencedColumnsExist(
+            String tableName,
+            String referenceType,
+            String body,
+            Pattern pattern,
+            Set<String> declaredColumns
+    ) {
+        Matcher matcher = pattern.matcher(body);
+        while (matcher.find()) {
+            for (String column : columnNames(matcher.group(1))) {
+                assertThat(declaredColumns)
+                        .as("%s %s references column %s", tableName, referenceType, column)
+                        .contains(column);
+            }
+        }
+    }
+
+    private static void assertCheckColumnsExist(String tableName, String body, Set<String> declaredColumns) {
+        Matcher matcher = CHECK_CONSTRAINT.matcher(body);
+        while (matcher.find()) {
+            String expression = matcher.group(1).replaceAll("'[^']*'", " ");
+            Matcher identifierMatcher = CHECK_IDENTIFIER.matcher(expression);
+            while (identifierMatcher.find()) {
+                String identifier = identifierMatcher.group(1).toLowerCase();
+                if (CHECK_KEYWORDS.contains(identifier)) {
+                    continue;
+                }
+                assertThat(declaredColumns)
+                        .as("%s check constraint references column %s", tableName, identifier)
+                        .contains(identifier);
+            }
+        }
+    }
+
+    private static Map<String, Set<String>> columnsByTable(String sql) {
+        return columnsByTable(tableDefinitions(sql));
+    }
+
+    private static Map<String, Set<String>> columnsByTable(Map<String, String> tableBodies) {
+        Map<String, Set<String>> columnsByTable = new LinkedHashMap<>();
+        tableBodies.forEach((tableName, body) -> columnsByTable.put(tableName, declaredColumns(body)));
+        return columnsByTable;
+    }
+
+    private static Map<String, String> tableDefinitions(String sql) {
+        Matcher matcher = CREATE_TABLE.matcher(sql);
+        Map<String, String> definitions = new LinkedHashMap<>();
+        while (matcher.find()) {
+            definitions.put(matcher.group(1), matcher.group(2));
+        }
+        return definitions;
+    }
+
+    private static Set<String> declaredColumns(String tableBody) {
+        return Arrays.stream(tableBody.split("\\R"))
+                .map(CanonicalSchemaConsistencyTest::stripSqlLineComment)
+                .map(String::trim)
+                .filter(line -> !line.isEmpty())
+                .filter(line -> !line.startsWith("PRIMARY "))
+                .filter(line -> !line.startsWith("UNIQUE "))
+                .filter(line -> !line.startsWith("KEY "))
+                .filter(line -> !line.startsWith("INDEX "))
+                .filter(line -> !line.startsWith("CONSTRAINT "))
+                .map(CanonicalSchemaConsistencyTest::removeTrailingComma)
+                .map(TABLE_COLUMN::matcher)
+                .filter(Matcher::find)
+                .map(matcher -> matcher.group(1))
+                .collect(Collectors.toCollection(TreeSet::new));
+    }
+
+    private static List<String> columnNames(String columnList) {
+        return Arrays.stream(columnList.split(","))
+                .map(String::trim)
+                .map(column -> column.replace("`", ""))
+                .map(column -> column.replaceAll("(?i)\\s+(ASC|DESC)$", ""))
+                .map(column -> column.replaceAll("\\(.+\\)$", ""))
+                .filter(column -> !column.isEmpty())
+                .toList();
+    }
+
+    private static Set<String> dbmlTableNames(String dbml) {
+        Matcher matcher = DBML_TABLE.matcher(dbml);
+        Set<String> tableNames = new TreeSet<>();
+        while (matcher.find()) {
+            tableNames.add(matcher.group(1));
+        }
+        return tableNames;
+    }
+
+    private static List<String> dbmlEnumValues(String dbml, String enumName) {
+        Pattern enumPattern = Pattern.compile("(?is)Enum\\s+" + Pattern.quote(enumName) + "\\s*\\{(.*?)\\}");
+        Matcher matcher = enumPattern.matcher(dbml);
+        assertThat(matcher.find()).as("DBML enum %s", enumName).isTrue();
+        return Arrays.stream(matcher.group(1).split("\\R"))
+                .map(String::trim)
+                .filter(line -> !line.isEmpty())
+                .filter(line -> !line.startsWith("//"))
+                .toList();
+    }
+
+    private static String stripSqlLineComment(String line) {
+        int commentStart = line.indexOf("--");
+        if (commentStart >= 0) {
+            return line.substring(0, commentStart);
+        }
+        return line;
+    }
+
+    private static String removeTrailingComma(String line) {
+        if (line.endsWith(",")) {
+            return line.substring(0, line.length() - 1);
+        }
+        return line;
+    }
+
+    private static String removedAttemptTableName() {
+        return "nose" + "_verification_attempts";
+    }
+
+    private static String canonicalSql() throws IOException {
+        return repoFileText("docs/db/V20260508__mvp_canonical_schema.sql");
+    }
+
+    private static String canonicalDbml() throws IOException {
+        return repoFileText("docs/db/petnose_mvp_schema.dbml");
+    }
+
+    private static String repoFileText(String relativePath) throws IOException {
+        Path current = Path.of("").toAbsolutePath();
+        for (Path root : List.of(current, current.getParent())) {
+            if (root == null) {
+                continue;
+            }
+            Path candidate = root.resolve(relativePath);
+            if (Files.isRegularFile(candidate)) {
+                return Files.readString(candidate, StandardCharsets.UTF_8);
+            }
+        }
+        throw new IOException("Repository file not found: " + relativePath);
+    }
+}

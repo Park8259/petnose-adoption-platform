@@ -66,7 +66,7 @@ schema count 불일치는 해결되었다. pre-adoption nose verification ticket
 - `users`가 `display_name`, `contact_phone`, `region`, `is_active`를 직접 가진다.
 - MySQL이 source of truth다.
 - Qdrant는 dog nose vector index일 뿐이다.
-- Firebase는 future optional chat/push 용도이며 MySQL 대체물이 아니다.
+- Firebase chat/push는 active MVP scope가 아니며 MySQL 대체물이 아니다.
 - `dog_images.file_path`는 upload root 기준 상대 경로만 저장한다.
 - API 응답 필드 `qdrant_point_id`, `verification_status`, `embedding_status`는 계산 필드이며 DB column이 아니다.
 - 모든 JSON response field는 `snake_case`를 유지한다.
