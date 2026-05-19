@@ -12,6 +12,10 @@ param(
 
     [AllowNull()]
     [AllowEmptyString()]
+    [string]$HandoverNoseImagePath = "",
+
+    [AllowNull()]
+    [AllowEmptyString()]
     [string]$ProfileImagePath = "",
 
     [switch]$StartCompose,
@@ -66,6 +70,15 @@ if (-not (Test-Path -LiteralPath $NoseImagePath -PathType Leaf)) {
     throw "NoseImagePath not found: $NoseImagePath"
 }
 $ResolvedNoseImagePath = (Resolve-Path -LiteralPath $NoseImagePath).Path
+
+if ([string]::IsNullOrWhiteSpace($HandoverNoseImagePath)) {
+    $ResolvedHandoverNoseImagePath = $ResolvedNoseImagePath
+} else {
+    if (-not (Test-Path -LiteralPath $HandoverNoseImagePath -PathType Leaf)) {
+        throw "HandoverNoseImagePath not found: $HandoverNoseImagePath"
+    }
+    $ResolvedHandoverNoseImagePath = (Resolve-Path -LiteralPath $HandoverNoseImagePath).Path
+}
 
 if ([string]::IsNullOrWhiteSpace($ProfileImagePath)) {
     $ResolvedProfileImagePath = $ResolvedNoseImagePath
@@ -550,13 +563,25 @@ function Invoke-DbQuery {
     param([Parameter(Mandatory = $true)][string]$Sql)
 
     $escapedSql = $Sql.Replace("`"", "\`"")
-    $shellCommand = "mysql -u`"`$MYSQL_USER`" -p`"`$MYSQL_PASSWORD`" `"`$MYSQL_DATABASE`" -N -B -e `"$escapedSql`""
+    $shellCommand = "MYSQL_PWD=`"`$MYSQL_PASSWORD`" mysql -u`"`$MYSQL_USER`" `"`$MYSQL_DATABASE`" --batch --raw --skip-column-names -e `"$escapedSql`""
 
     if (-not [string]::IsNullOrWhiteSpace($MySqlContainerName)) {
         return Invoke-NativeCapture -File "docker" -Arguments @("exec", "-i", $MySqlContainerName, "sh", "-lc", $shellCommand)
     }
 
     return Invoke-DockerCompose -Arguments @("exec", "-T", "mysql", "sh", "-lc", $shellCommand) -AllowFailure
+}
+
+function Get-DbResultLines {
+    param([object[]]$Output)
+
+    return @($Output) |
+            ForEach-Object { "$_".Trim() } |
+            Where-Object {
+                -not [string]::IsNullOrWhiteSpace($_) -and
+                -not $_.StartsWith("mysql: [Warning]") -and
+                -not $_.StartsWith("Warning:")
+            }
 }
 
 function Assert-DbScalar {
@@ -570,7 +595,11 @@ function Assert-DbScalar {
     if ($result.ExitCode -ne 0) {
         throw "DB query failed for $Name. Output: $($result.Output -join ' ')"
     }
-    $actual = (@($result.Output) | Select-Object -First 1).ToString().Trim()
+    $lines = @(Get-DbResultLines -Output $result.Output)
+    if ($lines.Count -lt 1) {
+        throw "DB query returned no scalar result for $Name. SQL: $Sql"
+    }
+    $actual = ($lines | Select-Object -First 1).ToString().Trim()
     if ($actual -ne $Expected) {
         throw "DB assertion failed for $Name. Expected '$Expected', actual '$actual'. SQL: $Sql"
     }
@@ -589,31 +618,28 @@ function Try-RunDbChecks {
         return
     }
 
-    try {
-        $probe = Invoke-DbQuery -Sql "SELECT 1"
-        if ($probe.ExitCode -ne 0) {
+    $probe = Invoke-DbQuery -Sql "SELECT 1"
+    if ($probe.ExitCode -ne 0 -or @(Get-DbResultLines -Output $probe.Output).Count -lt 1) {
+        if ($DbCheckMode -eq "require") {
             throw "DB probe failed: $($probe.Output -join ' ')"
         }
-
-        Assert-DbScalar -Sql "SELECT status FROM dogs WHERE id = '$FirstDogId'" -Expected "ADOPTED" -Name "first dog adopted after completion"
-        Assert-DbScalar -Sql "SELECT status FROM dogs WHERE id = '$DuplicateDogId'" -Expected "DUPLICATE_SUSPECTED" -Name "duplicate dog status"
-        Assert-DbScalar -Sql "SELECT COUNT(*) FROM verification_logs WHERE dog_id = '$FirstDogId' AND result = 'PASSED'" -Expected "1" -Name "PASSED verification log"
-        Assert-DbScalar -Sql "SELECT COUNT(*) FROM verification_logs WHERE dog_id = '$DuplicateDogId' AND result = 'DUPLICATE_SUSPECTED'" -Expected "1" -Name "DUPLICATE_SUSPECTED verification log"
-        Assert-DbScalar -Sql "SELECT status FROM adoption_posts WHERE id = $PostId" -Expected "COMPLETED" -Name "post completed status"
-        Assert-DbScalar -Sql "SELECT COUNT(*) FROM dog_images WHERE dog_id = '$FirstDogId' AND image_type = 'NOSE'" -Expected "1" -Name "NOSE image row"
-        Assert-DbScalar -Sql "SELECT COUNT(*) FROM dog_images WHERE dog_id = '$FirstDogId' AND image_type = 'PROFILE'" -Expected "1" -Name "PROFILE image row"
-        $legacyPrecheckTable = "nose_verification" + "_attempts"
-        Assert-DbScalar -Sql "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = '$legacyPrecheckTable'" -Expected "0" -Name "legacy precheck table absence"
-
-        $script:DbCheckSummary = "PASS: DB direct checks passed for dogs, verification_logs, adoption_posts, dog_images, and table absence."
-        Write-Host $script:DbCheckSummary -ForegroundColor Green
-    } catch {
-        if ($DbCheckMode -eq "require") {
-            throw
-        }
-        $script:DbCheckSummary = "SKIP: DB direct check unavailable or failed in auto mode. $($_.Exception.Message)"
+        $script:DbCheckSummary = "SKIP: DB direct check unavailable in auto mode. Probe output: $($probe.Output -join ' ')"
         Write-Host $script:DbCheckSummary -ForegroundColor Yellow
+        return
     }
+
+    Assert-DbScalar -Sql "SELECT status FROM dogs WHERE id = '$FirstDogId'" -Expected "ADOPTED" -Name "first dog adopted after completion"
+    Assert-DbScalar -Sql "SELECT status FROM dogs WHERE id = '$DuplicateDogId'" -Expected "DUPLICATE_SUSPECTED" -Name "duplicate dog status"
+    Assert-DbScalar -Sql "SELECT COUNT(*) FROM verification_logs WHERE dog_id = '$FirstDogId' AND result = 'PASSED'" -Expected "1" -Name "PASSED verification log"
+    Assert-DbScalar -Sql "SELECT COUNT(*) FROM verification_logs WHERE dog_id = '$DuplicateDogId' AND result = 'DUPLICATE_SUSPECTED'" -Expected "1" -Name "DUPLICATE_SUSPECTED verification log"
+    Assert-DbScalar -Sql "SELECT status FROM adoption_posts WHERE id = $PostId" -Expected "COMPLETED" -Name "post completed status"
+    Assert-DbScalar -Sql "SELECT COUNT(*) FROM dog_images WHERE dog_id = '$FirstDogId' AND image_type = 'NOSE'" -Expected "1" -Name "NOSE image row"
+    Assert-DbScalar -Sql "SELECT COUNT(*) FROM dog_images WHERE dog_id = '$FirstDogId' AND image_type = 'PROFILE'" -Expected "1" -Name "PROFILE image row"
+    $legacyPrecheckTable = "nose_verification" + "_attempts"
+    Assert-DbScalar -Sql "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = '$legacyPrecheckTable'" -Expected "0" -Name "legacy precheck table absence"
+
+    $script:DbCheckSummary = "PASS: DB direct checks passed for dogs, verification_logs, adoption_posts, dog_images, and table absence."
+    Write-Host $script:DbCheckSummary -ForegroundColor Green
 }
 
 function Try-RunQdrantPointChecks {
@@ -733,10 +759,14 @@ function Get-FileUrl {
 }
 
 $noseMimeType = Get-ImageMimeType -Path $ResolvedNoseImagePath
+$handoverNoseMimeType = Get-ImageMimeType -Path $ResolvedHandoverNoseImagePath
 $profileMimeType = Get-ImageMimeType -Path $ResolvedProfileImagePath
 $allowedUploadMimeTypes = @("image/jpeg", "image/png")
 if ($allowedUploadMimeTypes -notcontains $noseMimeType) {
     throw "NoseImagePath must be a real JPEG or PNG image file. Detected MIME from extension: $noseMimeType"
+}
+if ($allowedUploadMimeTypes -notcontains $handoverNoseMimeType) {
+    throw "HandoverNoseImagePath must be a real JPEG or PNG image file. Detected MIME from extension: $handoverNoseMimeType"
 }
 if ($allowedUploadMimeTypes -notcontains $profileMimeType) {
     throw "ProfileImagePath must be a real JPEG or PNG image file. Detected MIME from extension: $profileMimeType"
@@ -754,6 +784,7 @@ Write-Host "PetNose real-model MVP E2E verification" -ForegroundColor Cyan
 Write-Host "BaseUrl: $HttpRootUrl"
 Write-Host "ApiBaseUrl: $ApiBaseUrl"
 Write-Host "NoseImagePath: $ResolvedNoseImagePath"
+Write-Host "HandoverNoseImagePath: $ResolvedHandoverNoseImagePath"
 Write-Host "ProfileImagePath: $ResolvedProfileImagePath"
 Write-Host "QdrantUrl: $QdrantUrl"
 Write-Host "QdrantCollection: $QdrantCollection"
@@ -940,16 +971,21 @@ try {
         $script:profileImageUrl = $response.Json.profile_image_url
     }
 
-    Invoke-Step "J. Handover verification matches same nose image" {
+    Invoke-Step "J. Handover verification matches handover nose image against registered dog" {
         $files = @{
-            nose_image = [pscustomobject]@{ Path = $ResolvedNoseImagePath; MimeType = $noseMimeType }
+            nose_image = [pscustomobject]@{ Path = $ResolvedHandoverNoseImagePath; MimeType = $handoverNoseMimeType }
         }
         $response = Invoke-MultipartRequest -Url (Join-Url $ApiBaseUrl "adoption-posts/$script:postId/handover-verifications") -Files $files -BearerToken $script:accessToken
         Assert-Status -Response $response -ExpectedStatus 200
-        Assert-True -Value $response.Json.matched -Name "handover.matched"
-        Assert-Equal -Actual $response.Json.decision -Expected "MATCHED" -Name "handover.decision"
+        $handoverThreshold = 0.70
+        if (Test-JsonField -Object $response.Json -Name "threshold") {
+            $handoverThreshold = [double]$response.Json.threshold
+        }
+        Write-Host "handover image=$ResolvedHandoverNoseImagePath, similarity_score=$($response.Json.similarity_score), threshold=$handoverThreshold, decision=$($response.Json.decision), matched=$($response.Json.matched), model=$($response.Json.model), dimension=$($response.Json.dimension)"
+        if ($response.Json.matched -ne $true -or "$($response.Json.decision)" -ne "MATCHED" -or [double]$response.Json.similarity_score -lt 0.70) {
+            throw "Handover match failed. expected matched=true decision=MATCHED similarity_score>=0.70; actual matched=$($response.Json.matched), decision=$($response.Json.decision), similarity_score=$($response.Json.similarity_score), threshold=$handoverThreshold, image=$ResolvedHandoverNoseImagePath, model=$($response.Json.model), dimension=$($response.Json.dimension)"
+        }
         Assert-Equal -Actual $response.Json.expected_dog_id -Expected $script:firstDogId -Name "handover.expected_dog_id"
-        Assert-NumberAtLeast -Value $response.Json.similarity_score -Minimum 0.70 -Name "handover.similarity_score"
         if (Test-JsonField -Object $response.Json -Name "match_threshold") {
             Assert-Equal -Actual $response.Json.match_threshold -Expected "0.70" -Name "handover.match_threshold"
         }
@@ -960,7 +996,6 @@ try {
         Assert-FieldAbsent -Object $response.Json -Name "top_matched_dog_id" -Context "handover response"
         Assert-FieldAbsent -Object $response.Json -Name "payload" -Context "handover response"
         Assert-FieldAbsent -Object $response.Json -Name "author_user_id" -Context "handover response"
-        Write-Host "handover similarity_score=$($response.Json.similarity_score), decision=$($response.Json.decision)"
     }
 
     Invoke-Step "K. Owner updates post status to COMPLETED" {
@@ -974,7 +1009,7 @@ try {
 
     Invoke-Step "L. Handover verification is rejected after COMPLETED" {
         $files = @{
-            nose_image = [pscustomobject]@{ Path = $ResolvedNoseImagePath; MimeType = $noseMimeType }
+            nose_image = [pscustomobject]@{ Path = $ResolvedHandoverNoseImagePath; MimeType = $handoverNoseMimeType }
         }
         $response = Invoke-MultipartRequest -Url (Join-Url $ApiBaseUrl "adoption-posts/$script:postId/handover-verifications") -Files $files -BearerToken $script:accessToken
         Assert-StatusIn -Response $response -ExpectedStatuses @(400, 409)

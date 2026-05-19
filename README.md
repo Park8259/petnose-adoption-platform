@@ -72,10 +72,19 @@ bash infra/scripts/dev-down.sh
 
 `compose.real-model.yaml`은 sample env의 mock 기본값이 실제 모델 실행에 섞이지 않도록 위 런타임 값을 강제합니다. mock smoke와 real-model E2E는 같은 Qdrant collection/volume을 섞어 쓰지 않는 것이 안전합니다.
 
-실제 Docker runtime에서 MVP 핵심 흐름을 끝까지 검증하려면 실제 dog nose image를 준비한 뒤 아래 스크립트를 실행합니다.
+실제 Docker runtime에서 MVP 핵심 흐름을 끝까지 검증하려면 실제 dog nose image를 준비한 뒤 아래 스크립트를 실행합니다. `-HandoverNoseImagePath`를 넘기면 등록 비문 사진과 인도 시점 비문 사진을 분리해 비교할 수 있고, 생략하면 `-NoseImagePath`를 그대로 사용합니다.
 
 ```powershell
 pwsh ./scripts/verify-real-model-mvp-flow.ps1 -StartCompose -ResetRuntime -NoseImagePath "C:\path\to\nose.jpg"
+```
+
+```powershell
+pwsh ./scripts/verify-real-model-mvp-flow.ps1 `
+  -StartCompose `
+  -ResetRuntime `
+  -NoseImagePath "C:\Dev\sample\nose_test1.jpg" `
+  -HandoverNoseImagePath "C:\Dev\sample\nose_test2.jpg" `
+  -ProfileImagePath "C:\Dev\sample\nose_test1.jpg"
 ```
 
 이 스크립트는 회원가입, 로그인, 비문 등록/중복 의심, 분양글 생성, public privacy, handover verification, owner-only 완료 처리, `/files` 접근, Qdrant point 존재 여부를 확인합니다. `ResetRuntime`은 PetNose compose project의 로컬 DB/Qdrant 볼륨을 초기화하므로 필요한 경우에만 사용하세요.

@@ -90,7 +90,8 @@
 - Docker Desktop과 Docker Compose v2가 실행 중이어야 한다.
 - 실제 모델 모드는 `infra/docker/compose.yaml`, `infra/docker/compose.dev.yaml`, `infra/docker/compose.real-model.yaml` 조합을 사용한다.
 - `infra/docker/.env`가 있으면 스크립트가 compose 실행 시 함께 사용한다.
-- `NoseImagePath`에는 실제 dog nose image 파일을 넘긴다. 임의 텍스트 파일은 사용하지 않는다.
+- `NoseImagePath`에는 등록 단계에서 사용할 실제 dog nose image 파일을 넘긴다. 임의 텍스트 파일은 사용하지 않는다.
+- `HandoverNoseImagePath`는 optional이다. 값을 넘기면 인도 시점 handover verification에서 별도 촬영 비문 이미지를 사용하고, 생략하면 `NoseImagePath`를 그대로 사용한다.
 - `ResetRuntime`은 PetNose compose project의 컨테이너/볼륨을 초기화하므로 로컬 dev 데이터 삭제를 의도할 때만 사용한다.
 
 기본 실행 예시:
@@ -105,6 +106,17 @@ compose 기동부터 clean runtime 검증까지 실행:
 pwsh ./scripts/verify-real-model-mvp-flow.ps1 -StartCompose -ResetRuntime -NoseImagePath "C:\path\to\nose.jpg"
 ```
 
+등록 비문 사진과 인도 시점 비문 사진을 분리해 검증:
+
+```powershell
+pwsh ./scripts/verify-real-model-mvp-flow.ps1 `
+  -StartCompose `
+  -ResetRuntime `
+  -NoseImagePath "C:\Dev\sample\nose_test1.jpg" `
+  -HandoverNoseImagePath "C:\Dev\sample\nose_test2.jpg" `
+  -ProfileImagePath "C:\Dev\sample\nose_test1.jpg"
+```
+
 Qdrant collection 또는 BaseUrl override:
 
 ```powershell
@@ -115,6 +127,7 @@ pwsh ./scripts/verify-real-model-mvp-flow.ps1 -BaseUrl "http://localhost" -NoseI
 
 - 회원가입, 로그인, Bearer JWT 기반 `/api/users/me`.
 - `/api/dogs/register` 정상 등록과 같은 nose image 중복 등록 차단.
+- handover verification은 `HandoverNoseImagePath`가 있으면 별도 이미지로 expected dog와 비교한다.
 - 정상 dog의 `/api/adoption-posts` 생성과 duplicate suspected dog의 게시글 생성 차단.
 - 공개 분양글 list/detail의 `nose_image_url` 비노출.
 - handover verification의 `matched=true` 확인.
