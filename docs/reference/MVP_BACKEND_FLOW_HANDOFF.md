@@ -80,3 +80,45 @@
 - 최종 app table은 `users`, `dogs`, `dog_images`, `verification_logs`, `adoption_posts` 5개다.
 - V3는 historical migration으로 남아 있고, V4가 auxiliary table을 제거한다.
 - canonical schema/DBML에는 auxiliary table이 없어야 한다.
+
+## 7. Real-model MVP E2E Smoke
+
+`scripts/verify-dog-id-centered-flow.ps1`는 빠른 static 문서/스키마, backend test/build, compose config 검증용이다. 실제 Docker runtime에서 회원가입부터 완료 처리까지 end-to-end로 확인할 때는 `scripts/verify-real-model-mvp-flow.ps1`를 사용한다.
+
+전제:
+
+- Docker Desktop과 Docker Compose v2가 실행 중이어야 한다.
+- 실제 모델 모드는 `infra/docker/compose.yaml`, `infra/docker/compose.dev.yaml`, `infra/docker/compose.real-model.yaml` 조합을 사용한다.
+- `infra/docker/.env`가 있으면 스크립트가 compose 실행 시 함께 사용한다.
+- `NoseImagePath`에는 실제 dog nose image 파일을 넘긴다. 임의 텍스트 파일은 사용하지 않는다.
+- `ResetRuntime`은 PetNose compose project의 컨테이너/볼륨을 초기화하므로 로컬 dev 데이터 삭제를 의도할 때만 사용한다.
+
+기본 실행 예시:
+
+```powershell
+pwsh ./scripts/verify-real-model-mvp-flow.ps1 -BaseUrl "http://localhost" -NoseImagePath "C:\path\to\nose.jpg"
+```
+
+compose 기동부터 clean runtime 검증까지 실행:
+
+```powershell
+pwsh ./scripts/verify-real-model-mvp-flow.ps1 -StartCompose -ResetRuntime -NoseImagePath "C:\path\to\nose.jpg"
+```
+
+Qdrant collection 또는 BaseUrl override:
+
+```powershell
+pwsh ./scripts/verify-real-model-mvp-flow.ps1 -BaseUrl "http://localhost" -NoseImagePath ".\samples\nose.jpg" -QdrantCollection "dog_nose_embeddings_real_v1"
+```
+
+스크립트가 검증하는 핵심 flow:
+
+- 회원가입, 로그인, Bearer JWT 기반 `/api/users/me`.
+- `/api/dogs/register` 정상 등록과 같은 nose image 중복 등록 차단.
+- 정상 dog의 `/api/adoption-posts` 생성과 duplicate suspected dog의 게시글 생성 차단.
+- 공개 분양글 list/detail의 `nose_image_url` 비노출.
+- handover verification의 `matched=true` 확인.
+- owner-only status update로 `COMPLETED` 전환 후 `POST_NOT_VERIFIABLE` 거부 확인.
+- `/files/{relative_path}` 정적 파일 접근 확인.
+- Qdrant 직접 point 조회가 가능한 환경에서는 정상 dog point 존재와 duplicate suspected dog point 부재 확인.
+- Docker MySQL direct check가 가능한 환경에서는 `dogs`, `verification_logs`, `adoption_posts`, `dog_images` 및 legacy precheck table 부재를 확인한다.
