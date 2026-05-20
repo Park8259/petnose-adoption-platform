@@ -1,0 +1,29 @@
+# Production override for the GHCR real-model Python Embed image.
+# Use with:
+#   docker compose --env-file infra/docker/.env \
+#     -f infra/docker/compose.yaml \
+#     -f infra/docker/compose.prod.yaml \
+#     -f infra/docker/compose.prod-real-model.yaml \
+#     up -d --no-build
+
+services:
+  python-embed:
+    image: ${PYTHON_EMBED_REAL_IMAGE:?Set PYTHON_EMBED_REAL_IMAGE in infra/docker/.env}
+    environment:
+      EMBED_MODEL: dog-nose-identification2
+      EMBED_VECTOR_DIM: "2048"
+      EMBED_DEVICE: ${EMBED_DEVICE:-cpu}
+      DOG_NOSE_MODEL_DIR: /models/dog_nose_identification2
+      DOG_NOSE_MODEL_PATH: ${DOG_NOSE_MODEL_PATH:-}
+    volumes:
+      - ${DOG_NOSE_MODEL_DIR_HOST:?Set DOG_NOSE_MODEL_DIR_HOST to the EC2 model directory}:/models/dog_nose_identification2:ro
+
+  spring-api:
+    environment:
+      QDRANT_COLLECTION: dog_nose_embeddings_real_v1
+      QDRANT_VECTOR_DIM: "2048"
+      QDRANT_SEARCH_SCORE_THRESHOLD: ${QDRANT_SEARCH_SCORE_THRESHOLD:-0.70}
+      NOSE_DUPLICATE_THRESHOLD: ${NOSE_DUPLICATE_THRESHOLD:-0.70}
+      PETNOSE_HANDOVER_VERIFICATION_MATCH_THRESHOLD: ${PETNOSE_HANDOVER_VERIFICATION_MATCH_THRESHOLD:-0.70}
+      PETNOSE_HANDOVER_VERIFICATION_AMBIGUOUS_THRESHOLD: ${PETNOSE_HANDOVER_VERIFICATION_AMBIGUOUS_THRESHOLD:-0.70}
+      PETNOSE_HANDOVER_VERIFICATION_TOP_K: ${PETNOSE_HANDOVER_VERIFICATION_TOP_K:-5}

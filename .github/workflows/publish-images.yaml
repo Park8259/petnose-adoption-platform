@@ -7,6 +7,7 @@ name: Publish Images to GHCR
 # 생성 이미지:
 #   ghcr.io/<owner>/petnose-spring-api
 #   ghcr.io/<owner>/petnose-python-embed
+#   ghcr.io/<owner>/petnose-python-embed-real
 #
 # 태그 전략:
 #   develop-latest      develop 브랜치 최신 커밋
@@ -39,11 +40,20 @@ jobs:
             context: ./backend
             dockerfile: ./backend/Dockerfile
             image_suffix: petnose-spring-api
+            build_args: ""
 
           - name: python-embed
             context: ./python-embed
             dockerfile: ./python-embed/Dockerfile
             image_suffix: petnose-python-embed
+            build_args: ""
+
+          - name: python-embed-real
+            context: ./python-embed
+            dockerfile: ./python-embed/Dockerfile
+            image_suffix: petnose-python-embed-real
+            build_args: |
+              INSTALL_REAL_MODEL_DEPS=1
 
     steps:
       - name: 코드 체크아웃
@@ -80,6 +90,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # 서비스별 독립 캐시 스코프 (spring-api / python-embed 분리)
+          build-args: ${{ matrix.build_args }}
+          # 서비스별 독립 캐시 스코프 (spring-api / python-embed / python-embed-real 분리)
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,scope=${{ matrix.name }},mode=max
