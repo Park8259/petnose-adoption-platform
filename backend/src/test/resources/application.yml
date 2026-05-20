@@ -35,6 +35,11 @@ auth:
     secret: test-petnose-jwt-secret-change-me-32bytes
     access-token-ttl-seconds: 3600
 
+firebase:
+  enabled: false
+  project-id: ''
+  credentials-path: ''
+
 logging:
   level:
     com.petnose: WARN

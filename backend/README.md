@@ -87,8 +87,13 @@ gradle test --no-daemon --stacktrace
 | `QDRANT_VECTOR_DIM` | 벡터 차원 (Python과 일치 필요) | `128` |
 | `UPLOAD_BASE_PATH` | 이미지 저장 루트 경로 (`uploads_data` 볼륨 마운트 경로) | `/var/uploads` |
 | `MAX_UPLOAD_SIZE_MB` | 단일 파일 최대 크기 (Nginx, Spring 동일 적용) | `20` |
+| `FIREBASE_ENABLED` | Firebase 채팅/푸시 연동 활성화 여부 | `false` |
+| `FIREBASE_PROJECT_ID` | Firebase project id | 빈 값 |
+| `FIREBASE_CREDENTIALS_PATH` | Firebase service account JSON 경로 | 빈 값 |
 
 기본값은 dev/CI mock smoke 기준입니다. 실제 모델 MVP 검증은 `infra/docker/compose.real-model.yaml`을 포함해 `EMBED_MODEL=dog-nose-identification2`, `EMBED_VECTOR_DIM=2048`, `QDRANT_COLLECTION=dog_nose_embeddings_real_v1`, `QDRANT_VECTOR_DIM=2048` 조합을 사용합니다.
+
+Firebase는 optional chat/push layer입니다. 기본값인 `FIREBASE_ENABLED=false`에서는 Spring Boot가 정상 기동되며, Firebase API는 `FIREBASE_DISABLED` 에러를 반환합니다. 실제 Firestore/FCM 연동 테스트 시에는 service account JSON을 로컬 secret으로 두고 `FIREBASE_ENABLED=true`, `FIREBASE_PROJECT_ID`, `FIREBASE_CREDENTIALS_PATH`를 설정하세요. service account JSON은 절대 repo에 커밋하지 않습니다.
 
 ---
 

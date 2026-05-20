@@ -46,6 +46,9 @@ dependencies {
     compileOnly("org.projectlombok:lombok")
     annotationProcessor("org.projectlombok:lombok")
 
+    // Firebase Admin SDK (Firestore + Firebase custom token + FCM)
+    implementation("com.google.firebase:firebase-admin:9.9.0")
+
     // Test
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testRuntimeOnly("com.h2database:h2")

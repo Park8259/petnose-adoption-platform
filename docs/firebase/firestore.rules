@@ -1,0 +1,32 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isRoomParticipant(roomId) {
+      return signedIn()
+        && request.auth.uid in get(/databases/$(database)/documents/chat_rooms/$(roomId)).data.participant_uids;
+    }
+
+    match /chat_rooms/{roomId} {
+      allow read: if signedIn() && request.auth.uid in resource.data.participant_uids;
+      allow create, update, delete: if false;
+
+      match /messages/{messageId} {
+        allow read: if isRoomParticipant(roomId);
+        allow create, update, delete: if false;
+      }
+    }
+
+    match /user_devices/{userUid} {
+      allow read, create, update, delete: if false;
+
+      match /tokens/{tokenHash} {
+        allow read, create, update, delete: if false;
+      }
+    }
+  }
+}

@@ -82,6 +82,11 @@ auth:
     secret: ${AUTH_JWT_SECRET:petnose-local-dev-jwt-secret-change-me-32bytes}
     access-token-ttl-seconds: ${AUTH_JWT_ACCESS_TOKEN_TTL_SECONDS:3600}
 
+firebase:
+  enabled: ${FIREBASE_ENABLED:false}
+  project-id: ${FIREBASE_PROJECT_ID:}
+  credentials-path: ${FIREBASE_CREDENTIALS_PATH:}
+
 logging:
   level:
     com.petnose: DEBUG
