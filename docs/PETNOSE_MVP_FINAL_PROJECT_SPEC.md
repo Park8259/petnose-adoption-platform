@@ -16,7 +16,9 @@ MySQL은 account, dog, image metadata, verification history, adoption post data�
 
 ## MVP v2에서 제외된 범위
 
-과거 separate profile, auth history, report, token, image quality/crop, Firebase, chat, push, reservation, payment, contract, report/admin dashboard, non-canonical role extension 영역은 current canonical MVP v2 schema 또는 API surface에 포함하지 않는다.
+과거 separate profile, auth history, report, token, image quality/crop, reservation, payment, contract, report/admin dashboard, non-canonical role extension 영역은 current canonical MVP v2 schema 또는 API surface에 포함하지 않는다.
+
+Firebase chat/push may be provided as an optional communication layer. It is not part of the core MySQL domain schema and does not replace MySQL source of truth. Firebase remains outside the core dog-registration trust pipeline.
 
 ## Users
 
@@ -209,7 +211,7 @@ current MVP handover threshold policy는 dog registration duplicate threshold와
 - expected dog candidate가 없으면 `matched=false`, `NO_MATCH_CANDIDATE`를 반환한다.
 - handover `MATCHED`는 safety signal이며 adoption post를 자동 완료하지 않는다.
 
-이 기능은 reservation, payment, contract, Firebase, chat, push, report/admin, `SHELTER`, `ADOPTER` concept을 추가하지 않는다.
+이 기능은 reservation, payment, contract, report/admin, `SHELTER`, `ADOPTER` concept을 추가하지 않는다. Firebase chat/push는 선택적 communication layer일 수 있지만, handover verification이나 dog registration trust pipeline의 일부가 아니다.
 
 ## Dog Registration and Adoption Creation Policy
 

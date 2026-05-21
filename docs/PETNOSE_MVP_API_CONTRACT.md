@@ -6,7 +6,7 @@
 
 Base URL: `http://<host>/api`
 
-이 문서는 current backend implementation에 맞춘 Flutter MVP flow를 기록한다. Firebase, chat, push, expanded profile table, report API, refresh token, non-canonical role concept을 추가하지 않는다.
+이 문서는 current backend implementation에 맞춘 Flutter MVP flow를 기록한다. Firebase chat/push는 MySQL source of truth를 대체하지 않는 optional communication layer로만 다룬다. expanded profile table, report API, refresh token, non-canonical role concept은 추가하지 않는다.
 
 ## Canonical Response Rules
 
@@ -1080,6 +1080,180 @@ curl -X POST "http://localhost/api/adoption-posts/<post_id>/handover-verificatio
   -F "nose_image=@/path/to/current-handover-nose.jpg"
 ```
 
+## Firebase Chat API (Optional)
+
+Firebase chat/push is an optional communication layer. It does not change the canonical 5-table MySQL schema and does not replace MySQL as the source of truth.
+
+All endpoints in this section require a Spring Bearer token. When Firebase is disabled, authenticated requests return `503` with `FIREBASE_DISABLED`.
+
+Firestore documents are realtime snapshots for chat UI/runtime state only. Spring Boot remains authoritative for room creation, message sending, FCM token registration, read marking, and post-status-based chat permission decisions. Flutter may read Firestore through realtime listeners, but must not write chat messages directly to Firestore.
+
+Status policy:
+
+- New rooms are created only for `OPEN` adoption posts.
+- Existing room messages are allowed for `OPEN` and `RESERVED` posts.
+- `COMPLETED` and `CLOSED` posts are read-only for chat.
+- Spring Boot verifies MySQL `adoption_posts.status` before allowing message send.
+
+### Firebase custom token
+
+```http
+POST /api/firebase/custom-token
+Authorization: Bearer <JWT>
+```
+
+Success response:
+
+```json
+{
+  "firebase_uid": "user_1",
+  "firebase_custom_token": "<firebase-custom-token>"
+}
+```
+
+### FCM token registration
+
+```http
+PUT /api/users/me/fcm-token
+Authorization: Bearer <JWT>
+Content-Type: application/json
+```
+
+Request body:
+
+```json
+{
+  "fcm_token": "<fcm-token>",
+  "platform": "WEB"
+}
+```
+
+Success response:
+
+```json
+{
+  "registered": true
+}
+```
+
+`platform` is one of `ANDROID`, `IOS`, or `WEB`.
+
+### Chat room create or return
+
+```http
+POST /api/chat/rooms
+Authorization: Bearer <JWT>
+Content-Type: application/json
+```
+
+Request body:
+
+```json
+{
+  "post_id": 123
+}
+```
+
+Success response:
+
+```json
+{
+  "room_id": "post_123_user_45",
+  "post_id": 123,
+  "firebase_room_path": "chat_rooms/post_123_user_45",
+  "author_user_id": 10,
+  "inquirer_user_id": 45,
+  "status": "ACTIVE"
+}
+```
+
+### Chat room list
+
+```http
+GET /api/chat/rooms?page=0&size=20
+Authorization: Bearer <JWT>
+```
+
+Success response:
+
+```json
+{
+  "items": [
+    {
+      "room_id": "post_123_user_45",
+      "post_id": 123,
+      "post_title": "분양글 제목",
+      "post_status": "OPEN",
+      "other_user_display_name": "작성자",
+      "last_message_preview": "안녕하세요",
+      "last_message_at": "2026-05-13T00:00:00Z",
+      "unread_count": 0
+    }
+  ],
+  "page": 0,
+  "size": 20,
+  "total_count": 1
+}
+```
+
+### Message send
+
+```http
+POST /api/chat/rooms/{room_id}/messages
+Authorization: Bearer <JWT>
+Content-Type: application/json
+```
+
+Request body:
+
+```json
+{
+  "text": "hello",
+  "client_message_id": "client-generated-id"
+}
+```
+
+Success response:
+
+```json
+{
+  "message_id": "<firestore-message-id>",
+  "room_id": "post_123_user_45",
+  "sender_uid": "user_45",
+  "type": "TEXT",
+  "text": "hello",
+  "created_at": "2026-05-13T00:00:00Z"
+}
+```
+
+### Mark room read
+
+```http
+PATCH /api/chat/rooms/{room_id}/read
+Authorization: Bearer <JWT>
+```
+
+Success response:
+
+```json
+{
+  "room_id": "post_123_user_45",
+  "read": true
+}
+```
+
+Disabled response example for all Firebase chat endpoints after Spring authentication succeeds:
+
+```json
+{
+  "error_code": "FIREBASE_DISABLED",
+  "message": "Firebase 연동이 비활성화되어 있습니다.",
+  "details": {
+    "timestamp": "2026-05-13T00:00:00Z"
+  }
+}
+```
+
 ## JWT Principal Status
 
 Dog registration과 adoption post ownership은 principal-only다. `POST /api/dogs/register`는 dog `owner_user_id`를 JWT principal에서 resolve하고, adoption post creation은 request `dog_id`의 owner와 JWT principal을 비교한다.
@@ -1097,4 +1271,6 @@ old separate publisher/profile variant와 report/token extension 영역은 curre
 - `auth_logs`
 - `reports`
 - `refresh_tokens`
-- Firebase, chat, push, reservation, payment, contract, or admin dashboard APIs
+- reservation, payment, contract, or admin dashboard APIs
+
+Firebase chat/push is allowed only as the optional communication layer documented above. It must not introduce MySQL chat tables or replace canonical domain authority.

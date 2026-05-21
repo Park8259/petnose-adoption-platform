@@ -435,6 +435,27 @@ Explicit non-goals for this PR:
 - No Firestore rules changes.
 - No reservation, payment, contract, report, admin, `reserved_user_id`, or `selected_inquirer_user_id` scope is added.
 
+## P0-4 Contract, Disabled Tests, and Runtime Smoke
+
+This phase makes Firebase chat ready as an official optional feature from the API/docs/validation perspective.
+
+Implemented behavior:
+
+- Canonical and API docs are aligned with Firebase chat/push as an optional implemented communication layer.
+- Firebase-disabled endpoint coverage is expanded across custom token issue, FCM token registration, room creation, room listing, message send, and read marking.
+- A manual Firebase chat smoke script is added for disabled-mode safety checks and enabled-mode runtime verification.
+- A Firebase chat operations runbook is added for enablement, verification, rollback, and security guardrails.
+- MySQL remains the source of truth and the canonical 5-table schema remains unchanged.
+
+Explicit non-goals for this PR:
+
+- No DB schema changes or migrations.
+- No Docker runtime file changes.
+- No Firestore rules changes.
+- No Flutter changes.
+- No Python Embed changes.
+- No reservation, payment, contract, report, admin, `reserved_user_id`, or `selected_inquirer_user_id` scope is added.
+
 ## Proposed Firestore Room Fields
 
 Every `chat_rooms/{room_id}` document should contain:

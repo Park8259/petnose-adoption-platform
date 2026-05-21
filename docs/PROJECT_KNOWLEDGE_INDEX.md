@@ -44,6 +44,7 @@ schema count 불일치는 해결되었다. pre-adoption nose verification ticket
 | API/controller/service/test 작업 | `docs/PETNOSE_MVP_API_CONTRACT.md` |
 | product/domain scope 판단 | `docs/PETNOSE_MVP_FINAL_PROJECT_SPEC.md` |
 | DB/entity/schema 판단 | `docs/db/petnose_mvp_schema.dbml`, `docs/db/V20260508__mvp_canonical_schema.sql` |
+| Firebase chat/push 판단 | `docs/firebase/chat-firestore-schema.md`, `docs/reference/FIREBASE_CHAT_OPERATIONS.md`, `docs/reference/FIREBASE_CHAT_STABILIZATION_PLAN.md` |
 | Flyway/runtime migration 작업 | `docs/reference/DB_MIGRATION_STRATEGY.md` |
 | Qdrant/Python Embed/file storage 경계 판단 | `docs/reference/STORAGE_AND_VECTOR_BOUNDARY.md`, `docs/reference/SPRING_PYTHON_EMBED_CONTRACT.md` |
 | ops/deploy evidence 확인 | `docs/ops-evidence/dev-cd-validation-log.md` |
@@ -66,7 +67,8 @@ schema count 불일치는 해결되었다. pre-adoption nose verification ticket
 - `users`가 `display_name`, `contact_phone`, `region`, `is_active`를 직접 가진다.
 - MySQL이 source of truth다.
 - Qdrant는 dog nose vector index일 뿐이다.
-- Firebase chat/push는 active MVP scope가 아니며 MySQL 대체물이 아니다.
+- Firebase chat/push는 optional communication layer로 구현될 수 있으며 MySQL 대체물이 아니다.
+- Firebase chat/push는 canonical 5-table MySQL schema를 변경하지 않는다.
 - `dog_images.file_path`는 upload root 기준 상대 경로만 저장한다.
 - API 응답 필드 `qdrant_point_id`, `verification_status`, `embedding_status`는 계산 필드이며 DB column이 아니다.
 - 모든 JSON response field는 `snake_case`를 유지한다.
@@ -97,6 +99,17 @@ schema count 불일치는 해결되었다. pre-adoption nose verification ticket
 - `GET /api/adoption-posts/me`
 - `PATCH /api/adoption-posts/{post_id}/status`
 - `POST /api/adoption-posts/{post_id}/handover-verifications`
+
+Optional Firebase chat/push communication endpoints are implemented behind Firebase runtime enablement:
+
+- `POST /api/firebase/custom-token`
+- `PUT /api/users/me/fcm-token`
+- `POST /api/chat/rooms`
+- `GET /api/chat/rooms`
+- `POST /api/chat/rooms/{room_id}/messages`
+- `PATCH /api/chat/rooms/{room_id}/read`
+
+These endpoints do not change the canonical MySQL domain schema. Firebase disabled mode returns `FIREBASE_DISABLED` after Spring authentication succeeds. This index does not claim Flutter chat UI implementation is complete.
 
 상세 request/response, error code, visibility rule은 `docs/PETNOSE_MVP_API_CONTRACT.md`가 기준이다.
 
@@ -138,7 +151,7 @@ Dog Query API는 current `develop`에 구현되어 있다.
 
 아래 항목은 current MVP active scope가 아니다.
 
-- Firebase chat/push는 구현하지 않았다.
+- Firebase replacement of MySQL domain data는 제외한다. Firebase chat/push는 optional communication layer로만 허용한다.
 - reports/admin dashboard는 제외한다.
 - reservation/payment/contract는 제외한다.
 - `SHELTER`, `ADOPTER` 같은 non-canonical role은 제외한다.

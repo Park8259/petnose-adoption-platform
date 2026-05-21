@@ -1,6 +1,10 @@
 # PetNose Firebase Chat Layer
 
-Firebase is an optional chat and push layer. MySQL remains the canonical domain store for users, dogs, dog_images, verification_logs, and adoption_posts. Flutter reads Firestore through realtime listeners, but message writes must go through the Spring Boot API.
+This is the official schema reference for the optional PetNose Firebase chat and push layer.
+
+MySQL remains the canonical domain store for `users`, `dogs`, `dog_images`, `verification_logs`, and `adoption_posts`. Firestore `chat_rooms`, `messages`, and `user_devices` are not MySQL canonical domain tables and must not be treated as the source of truth.
+
+Flutter may read Firestore through realtime listeners, but message writes, room creation, FCM token registration, and read marking must go through the Spring Boot API.
 
 ## Collections
 
@@ -17,10 +21,10 @@ Firebase is an optional chat and push layer. MySQL remains the canonical domain 
 - `participant_uids`: Firebase Auth uids issued by Spring, formatted as `user_{id}`
 - `participants`: display-only participant metadata without email/contact
 - `post_snapshot`: display-only post/dog metadata; not source of truth
-- `post_status_snapshot`: latest status observed by Spring while creating/sending
+- `post_status_snapshot`: backend-maintained latest post status snapshot observed by Spring
 - `room_status`: `ACTIVE`, `READ_ONLY`, or `DISABLED`
-- `message_enabled`: boolean UI/runtime snapshot; not source of truth
-- `synced_at`: server timestamp for the last backend state sync
+- `message_enabled`: backend-maintained boolean UI/runtime snapshot; not source of truth
+- `synced_at`: backend-maintained server timestamp for the last state sync
 - `last_message`: text preview, sender uid, and server timestamp
 - `last_read_at`: map keyed by Firebase uid
 - `status`: `ACTIVE` legacy compatibility field
@@ -36,7 +40,6 @@ These room state fields are updated during room creation, successful message sen
 
 - `message_id`
 - `room_id`
-- `post_id`
 - `sender_user_id`
 - `sender_uid`
 - `type`: `TEXT`
@@ -64,9 +67,11 @@ Flutter does not write this collection directly. `PUT /api/users/me/fcm-token` s
 
 ## API
 
+All chat APIs require a Spring Bearer token. If Firebase is disabled, authenticated chat APIs return `503` with `FIREBASE_DISABLED`.
+
 - `POST /api/firebase/custom-token`: exchanges Spring JWT authentication for a Firebase custom token
 - `PUT /api/users/me/fcm-token`: stores the user's FCM token in Firestore `user_devices`
 - `POST /api/chat/rooms`: creates or returns a room for an `OPEN` post
 - `GET /api/chat/rooms`: lists rooms where the current user is a participant
-- `POST /api/chat/rooms/{roomId}/messages`: writes a message to Firestore through Spring
+- `POST /api/chat/rooms/{roomId}/messages`: writes a message to Firestore through Spring Boot after checking MySQL `adoption_posts.status`
 - `PATCH /api/chat/rooms/{roomId}/read`: updates `last_read_at` for the current user

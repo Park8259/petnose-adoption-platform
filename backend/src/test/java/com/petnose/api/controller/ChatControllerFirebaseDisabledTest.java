@@ -10,10 +10,17 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.ResultActions;
 
+import java.util.UUID;
+
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -36,7 +43,7 @@ class ChatControllerFirebaseDisabledTest {
     @BeforeEach
     void setUp() {
         User user = new User();
-        user.setEmail("chat-user@example.com");
+        user.setEmail("chat-user-" + UUID.randomUUID() + "@example.com");
         user.setPasswordHash("hash");
         user.setRole(UserRole.USER);
         user.setDisplayName("채팅사용자");
@@ -50,9 +57,62 @@ class ChatControllerFirebaseDisabledTest {
 
     @Test
     void firebaseCustomTokenFailsWithFirebaseDisabled() throws Exception {
-        mockMvc.perform(post("/api/firebase/custom-token")
-                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
-                .andExpect(status().isServiceUnavailable())
+        expectFirebaseDisabled(mockMvc.perform(post("/api/firebase/custom-token")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)));
+    }
+
+    @Test
+    void fcmTokenUpdateFailsWithFirebaseDisabled() throws Exception {
+        expectFirebaseDisabled(mockMvc.perform(put("/api/users/me/fcm-token")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                        {
+                          "fcm_token": "dummy-token",
+                          "platform": "WEB"
+                        }
+                        """)));
+    }
+
+    @Test
+    void createRoomFailsWithFirebaseDisabled() throws Exception {
+        expectFirebaseDisabled(mockMvc.perform(post("/api/chat/rooms")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                        {
+                          "post_id": 1
+                        }
+                        """)));
+    }
+
+    @Test
+    void listRoomsFailsWithFirebaseDisabled() throws Exception {
+        expectFirebaseDisabled(mockMvc.perform(get("/api/chat/rooms")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)));
+    }
+
+    @Test
+    void sendMessageFailsWithFirebaseDisabled() throws Exception {
+        expectFirebaseDisabled(mockMvc.perform(post("/api/chat/rooms/{room_id}/messages", "post_1_user_1")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                        {
+                          "text": "hello",
+                          "client_message_id": "disabled-test-1"
+                        }
+                        """)));
+    }
+
+    @Test
+    void markRoomReadFailsWithFirebaseDisabled() throws Exception {
+        expectFirebaseDisabled(mockMvc.perform(patch("/api/chat/rooms/{room_id}/read", "post_1_user_1")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)));
+    }
+
+    private void expectFirebaseDisabled(ResultActions actions) throws Exception {
+        actions.andExpect(status().isServiceUnavailable())
                 .andExpect(jsonPath("$.error_code").value("FIREBASE_DISABLED"));
     }
 }
