@@ -24,12 +24,15 @@ import com.petnose.api.repository.DogImageRepository;
 import com.petnose.api.repository.DogRepository;
 import com.petnose.api.repository.UserRepository;
 import com.petnose.api.repository.VerificationLogRepository;
+import com.petnose.api.service.chat.ChatRoomPostStatusSyncService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.time.LocalDateTime;
@@ -61,6 +64,7 @@ public class AdoptionPostService {
     private final DogImageRepository dogImageRepository;
     private final AdoptionPostRepository adoptionPostRepository;
     private final FileStorageService fileStorageService;
+    private final ChatRoomPostStatusSyncService chatRoomPostStatusSyncService;
 
     @Transactional(readOnly = true)
     public AdoptionPostListResponse findPublicPosts(String statusParam, String pageParam, String sizeParam) {
@@ -196,6 +200,7 @@ public class AdoptionPostService {
         LocalDateTime now = LocalDateTime.now();
         applyStatusTransition(currentUserId, post, currentStatus, targetStatus, now);
         adoptionPostRepository.flush();
+        scheduleChatRoomStatusSync(post.getId(), post.getStatus());
         return toStatusUpdateResponse(post);
     }
 
@@ -368,6 +373,28 @@ public class AdoptionPostService {
         Dog dog = dogRepository.findById(dogId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "DOG_NOT_FOUND", "강아지를 찾을 수 없습니다."));
         dog.setStatus(DogStatus.ADOPTED);
+    }
+
+    private void scheduleChatRoomStatusSync(Long postId, AdoptionPostStatus status) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    syncChatRoomPostStatusSafely(postId, status);
+                }
+            });
+            return;
+        }
+
+        syncChatRoomPostStatusSafely(postId, status);
+    }
+
+    private void syncChatRoomPostStatusSafely(Long postId, AdoptionPostStatus status) {
+        try {
+            chatRoomPostStatusSyncService.syncPostStatus(postId, status);
+        } catch (Exception ignored) {
+            // Firebase chat state is a secondary snapshot; MySQL status changes remain authoritative.
+        }
     }
 
     private int parsePageParameter(String value, int defaultValue) {

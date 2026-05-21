@@ -18,6 +18,7 @@ import com.petnose.api.repository.DogImageRepository;
 import com.petnose.api.repository.DogRepository;
 import com.petnose.api.repository.UserRepository;
 import com.petnose.api.repository.VerificationLogRepository;
+import com.petnose.api.service.chat.ChatRoomPostStatusSyncService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -27,6 +28,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
@@ -50,6 +52,9 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.nullValue;
+import static org.mockito.Mockito.reset;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -112,6 +117,9 @@ class AdoptionPostOwnerManagementControllerTest {
     @Autowired
     private AdoptionPostRepository adoptionPostRepository;
 
+    @MockBean
+    private ChatRoomPostStatusSyncService chatRoomPostStatusSyncService;
+
     private int sequence;
 
     @BeforeEach
@@ -121,6 +129,7 @@ class AdoptionPostOwnerManagementControllerTest {
         dogImageRepository.deleteAll();
         dogRepository.deleteAll();
         userRepository.deleteAll();
+        reset(chatRoomPostStatusSyncService);
         sequence = 0;
     }
 
@@ -559,6 +568,8 @@ class AdoptionPostOwnerManagementControllerTest {
                 .andExpect(jsonPath("$.status").value("RESERVED"))
                 .andExpect(jsonPath("$.published_at").value("2026-01-01T09:00:00"))
                 .andExpect(jsonPath("$.closed_at").value(nullValue()));
+
+        verify(chatRoomPostStatusSyncService).syncPostStatus(post.getId(), AdoptionPostStatus.RESERVED);
     }
 
     @Test
@@ -587,6 +598,7 @@ class AdoptionPostOwnerManagementControllerTest {
                 .andExpect(jsonPath("$.closed_at").isNotEmpty());
 
         assertThat(dogRepository.findById(dog.getId()).orElseThrow().getStatus()).isEqualTo(DogStatus.ADOPTED);
+        verify(chatRoomPostStatusSyncService).syncPostStatus(post.getId(), AdoptionPostStatus.COMPLETED);
     }
 
     @ParameterizedTest
@@ -631,6 +643,8 @@ class AdoptionPostOwnerManagementControllerTest {
         statusPatch(tokenFor(user), post.getId(), targetStatusValue)
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error_code").value("INVALID_STATUS_TRANSITION"));
+
+        verifyNoInteractions(chatRoomPostStatusSyncService);
     }
 
     @Test
@@ -657,6 +671,7 @@ class AdoptionPostOwnerManagementControllerTest {
         assertThat(saved.getClosedAt()).isEqualTo(closedAt);
         assertThat(saved.getCreatedAt()).isEqualTo(createdAtBefore);
         assertThat(saved.getUpdatedAt()).isEqualTo(updatedAtBefore);
+        verifyNoInteractions(chatRoomPostStatusSyncService);
     }
 
     private ResultActions ownerList(String token) throws Exception {

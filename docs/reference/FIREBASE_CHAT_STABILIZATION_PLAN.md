@@ -411,6 +411,30 @@ Explicit non-goals for this PR:
 - No Firestore rules changes.
 - No reservation, payment, contract, report, admin, `reserved_user_id`, or `selected_inquirer_user_id` scope is added.
 
+## P0-3 AdoptionPost Status Sync
+
+This phase implements after-commit Firestore room status synchronization from `AdoptionPostService.updateStatus(...)`.
+
+Implemented behavior:
+
+- Successful MySQL adoption post status changes schedule `ChatRoomPostStatusSyncService.syncPostStatus(postId, status)` after transaction commit.
+- Same-status no-op updates, validation failures, authorization failures, and invalid transitions do not schedule sync.
+- Firebase disabled mode is a no-op because the Firebase implementation uses optional Firestore injection.
+- Firestore query/write failures are logged and isolated from the MySQL transaction and API response.
+- Matching `chat_rooms` for the post receive:
+  - `post_status_snapshot`
+  - `room_status`
+  - `message_enabled`
+  - `synced_at`
+- Pure post-status sync does not update `last_message` or `updated_at`, so message activity ordering is not changed by status-only events.
+
+Explicit non-goals for this PR:
+
+- No DB schema changes or migrations.
+- No Docker/runtime wiring changes.
+- No Firestore rules changes.
+- No reservation, payment, contract, report, admin, `reserved_user_id`, or `selected_inquirer_user_id` scope is added.
+
 ## Proposed Firestore Room Fields
 
 Every `chat_rooms/{room_id}` document should contain:

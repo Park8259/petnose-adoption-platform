@@ -28,9 +28,9 @@ Firebase is an optional chat and push layer. MySQL remains the canonical domain 
 
 Do not store nose image URLs, Qdrant payloads, verification details, contacts, or emails in chat documents.
 
-MySQL `adoption_posts.status` remains the source of truth. `post_status_snapshot`, `room_status`, and `message_enabled` are Firestore snapshots for realtime UI/runtime state. Spring Boot still re-checks MySQL before allowing message sends.
+MySQL `adoption_posts.status` remains the source of truth. `post_status_snapshot`, `room_status`, `message_enabled`, and `synced_at` are backend-maintained Firestore snapshots for realtime UI/runtime state. Spring Boot still re-checks MySQL before allowing message sends.
 
-In the current P0-2 phase, these room state fields are updated during room creation and successful message send. AdoptionPost status change after-commit sync is intentionally left for a later PR.
+These room state fields are updated during room creation, successful message send, and after committed AdoptionPost status changes. Pure status sync does not update `last_message` or `updated_at`, so chat list message activity ordering should not change only because a post status changed.
 
 ### `chat_rooms/{room_id}/messages/{message_id}`
 

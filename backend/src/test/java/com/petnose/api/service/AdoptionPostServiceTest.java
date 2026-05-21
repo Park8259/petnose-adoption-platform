@@ -16,6 +16,7 @@ import com.petnose.api.repository.DogImageRepository;
 import com.petnose.api.repository.DogRepository;
 import com.petnose.api.repository.UserRepository;
 import com.petnose.api.repository.VerificationLogRepository;
+import com.petnose.api.service.chat.ChatRoomPostStatusSyncService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -55,6 +56,9 @@ class AdoptionPostServiceTest {
 
     @Mock
     private FileStorageService fileStorageService;
+
+    @Mock
+    private ChatRoomPostStatusSyncService chatRoomPostStatusSyncService;
 
     @InjectMocks
     private AdoptionPostService adoptionPostService;
