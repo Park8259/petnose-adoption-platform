@@ -143,6 +143,7 @@ public class FirebaseChatService {
             );
         }
 
+        ChatRoomState roomState = ChatRoomState.from(post.getStatus());
         Map<String, Object> room = new LinkedHashMap<>();
         room.put("room_id", roomId);
         room.put("post_id", post.getId());
@@ -156,10 +157,13 @@ public class FirebaseChatService {
         room.put("participants", participantsSnapshot(author, requester));
         room.put("post_snapshot", postSnapshot(post, dog));
         room.put("post_status_snapshot", post.getStatus().name());
+        room.put("room_status", roomState.roomStatus());
+        room.put("message_enabled", roomState.messageEnabled());
         room.put("last_read_at", lastReadAt(author.getId(), requester.getId()));
         room.put("status", "ACTIVE");
         room.put("created_at", FieldValue.serverTimestamp());
         room.put("updated_at", FieldValue.serverTimestamp());
+        room.put("synced_at", FieldValue.serverTimestamp());
 
         try {
             roomRef.set(room, SetOptions.merge()).get();
@@ -245,11 +249,15 @@ public class FirebaseChatService {
         message.put("client_message_id", clientMessageId == null ? "" : clientMessageId);
         message.put("created_at", FieldValue.serverTimestamp());
 
+        ChatRoomState roomState = ChatRoomState.from(post.getStatus());
         WriteBatch batch = db.batch();
         batch.set(messageRef, message);
         batch.set(roomRef, Map.of(
                 "updated_at", FieldValue.serverTimestamp(),
+                "synced_at", FieldValue.serverTimestamp(),
                 "post_status_snapshot", post.getStatus().name(),
+                "room_status", roomState.roomStatus(),
+                "message_enabled", roomState.messageEnabled(),
                 "last_message", Map.of(
                         "text_preview", preview(trimmedText),
                         "sender_uid", senderUid,

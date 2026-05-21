@@ -383,6 +383,34 @@ Secret safety notes:
 - The Spring container always sees credentials at `/run/secrets/firebase-service-account.json`.
 - This phase only enables safe runtime wiring for later Firebase enabled-mode validation.
 
+## P0-2 Room State Fields
+
+This phase adds Firestore chat room state snapshots and a small backend policy abstraction only.
+
+Room documents written by chat APIs now include:
+
+- `room_status`
+- `message_enabled`
+- `synced_at`
+
+The existing `post_status_snapshot` field remains and is updated alongside the new state fields during room creation and successful message send.
+
+Policy:
+
+- `OPEN`: `room_status=ACTIVE`, `message_enabled=true`
+- `RESERVED`: `room_status=ACTIVE`, `message_enabled=true`; new room creation remains blocked elsewhere, but existing messages remain allowed for MVP
+- `COMPLETED`: `room_status=READ_ONLY`, `message_enabled=false`
+- `CLOSED`: `room_status=READ_ONLY`, `message_enabled=false`
+- `DRAFT`: `room_status=DISABLED`, `message_enabled=false`
+
+Explicit non-goals for this PR:
+
+- AdoptionPost after-commit Firestore sync is not implemented.
+- No DB schema changes or migrations.
+- No Docker/runtime wiring changes.
+- No Firestore rules changes.
+- No reservation, payment, contract, report, admin, `reserved_user_id`, or `selected_inquirer_user_id` scope is added.
+
 ## Proposed Firestore Room Fields
 
 Every `chat_rooms/{room_id}` document should contain:

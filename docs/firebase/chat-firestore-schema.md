@@ -18,12 +18,19 @@ Firebase is an optional chat and push layer. MySQL remains the canonical domain 
 - `participants`: display-only participant metadata without email/contact
 - `post_snapshot`: display-only post/dog metadata; not source of truth
 - `post_status_snapshot`: latest status observed by Spring while creating/sending
+- `room_status`: `ACTIVE`, `READ_ONLY`, or `DISABLED`
+- `message_enabled`: boolean UI/runtime snapshot; not source of truth
+- `synced_at`: server timestamp for the last backend state sync
 - `last_message`: text preview, sender uid, and server timestamp
 - `last_read_at`: map keyed by Firebase uid
-- `status`: `ACTIVE`
+- `status`: `ACTIVE` legacy compatibility field
 - `created_at`, `updated_at`: server timestamps
 
 Do not store nose image URLs, Qdrant payloads, verification details, contacts, or emails in chat documents.
+
+MySQL `adoption_posts.status` remains the source of truth. `post_status_snapshot`, `room_status`, and `message_enabled` are Firestore snapshots for realtime UI/runtime state. Spring Boot still re-checks MySQL before allowing message sends.
+
+In the current P0-2 phase, these room state fields are updated during room creation and successful message send. AdoptionPost status change after-commit sync is intentionally left for a later PR.
 
 ### `chat_rooms/{room_id}/messages/{message_id}`
 
@@ -53,6 +60,7 @@ Flutter does not write this collection directly. `PUT /api/users/me/fcm-token` s
 - `DRAFT`, `RESERVED`: new room creation blocked
 - `RESERVED`: existing room messages allowed
 - `COMPLETED`, `CLOSED`: read-only
+- `DRAFT`: chat disabled
 
 ## API
 
