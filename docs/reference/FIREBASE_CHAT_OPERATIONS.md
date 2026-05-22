@@ -68,6 +68,26 @@ Client direct writes to `chat_rooms`, `chat_rooms/{room_id}/messages`, and `user
 
 Deploy rules through approved Firebase tooling and credentials for the target project. Do not store Firebase CLI credentials, service account JSON, or generated secrets in this repository.
 
+## Firestore Rules Emulator Validation
+
+Run the client security rules tests locally with:
+
+```powershell
+./scripts/verify-firestore-rules.ps1
+```
+
+The helper runs the test project in `tools/firebase-rules` against the Firestore emulator using `firebase.json` and `docs/firebase/firestore.rules`.
+
+These emulator tests validate client rules only:
+
+- signed-in participants can read their own chat rooms and messages
+- non-participants and unauthenticated clients cannot read chat rooms or messages
+- clients cannot create, update, or delete chat rooms
+- clients cannot create, update, or delete messages
+- clients cannot read or write `user_devices` or token documents
+
+The tests do not validate Firebase Admin SDK writes. Spring Boot server writes use the Firebase Admin SDK and bypass Firestore client rules.
+
 ## Manual Smoke Test
 
 Disabled mode verifies default/dev safety when Firebase is off and authenticated chat endpoints should return `FIREBASE_DISABLED`:
@@ -88,6 +108,14 @@ Enabled mode requires:
 ```
 
 The script never requires a Firebase client SDK, never writes `.env`, and does not contain real Firebase credentials.
+
+Record real Firebase-enabled runtime smoke evidence in:
+
+```text
+docs/ops-evidence/firebase-chat-smoke-log.md
+```
+
+Use the template only with sanitized status codes, ids, aliases, and PASS/FAIL evidence. Do not record real tokens, service account JSON, `.env` values, or private Firebase project secrets.
 
 ## Rollback
 

@@ -57,6 +57,12 @@ These room state fields are updated during room creation, successful message sen
 
 Flutter does not write this collection directly. `PUT /api/users/me/fcm-token` stores the token through Spring Boot.
 
+## Rules Validation
+
+Firestore rules are validated by emulator tests in `tools/firebase-rules`.
+
+The rules allow participant reads for chat rooms and messages, block client writes to chat rooms/messages/device tokens, and block client access to `user_devices`. Server writes use the Firebase Admin SDK and bypass Firestore client rules.
+
 ## Status Rules
 
 - `OPEN`: new room creation allowed, existing room messages allowed
