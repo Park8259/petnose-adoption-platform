@@ -2,6 +2,36 @@
 
 This is a template for recording manual Firebase-enabled runtime smoke validation. Do not store real tokens, service account JSON, private project secrets, `.env` values, or raw credential paths in this document.
 
+## 2026-05-22T23:31:28+09:00 Firebase Enabled Local Smoke
+
+- Environment: local-dev
+- Branch: `feature/firebase-chat-enabled-smoke-evidence`
+- Base develop commit SHA: `8070a6a35a02de882b065fb452cdbe3dffbfd469`
+- Firebase project alias: `dev-firebase`
+- Service account path: redacted
+- Compose files used:
+  - `infra/docker/compose.yaml`
+  - `infra/docker/compose.dev.yaml`
+  - `infra/docker/compose.real-model.yaml`
+  - `infra/docker/compose.firebase.yaml`
+- Runtime reset used: no
+- Fixture source: existing fixture base URL and post id reused; local auth session refreshed in memory because the previous fixture JWT was stale; no JWT recorded
+- Backend tests: PASS
+- Firestore rules emulator validation: PASS
+- Chat participant id parsing fix: PASS
+- Firebase custom token: PASS; no token recorded
+- FCM token registration: PASS; no token recorded
+- Chat room creation: PASS; `room_id=post_1_user_6`
+- Message send: PASS; `message_id=ihvjumslLXWMYHnrrg7k`
+- Mark read: PASS
+- Chat room list: PASS
+- Result: PASS
+- Notes:
+  - No real secrets committed.
+  - MySQL remains the source of truth.
+  - Firebase chat remains an optional communication layer.
+  - Flutter realtime listener and real device push delivery still need app/device verification.
+
 ## Date
 
 - `<YYYY-MM-DD HH:mm timezone>`
