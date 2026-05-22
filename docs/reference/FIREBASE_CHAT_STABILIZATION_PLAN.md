@@ -545,6 +545,25 @@ Explicit non-goals for this PR:
 - No Python Embed changes.
 - No reservation, payment, contract, report, or admin scope is added.
 
+## P0-9 Full Functional Regression
+
+This phase records the full local functional regression before any `develop` to `main` promotion decision.
+
+Implemented behavior:
+
+- P0-9 Full functional regression completed.
+- Backend/API + core MVP + Firebase chat local regression PASS.
+- Backend Gradle tests passed.
+- Firestore rules emulator validation passed.
+- Real-model runtime health passed with Python Embed `model_loaded=true` and `vector_dim=2048`.
+- Core MVP real-model flow passed, including auth, dog registration, duplicate detection, adoption post flow, handover/status checks, DB checks, Qdrant checks, and file URL checks.
+- Firebase chat smoke passed, including fixture creation, custom token issue, FCM token registration, room creation, message send, read marking, and room listing.
+
+Remaining gaps:
+
+- Flutter realtime listener app-side verification.
+- Real device push delivery validation.
+
 ## Proposed Firestore Room Fields
 
 Every `chat_rooms/{room_id}` document should contain:

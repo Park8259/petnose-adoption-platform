@@ -130,6 +130,7 @@ Use the template only with sanitized status codes, ids, aliases, and PASS/FAIL e
 ## Release Readiness Evidence
 
 - Release readiness evidence: `docs/ops-evidence/firebase-chat-release-readiness.md`
+- Latest full regression evidence: `docs/ops-evidence/full-functional-regression-firebase-chat-log.md`
 
 ## Preparing Smoke Fixtures
 

@@ -31,6 +31,7 @@
 
 ## Evidence References
 
+- `docs/ops-evidence/full-functional-regression-firebase-chat-log.md`
 - `docs/ops-evidence/firebase-chat-smoke-log.md`
 - `scripts/verify-firebase-chat-smoke.ps1`
 - `scripts/prepare-firebase-chat-smoke-fixture.ps1`
