@@ -508,6 +508,23 @@ Readiness note:
 
 - Enabled Firebase chat evidence can be recorded only after backend tests pass, Firestore rules tests pass, fixture preparation succeeds, and enabled smoke passes against a Firebase-enabled backend.
 
+## P0-7 Firebase Enabled Runtime Smoke Evidence
+
+This phase completes local Firebase-enabled runtime smoke validation for the Spring-authoritative chat flow.
+
+Implemented behavior:
+
+- Firebase enabled smoke passed against the local compose runtime.
+- Backend tests passed.
+- Firestore rules emulator validation passed.
+- Firestore `participant_user_ids` parsing is fixed without relying on generic `List.class` deserialization.
+- No credentials, JWTs, Firebase tokens, `.env`, service account JSON, service account paths, or local images are committed.
+
+Remaining gaps:
+
+- Flutter realtime listener app-side verification.
+- Real device push delivery validation.
+
 ## Proposed Firestore Room Fields
 
 Every `chat_rooms/{room_id}` document should contain:

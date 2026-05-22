@@ -33,6 +33,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $script:StepNumber = 0
+$script:EffectiveRoomId = ""
 
 $Curl = Get-Command "curl.exe" -ErrorAction SilentlyContinue
 if ($null -eq $Curl) {
@@ -360,7 +361,7 @@ function Invoke-EnabledSmoke {
         throw "PostId is required in enabled mode and must point to an existing OPEN adoption post owned by another user."
     }
 
-    $effectiveRoomId = $RoomId
+    $script:EffectiveRoomId = $RoomId
 
     Invoke-Step "Firebase custom token can be issued" {
         $response = Invoke-JsonRequest -Method "POST" -Url (Join-Url $ApiBaseUrl "firebase/custom-token") -BearerToken $BearerToken
@@ -386,14 +387,17 @@ function Invoke-EnabledSmoke {
         Assert-Status -Response $response -ExpectedStatus 201
         Assert-Field -Object $response.Json -Name "room_id"
         Assert-Equal -Actual $response.Json.post_id -Expected $PostId -Name "post_id"
-        if ([string]::IsNullOrWhiteSpace($effectiveRoomId)) {
-            $effectiveRoomId = $response.Json.room_id
+        if ([string]::IsNullOrWhiteSpace($script:EffectiveRoomId)) {
+            $script:EffectiveRoomId = $response.Json.room_id
         }
-        Write-Host "room_id=$effectiveRoomId"
+        if ([string]::IsNullOrWhiteSpace($script:EffectiveRoomId)) {
+            throw "RoomId was not provided and create-room did not return one."
+        }
+        Write-Host "room_id=$script:EffectiveRoomId"
     }
 
     Invoke-Step "Message can be sent through Spring API" {
-        if ([string]::IsNullOrWhiteSpace($effectiveRoomId)) {
+        if ([string]::IsNullOrWhiteSpace($script:EffectiveRoomId)) {
             throw "RoomId was not provided and create-room did not return one."
         }
         $clientMessageId = "firebase-smoke-$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
@@ -401,18 +405,21 @@ function Invoke-EnabledSmoke {
             text = $MessageText
             client_message_id = $clientMessageId
         }
-        $response = Invoke-JsonRequest -Method "POST" -Url (Join-Url $ApiBaseUrl "chat/rooms/$effectiveRoomId/messages") -BodyObject $body -BearerToken $BearerToken
+        $response = Invoke-JsonRequest -Method "POST" -Url (Join-Url $ApiBaseUrl "chat/rooms/$script:EffectiveRoomId/messages") -BodyObject $body -BearerToken $BearerToken
         Assert-Status -Response $response -ExpectedStatus 201
         Assert-Field -Object $response.Json -Name "message_id"
-        Assert-Equal -Actual $response.Json.room_id -Expected $effectiveRoomId -Name "room_id"
+        Assert-Equal -Actual $response.Json.room_id -Expected $script:EffectiveRoomId -Name "room_id"
         Assert-Equal -Actual $response.Json.text -Expected $MessageText -Name "text"
         Write-Host "message_id=$($response.Json.message_id)"
     }
 
     Invoke-Step "Chat room can be marked read" {
-        $response = Invoke-JsonRequest -Method "PATCH" -Url (Join-Url $ApiBaseUrl "chat/rooms/$effectiveRoomId/read") -BearerToken $BearerToken
+        if ([string]::IsNullOrWhiteSpace($script:EffectiveRoomId)) {
+            throw "RoomId was not provided and create-room did not return one."
+        }
+        $response = Invoke-JsonRequest -Method "PATCH" -Url (Join-Url $ApiBaseUrl "chat/rooms/$script:EffectiveRoomId/read") -BearerToken $BearerToken
         Assert-Status -Response $response -ExpectedStatus 200
-        Assert-Equal -Actual $response.Json.room_id -Expected $effectiveRoomId -Name "room_id"
+        Assert-Equal -Actual $response.Json.room_id -Expected $script:EffectiveRoomId -Name "room_id"
         Assert-True -Value $response.Json.read -Name "read"
     }
 

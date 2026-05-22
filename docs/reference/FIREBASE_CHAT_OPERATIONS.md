@@ -117,6 +117,16 @@ docs/ops-evidence/firebase-chat-smoke-log.md
 
 Use the template only with sanitized status codes, ids, aliases, and PASS/FAIL evidence. Do not record real tokens, service account JSON, `.env` values, or private Firebase project secrets.
 
+## Latest Firebase Enabled Smoke Evidence
+
+- Evidence file: `docs/ops-evidence/firebase-chat-smoke-log.md`
+- Date/time: `2026-05-22T23:31:28+09:00`
+- Result: PASS
+- Runtime: local compose runtime with Firebase enabled
+- Fixture: existing fixture base URL and post id were reused; the stale local auth session was refreshed in memory and no token was recorded
+- Credentials are not stored in the repository.
+- Rollback: remove `infra/docker/compose.firebase.yaml` from the compose invocation or disable Firebase with `FIREBASE_ENABLED=false`.
+
 ## Preparing Smoke Fixtures
 
 Use `scripts/prepare-firebase-chat-smoke-fixture.ps1` to create the runtime data required by enabled-mode Firebase chat smoke testing.

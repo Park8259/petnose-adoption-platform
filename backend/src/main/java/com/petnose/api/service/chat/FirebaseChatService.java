@@ -371,13 +371,7 @@ public class FirebaseChatService {
     }
 
     private List<Long> readParticipantUserIds(DocumentSnapshot snapshot) {
-        List<?> rawParticipants = snapshot.get("participant_user_ids", List.class);
-        if (rawParticipants == null) {
-            throw new ApiException(HttpStatus.CONFLICT, "CHAT_ROOM_NOT_FOUND", "채팅방 참여자 정보가 올바르지 않습니다.");
-        }
-        return rawParticipants.stream()
-                .map(value -> Long.parseLong(value.toString()))
-                .toList();
+        return ChatParticipantUserIds.parse(snapshot.get("participant_user_ids"));
     }
 
     private ChatRoomResponse toRoomResponse(String roomId, AdoptionPost post, Long inquirerUserId) {
