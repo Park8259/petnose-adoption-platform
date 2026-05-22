@@ -110,6 +110,15 @@ public class FirebaseChatService {
             tokenRef.set(device, SetOptions.merge()).get();
             return new FcmTokenUpdateResponse(true);
         } catch (Exception e) {
+            String platformName = platform == null ? "null" : platform.name();
+            log.warn(
+                    "[FirebaseChat] FCM token storage failed: userId={}, platform={}, exception={}, message={}",
+                    userId,
+                    platformName,
+                    e.getClass().getName(),
+                    e.getMessage(),
+                    e
+            );
             throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "CHAT_MESSAGE_SEND_FAILED", "FCM 토큰을 저장하지 못했습니다.");
         }
     }
