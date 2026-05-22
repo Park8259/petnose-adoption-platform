@@ -117,6 +117,38 @@ docs/ops-evidence/firebase-chat-smoke-log.md
 
 Use the template only with sanitized status codes, ids, aliases, and PASS/FAIL evidence. Do not record real tokens, service account JSON, `.env` values, or private Firebase project secrets.
 
+## Preparing Smoke Fixtures
+
+Use `scripts/prepare-firebase-chat-smoke-fixture.ps1` to create the runtime data required by enabled-mode Firebase chat smoke testing.
+
+The fixture helper creates:
+
+- an author user
+- an inquirer user
+- a registered dog owned by the author
+- an `OPEN` adoption post owned by the author
+- a sensitive PowerShell env setup file for `scripts/verify-firebase-chat-smoke.ps1`
+
+Required image inputs:
+
+- a nose image for dog registration
+- a profile image for adoption post creation
+
+The generated output env file contains a Spring JWT for the inquirer user. Treat it as sensitive, keep it outside the repository, and do not commit it.
+By default, the output env file is written under the current user's temp directory. The helper rejects output env file paths inside the repository before creating any parent directory.
+
+Local example:
+
+```powershell
+.\scripts\prepare-firebase-chat-smoke-fixture.ps1 `
+  -BaseUrl "http://localhost:8080" `
+  -NoseImagePath "C:\Dev\sample\nose_test1.jpg" `
+  -ProfileImagePath "C:\Dev\sample\profile3.jpg" `
+  -RunSmoke
+```
+
+If dog registration returns `registration_allowed=false`, reset the disposable dev runtime/Qdrant data or use a different nose image before retrying. The author and inquirer are generated as different users, so the created `OPEN` post is owned by a different user than the smoke JWT holder. The helper does not query MySQL or Firestore directly; it only uses the public Spring APIs and lets the running backend own Firebase connectivity.
+
 ## Rollback
 
 To disable Firebase chat, remove `infra/docker/compose.firebase.yaml` from the compose invocation or set `FIREBASE_ENABLED=false`.

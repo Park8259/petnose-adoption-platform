@@ -482,6 +482,32 @@ Readiness note:
 
 - Real Firebase-enabled smoke still must be run on a Firebase-enabled server and recorded in the evidence template before claiming full production readiness.
 
+## P0-6 Fixture Preparation for Firebase Enabled Smoke
+
+This phase adds a fixture preparation helper for Firebase-enabled chat smoke validation.
+
+Implemented behavior:
+
+- A fixture script creates distinct author and inquirer users through Spring APIs.
+- The script registers a dog with runtime image input, then creates an `OPEN` adoption post owned by the author.
+- The script writes sensitive smoke environment values to an output file outside the repository and rejects repository-internal output paths.
+- The generated inquirer JWT can be used by `scripts/verify-firebase-chat-smoke.ps1 -Mode enabled`.
+
+Explicit non-goals for this PR:
+
+- No credentials, JWTs, Firebase tokens, `.env`, service account JSON, or local images are committed.
+- No DB schema changes or migrations.
+- No Docker runtime file changes.
+- No Java backend logic changes.
+- No Firestore rules changes.
+- No Flutter changes.
+- No Python Embed changes.
+- No reservation, payment, contract, report, admin, `reserved_user_id`, or `selected_inquirer_user_id` scope is added.
+
+Readiness note:
+
+- Enabled Firebase chat evidence can be recorded only after backend tests pass, Firestore rules tests pass, fixture preparation succeeds, and enabled smoke passes against a Firebase-enabled backend.
+
 ## Proposed Firestore Room Fields
 
 Every `chat_rooms/{room_id}` document should contain:
