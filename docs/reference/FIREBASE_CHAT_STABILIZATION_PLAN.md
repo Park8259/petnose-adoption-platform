@@ -456,6 +456,32 @@ Explicit non-goals for this PR:
 - No Python Embed changes.
 - No reservation, payment, contract, report, admin, `reserved_user_id`, or `selected_inquirer_user_id` scope is added.
 
+## P0-5 Firestore Rules Validation and Runtime Evidence
+
+This phase adds emulator-based Firestore client rules validation and a safe runtime evidence workflow.
+
+Implemented behavior:
+
+- Firestore emulator configuration is added through `firebase.json`.
+- A dedicated `tools/firebase-rules` test project validates participant reads and client write blocking for Firebase chat.
+- A repository helper script runs the rules tests locally without Firebase credentials.
+- A Firebase-enabled smoke evidence template is added for sanitized manual runtime validation records.
+- Firebase Admin SDK server writes remain outside client rules tests because Admin SDK writes bypass Firestore rules.
+
+Explicit non-goals for this PR:
+
+- No real Firebase credentials, service account JSON, `.env`, tokens, or secrets are committed.
+- No DB schema changes or migrations.
+- No Docker runtime file changes.
+- No Java chat logic changes.
+- No Flutter changes.
+- No Python Embed changes.
+- No reservation, payment, contract, report, admin, `reserved_user_id`, or `selected_inquirer_user_id` scope is added.
+
+Readiness note:
+
+- Real Firebase-enabled smoke still must be run on a Firebase-enabled server and recorded in the evidence template before claiming full production readiness.
+
 ## Proposed Firestore Room Fields
 
 Every `chat_rooms/{room_id}` document should contain:
