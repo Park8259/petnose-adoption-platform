@@ -1,0 +1,23 @@
+name: petnose_app
+description: PetNose Flutter scaffold with a manual Firebase chat visual smoke harness.
+publish_to: "none"
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.6.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cloud_firestore: ^6.4.1
+  firebase_auth: ^6.5.1
+  firebase_core: ^4.9.0
+  firebase_messaging: ^16.2.2
+  http: ^1.6.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true
