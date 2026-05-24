@@ -1,129 +1,268 @@
-# EC2 배포 준비 가이드
+# AWS EC2 Real-Model Deployment Runbook
 
-> AWS EC2에 이 서비스를 처음 배포할 때 필요한 최소 준비사항을 정리합니다.
+This runbook deploys the latest stable `main` PetNose runtime to a single AWS
+EC2 instance with the real dog-nose embedding model.
 
----
+## Target Architecture
 
-## 1. EC2 인스턴스 권장 사양
+- Single EC2 first, operated with Docker Compose.
+- Nginx is the only public application entrypoint.
+- Spring API, Python Embed, Qdrant, and MySQL stay on the internal compose network.
+- MySQL remains the source of truth for domain state.
+- Qdrant remains only the dog nose vector search index.
+- Production deployment is GHCR pull-based; do not build source on the server.
 
-| 항목 | 권장값 |
+## AWS Sizing
+
+| Item | Recommendation |
 |---|---|
-| 인스턴스 타입 | t3.medium 이상 (메모리 4GB+) |
+| Instance | Minimum `t3.medium`; recommended `t3.large` for real-model deployment |
 | OS | Ubuntu 22.04 LTS |
-| 스토리지 | 30GB+ (이미지 업로드 및 DB 고려) |
-| 탄력적 IP | 고정 IP 할당 권장 |
+| Disk | EBS gp3 50GB+ recommended |
+| IP | Elastic IP recommended |
 
----
+## Security Group
 
-## 2. 필수 소프트웨어 설치
+Inbound rules:
+
+| Port | Source | Purpose |
+|---|---|---|
+| `22/tcp` | My IP only | SSH |
+| `80/tcp` | `0.0.0.0/0`, `::/0` | HTTP through Nginx |
+| `443/tcp` | `0.0.0.0/0`, `::/0` | HTTPS after certificate setup |
+
+Do not expose `3306`, `6333`, `8080`, or `8000` publicly. Those ports are for
+MySQL, Qdrant, Spring, and Python Embed internal traffic only.
+
+## Ubuntu Setup
 
 ```bash
-# 패키지 업데이트
-sudo apt-get update && sudo apt-get upgrade -y
+sudo apt-get update
+sudo apt-get upgrade -y
+sudo apt-get install -y git curl ca-certificates
 
-# Docker 설치 (공식 방법)
 curl -fsSL https://get.docker.com | sudo sh
-sudo usermod -aG docker $USER
+sudo usermod -aG docker "$USER"
 newgrp docker
 
-# Docker Compose v2 확인 (Docker Desktop 포함 시 기본 포함)
+docker --version
 docker compose version
+curl --version
 ```
 
----
+## Server Directory Layout
 
-## 3. 보안 그룹 / 방화벽 설정
+Use `/opt/petnose` as the repository root and keep runtime-only data under it:
 
-인바운드 규칙에 다음 포트를 허용합니다.
+```text
+/opt/petnose
+/opt/petnose/models/dog_nose_identification2
+/opt/petnose/secrets
+/opt/petnose/backups/mysql
+/opt/petnose/backups/uploads
+```
 
-| 포트 | 프로토콜 | 허용 대상 | 설명 |
-|---|---|---|---|
-| 22 | TCP | 내 IP | SSH |
-| 80 | TCP | 0.0.0.0/0 | HTTP (Nginx) |
-| 443 | TCP | 0.0.0.0/0 | HTTPS (향후) |
-
-내부 서비스 포트(3306, 6333, 8080, 8000)는 외부에 열지 않습니다.
-
----
-
-## 4. 프로젝트 배치 및 환경변수 설정
+## Repository Placement
 
 ```bash
-# 저장소 클론
-git clone <repository-url> /opt/petnose
+sudo git clone https://github.com/jaaesung/petnose-adoption-platform.git /opt/petnose
+sudo chown -R "$USER":"$USER" /opt/petnose
 cd /opt/petnose
+git fetch origin --prune
+git switch main
+git pull --ff-only origin main
+```
 
-# 환경변수 설정
+Create runtime-only directories after the repository exists:
+
+```bash
+mkdir -p \
+  /opt/petnose/models/dog_nose_identification2 \
+  /opt/petnose/secrets \
+  /opt/petnose/backups/mysql \
+  /opt/petnose/backups/uploads
+```
+
+## Model Placement
+
+Required model root:
+
+```text
+/opt/petnose/models/dog_nose_identification2
+```
+
+Required checkpoint example:
+
+```text
+/opt/petnose/models/dog_nose_identification2/logs/s101_224/model_final.pth
+```
+
+Model files must never be committed to git. The real-model compose override
+mounts the model directory read-only into the Python Embed container at:
+
+```text
+/models/dog_nose_identification2
+```
+
+Before deployment, verify the checkpoint exists:
+
+```bash
+test -f /opt/petnose/models/dog_nose_identification2/logs/s101_224/model_final.pth
+```
+
+## Environment Setup
+
+```bash
+cd /opt/petnose
 cp infra/docker/.env.example infra/docker/.env
-nano infra/docker/.env  # prod 값으로 수정
+nano infra/docker/.env
 ```
 
-`.env` 파일에서 반드시 변경해야 할 항목:
-- `APP_ENV=prod`
-- `SPRING_PROFILES_ACTIVE=prod`
-- `MYSQL_ROOT_PASSWORD`, `MYSQL_PASSWORD`, `SPRING_DATASOURCE_PASSWORD` — 강력한 패스워드로 변경
-- `SPRING_API_IMAGE`, `PYTHON_EMBED_IMAGE` — GHCR 배포 태그 지정
-  (예: `main-latest`, `main-<sha7>`)
-- (private GHCR 사용 시) `GHCR_USERNAME`, `GHCR_TOKEN` 설정
+Set strong secret values for MySQL and any private registry credentials. Do not
+commit `infra/docker/.env`.
 
----
+Required real-model production values:
 
-## 5. 디렉토리 준비
+```dotenv
+APP_ENV=prod
+SPRING_PROFILES_ACTIVE=prod
 
-```bash
-# 백업 디렉토리 생성
-mkdir -p /opt/petnose/backups/mysql /opt/petnose/backups/uploads
+DOG_NOSE_MODEL_DIR_HOST=/opt/petnose/models/dog_nose_identification2
+EMBED_MODEL=dog-nose-identification2
+EMBED_VECTOR_DIM=2048
+PYTHON_EMBED_INSTALL_REAL_DEPS=1
+
+QDRANT_COLLECTION=dog_nose_embeddings_real_v1
+QDRANT_VECTOR_DIM=2048
+
+SPRING_API_IMAGE=ghcr.io/jaaesung/petnose-spring-api:main-<sha7>
+PYTHON_EMBED_IMAGE=ghcr.io/jaaesung/petnose-python-embed-real:main-<sha7>
 ```
 
-볼륨(`mysql_data`, `qdrant_storage`, `uploads_data`)은 Docker가 자동 생성합니다.
+Use immutable `main-<sha7>` tags for production instead of `main-latest` when
+possible. If GHCR packages are private, set both `GHCR_USERNAME` and
+`GHCR_TOKEN` in the server environment or in `infra/docker/.env`. Never print or
+commit token values.
 
----
+## Deployment
 
-## 6. 서비스 기동
+The real-model path uses:
+
+- `infra/docker/compose.yaml`
+- `infra/docker/compose.prod.yaml`
+- `infra/docker/compose.real-model.yaml`
+
+Run:
 
 ```bash
 cd /opt/petnose
-bash infra/scripts/deploy.sh
+bash infra/scripts/deploy-real-model.sh
+bash infra/scripts/aws-real-model-smoke.sh
 ```
 
----
+`deploy-real-model.sh` validates compose config, pulls GHCR images, runs
+`docker compose up -d --no-build`, and checks
+`http://localhost/actuator/health` through Nginx.
 
-## 7. 배포 흐름 (Canonical)
+## Local PC E2E Test
+
+From a local development PC with real nose/profile images:
+
+```powershell
+pwsh ./scripts/verify-real-model-mvp-flow.ps1 `
+  -BaseUrl "http://<elastic-ip-or-domain>" `
+  -NoseImagePath "<local nose image path>" `
+  -ProfileImagePath "<local profile image path>" `
+  -ExpectedVectorDimension 2048 `
+  -ExpectedModelKeyword "dog-nose-identification2" `
+  -DbCheckMode skip
+```
+
+`-DbCheckMode skip` is recommended for remote AWS smoke unless the local machine
+also has private access to the server database container.
+
+## Flutter App Base URL
+
+For AWS deployment, the app should use the AWS server base URL:
+
+```text
+http://<elastic-ip-or-domain>
+https://<domain>
+```
+
+Do not use `10.0.2.2` for an AWS server. `10.0.2.2` is only for an Android
+emulator connecting to a backend running on the developer's local PC.
+
+Image URLs returned as `/files/...` should be joined with the same server base
+URL, for example `http://<elastic-ip-or-domain>/files/...`.
+
+## Firebase Optional
+
+Firebase chat/push is optional. Enable it only after the core MVP real-model
+deployment and smoke checks pass.
+
+The Firebase service account JSON must live outside committed source, for
+example:
+
+```text
+/opt/petnose/secrets/firebase-service-account.json
+```
+
+Set Firebase values in `infra/docker/.env` without committing them:
+
+```dotenv
+FIREBASE_ENABLED=true
+FIREBASE_PROJECT_ID=<firebase-project-id>
+FIREBASE_CREDENTIALS_HOST_PATH=/opt/petnose/secrets/firebase-service-account.json
+```
+
+Then explicitly include the Firebase compose override:
 
 ```bash
-cd /opt/petnose
-# 필요 시 배포 태그 변경 후
-#   SPRING_API_IMAGE=ghcr.io/<owner>/petnose-spring-api:main-<sha7>
-#   PYTHON_EMBED_IMAGE=ghcr.io/<owner>/petnose-python-embed:main-<sha7>
-# 를 .env에 반영
-bash infra/scripts/deploy.sh
+PETNOSE_INCLUDE_FIREBASE=true bash infra/scripts/deploy-real-model.sh
+PETNOSE_INCLUDE_FIREBASE=true bash infra/scripts/aws-real-model-smoke.sh
 ```
 
-`deploy.sh`는 다음 순서로 동작합니다.
-- `docker compose pull`
-- `docker compose up -d --no-build`
-- post-deploy healthcheck(`http://localhost/actuator/health`, nginx 경유) 실패 시 즉시 종료
-
----
-
-## 8. HTTPS 적용 (선택 — Certbot)
+Equivalent flag form:
 
 ```bash
-sudo apt-get install certbot python3-certbot-nginx -y
-sudo certbot --nginx -d <your-domain.com>
+bash infra/scripts/deploy-real-model.sh --firebase
+bash infra/scripts/aws-real-model-smoke.sh --firebase
 ```
 
-HTTPS 설정 후 `infra/nginx/conf.d/default.conf`에 443 서버 블록을 추가하고  
-`compose.prod.yaml`의 nginx 포트에 `443:443`을 추가합니다.
+Do not commit Firebase service account JSON. Do not print Firebase secrets.
+Firebase must not replace MySQL domain state.
 
----
+## HTTPS
 
-## 9. 자동 백업 설정 (cron)
+Start with HTTP for the first smoke:
 
-```bash
-# crontab 편집
-crontab -e
-
-# 매일 새벽 3시 백업
-0 3 * * * /opt/petnose/infra/scripts/backup.sh >> /var/log/petnose-backup.log 2>&1
+```text
+http://<elastic-ip-or-domain>
 ```
+
+After the HTTP deployment is healthy, attach a domain and add HTTPS with
+Certbot or an equivalent certificate process. If 443 is not already configured,
+the production Nginx compose/nginx configuration needs a `443:443` port mapping
+and an HTTPS server block before opening `443/tcp` in the security group.
+
+## Backups
+
+Minimum backup targets:
+
+- MySQL dump.
+- Uploads volume/files.
+- `infra/docker/.env`.
+- Firebase service account JSON, if Firebase is used.
+- Model files under `/opt/petnose/models/dog_nose_identification2`.
+
+The existing `infra/scripts/backup.sh` is oriented around the dev compose file
+combination. For production, either adapt it carefully to the prod compose stack
+or add a future dedicated prod backup script that writes to:
+
+```text
+/opt/petnose/backups/mysql
+/opt/petnose/backups/uploads
+```
+
+Keep backup archives and secrets out of git.
