@@ -210,6 +210,13 @@ Canonical deployment path:
 3. `deploy.sh`가 `docker compose pull` → `up -d --no-build` 실행
 4. post-deploy healthcheck(`http://localhost/actuator/health`, nginx 경유) 실패 시 즉시 실패 처리
 
+AWS real-model deployment path:
+
+- 최신 `main` 기준 AWS EC2 실제 모델 배포는 [infra/aws/ec2-setup.md](infra/aws/ec2-setup.md)를 따릅니다.
+- 배포 스크립트: `bash infra/scripts/deploy-real-model.sh`
+- 서버 스모크: `bash infra/scripts/aws-real-model-smoke.sh`
+- 이 경로는 `compose.yaml` + `compose.prod.yaml` + `compose.real-model.yaml`을 사용하며, Firebase는 명시적으로 요청할 때만 포함합니다.
+
 GHCR 이미지:
 
 - `ghcr.io/jaaesung/petnose-spring-api:<branch>-latest`
