@@ -9,8 +9,8 @@ import com.petnose.api.domain.entity.User;
 import com.petnose.api.domain.entity.VerificationLog;
 import com.petnose.api.domain.enums.DogStatus;
 import com.petnose.api.domain.enums.VerificationResult;
-import com.petnose.api.dto.registration.QdrantSearchResult;
 import com.petnose.api.repository.DogImageRepository;
+import com.petnose.api.repository.DogNoseReferenceRepository;
 import com.petnose.api.repository.DogRepository;
 import com.petnose.api.repository.UserRepository;
 import com.petnose.api.repository.VerificationLogRepository;
@@ -41,8 +41,9 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyDouble;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
-import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.verify;
@@ -76,6 +77,9 @@ class DogRegisterAuthPrincipalIntegrationTest {
     private DogImageRepository dogImageRepository;
 
     @Autowired
+    private DogNoseReferenceRepository dogNoseReferenceRepository;
+
+    @Autowired
     private VerificationLogRepository verificationLogRepository;
 
     @MockBean
@@ -86,15 +90,16 @@ class DogRegisterAuthPrincipalIntegrationTest {
 
     @BeforeEach
     void setUp() {
+        dogNoseReferenceRepository.deleteAll();
         verificationLogRepository.deleteAll();
         dogImageRepository.deleteAll();
         dogRepository.deleteAll();
         userRepository.deleteAll();
         reset(embedClient, qdrantDogVectorClient);
-        when(embedClient.embed(any(byte[].class), anyString(), anyString()))
-                .thenReturn(new EmbedClient.EmbedResponse(List.of(0.1, 0.2, 0.3), 128, "test-model"));
-        when(qdrantDogVectorClient.search(anyList()))
-                .thenReturn(List.of(new QdrantSearchResult("other-point", "other-dog", 0.12345, "Jindo", "dogs/other/nose.jpg")));
+        when(embedClient.embedBatch(anyList()))
+                .thenReturn(new EmbedClient.BatchEmbedResponse(batchItems(consistentVectors()), 128, "test-model"));
+        when(qdrantDogVectorClient.searchReferencePoints(anyList(), anyInt(), anyDouble())).thenReturn(List.of());
+        when(qdrantDogVectorClient.searchCentroidPoints(anyList(), anyInt(), anyDouble())).thenReturn(List.of());
     }
 
     @Test
@@ -110,9 +115,14 @@ class DogRegisterAuthPrincipalIntegrationTest {
                 .andExpect(jsonPath("$.status").value("REGISTERED"))
                 .andExpect(jsonPath("$.verification_status").value("VERIFIED"))
                 .andExpect(jsonPath("$.embedding_status").value("COMPLETED"))
+                .andExpect(jsonPath("$.qdrant_point_id").doesNotExist())
+                .andExpect(jsonPath("$.embedding_mode").value("MULTI_REFERENCE"))
+                .andExpect(jsonPath("$.reference_count").value(3))
                 .andExpect(jsonPath("$.model").value("test-model"))
                 .andExpect(jsonPath("$.dimension").value(128))
-                .andExpect(jsonPath("$.max_similarity_score").value(0.12345))
+                .andExpect(jsonPath("$.max_similarity_score").value(0.0))
+                .andExpect(jsonPath("$.score_breakdown.final_score").value(0.0))
+                .andExpect(jsonPath("$.nose_image_urls").isArray())
                 .andExpect(jsonPath("$.top_match").doesNotExist())
                 .andReturn();
 
@@ -120,30 +130,33 @@ class DogRegisterAuthPrincipalIntegrationTest {
         assertThat(dog.getOwnerUserId()).isEqualTo(user.getId());
         assertThat(dog.getStatus()).isEqualTo(DogStatus.REGISTERED);
 
-        DogImage noseImage = onlyDogImage();
-        assertThat(noseImage.getDogId()).isEqualTo(dog.getId());
-        assertThat(noseImage.getFilePath()).startsWith("dogs/").doesNotContain("/tmp", "\\tmp");
+        List<DogImage> noseImages = dogImageRepository.findAll();
+        assertThat(noseImages).hasSize(3);
+        assertThat(noseImages)
+                .allSatisfy(noseImage -> {
+                    assertThat(noseImage.getDogId()).isEqualTo(dog.getId());
+                    assertThat(noseImage.getFilePath()).startsWith("dogs/").doesNotContain("/tmp", "\\tmp");
+                });
 
         VerificationLog verificationLog = onlyVerificationLog();
         assertThat(verificationLog.getDogId()).isEqualTo(dog.getId());
-        assertThat(verificationLog.getDogImageId()).isEqualTo(noseImage.getId());
+        assertThat(verificationLog.getDogImageId()).isEqualTo(noseImages.get(0).getId());
         assertThat(verificationLog.getRequestedByUserId()).isEqualTo(user.getId());
         assertThat(verificationLog.getResult()).isEqualTo(VerificationResult.PASSED);
+        assertThat(verificationLog.getScoreBreakdownJson()).contains("\"policy\":\"max_reference_v1\"");
 
         String responseDogId = objectMapper.readTree(responseBody(result)).get("dog_id").asText();
-        String qdrantPointId = objectMapper.readTree(responseBody(result)).get("qdrant_point_id").asText();
         assertThat(responseDogId).isEqualTo(dog.getId());
-        assertThat(qdrantPointId).isEqualTo(dog.getId());
+        assertThat(objectMapper.readTree(responseBody(result)).get("qdrant_point_id").isNull()).isTrue();
 
-        ArgumentCaptor<String> pointIdCaptor = ArgumentCaptor.forClass(String.class);
         @SuppressWarnings("unchecked")
-        ArgumentCaptor<Map<String, Object>> payloadCaptor = ArgumentCaptor.forClass(Map.class);
-        verify(qdrantDogVectorClient).upsert(pointIdCaptor.capture(), anyList(), payloadCaptor.capture());
-        assertThat(pointIdCaptor.getValue()).isEqualTo(dog.getId());
-        assertThat(payloadCaptor.getValue())
-                .containsEntry("dog_id", dog.getId())
-                .containsEntry("user_id", user.getId())
-                .containsEntry("nose_image_path", noseImage.getFilePath());
+        ArgumentCaptor<List<QdrantDogVectorClient.QdrantPointUpsertRequest>> pointsCaptor = ArgumentCaptor.forClass(List.class);
+        verify(qdrantDogVectorClient).upsertAll(pointsCaptor.capture());
+        assertThat(pointsCaptor.getValue()).hasSize(4);
+        assertThat(pointsCaptor.getValue())
+                .extracting(point -> point.payload().get("embedding_kind"))
+                .containsExactly("REFERENCE", "REFERENCE", "REFERENCE", "CENTROID");
+        assertThat(dogNoseReferenceRepository.findByDogIdAndActiveTrueOrderByCreatedAtAsc(dog.getId())).hasSize(4);
     }
 
     @Test
@@ -277,12 +290,12 @@ class DogRegisterAuthPrincipalIntegrationTest {
         registerUser("dog-validation@example.com");
         String accessToken = loginAccessToken("dog-validation@example.com");
 
-        mockMvc.perform(dogMultipart(null, noseImage("nose.jpg"), null, "Jindo", "MALE")
+        mockMvc.perform(dogMultipart(null, noseImages(3), null, "Jindo", "MALE")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error_code").value("NAME_REQUIRED"));
 
-        mockMvc.perform(dogMultipart(null, noseImage("nose.jpg"), "Bori", null, "MALE")
+        mockMvc.perform(dogMultipart(null, noseImages(3), "Bori", null, "MALE")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error_code").value("BREED_REQUIRED"));
@@ -290,9 +303,14 @@ class DogRegisterAuthPrincipalIntegrationTest {
         mockMvc.perform(dogMultipart(null, null, "Bori", "Jindo", "MALE")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error_code").value("NOSE_IMAGE_REQUIRED"));
+                .andExpect(jsonPath("$.error_code").value("NOSE_IMAGES_REQUIRED"));
 
-        mockMvc.perform(dogMultipart(null, noseImage("nose.jpg"), "Bori", "Jindo", "INVALID")
+        mockMvc.perform(legacyDogMultipart("nose.jpg", "Bori", "Jindo", "MALE")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error_code").value("NOSE_IMAGES_REQUIRED"));
+
+        mockMvc.perform(dogMultipart(null, noseImages(3), "Bori", "Jindo", "INVALID")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error_code").value("VALIDATION_FAILED"));
@@ -305,8 +323,9 @@ class DogRegisterAuthPrincipalIntegrationTest {
     void dogRegisterDuplicateSuspectedBehaviorUnchangedWithBearerToken() throws Exception {
         registerUser("dog-duplicate@example.com");
         String accessToken = loginAccessToken("dog-duplicate@example.com");
-        when(qdrantDogVectorClient.search(anyList()))
-                .thenReturn(List.of(new QdrantSearchResult("candidate-point", "candidate-dog", 0.70, "Maltese", "dogs/candidate/nose.jpg")));
+        saveCandidateDog("candidate-dog", "Maltese");
+        when(qdrantDogVectorClient.searchReferencePoints(anyList(), anyInt(), anyDouble()))
+                .thenReturn(List.of(vectorResult("candidate-dog", 0.80)));
 
         MvcResult result = mockMvc.perform(validDogMultipart(null)
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken))
@@ -317,24 +336,25 @@ class DogRegisterAuthPrincipalIntegrationTest {
                 .andExpect(jsonPath("$.embedding_status").value("SKIPPED_DUPLICATE"))
                 .andExpect(jsonPath("$.qdrant_point_id").doesNotExist())
                 .andExpect(jsonPath("$.top_match.dog_id").value("candidate-dog"))
-                .andExpect(jsonPath("$.top_match.similarity_score").value(0.70))
+                .andExpect(jsonPath("$.top_match.similarity_score").value(0.80))
                 .andExpect(jsonPath("$.top_match.breed").value("Maltese"))
                 .andExpect(jsonPath("$.top_match.nose_image_url").doesNotExist())
+                .andExpect(jsonPath("$.embedding_mode").value("MULTI_REFERENCE"))
+                .andExpect(jsonPath("$.reference_count").value(3))
                 .andReturn();
 
         assertThat(objectMapper.readTree(responseBody(result)).get("qdrant_point_id").isNull()).isTrue();
-        assertThat(onlyDog().getStatus()).isEqualTo(DogStatus.DUPLICATE_SUSPECTED);
-        assertThat(dogImageRepository.count()).isEqualTo(1);
+        String responseDogId = objectMapper.readTree(responseBody(result)).get("dog_id").asText();
+        assertThat(dogRepository.findById(responseDogId).orElseThrow().getStatus()).isEqualTo(DogStatus.DUPLICATE_SUSPECTED);
+        assertThat(dogImageRepository.count()).isEqualTo(3);
         assertThat(onlyVerificationLog().getResult()).isEqualTo(VerificationResult.DUPLICATE_SUSPECTED);
-        verify(qdrantDogVectorClient, never()).upsert(anyString(), anyList(), any());
+        verify(qdrantDogVectorClient, never()).upsertAll(anyList());
     }
 
     @Test
     void dogRegisterScoreBelowDuplicateThresholdCreatesNormalRegistrationWithBearerToken() throws Exception {
         registerUser("dog-below-threshold@example.com");
         String accessToken = loginAccessToken("dog-below-threshold@example.com");
-        when(qdrantDogVectorClient.search(anyList()))
-                .thenReturn(List.of(new QdrantSearchResult("candidate-point", "candidate-dog", 0.69999, "Maltese", "dogs/candidate/nose.jpg")));
 
         MvcResult result = mockMvc.perform(validDogMultipart(null)
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken))
@@ -343,8 +363,10 @@ class DogRegisterAuthPrincipalIntegrationTest {
                 .andExpect(jsonPath("$.status").value("REGISTERED"))
                 .andExpect(jsonPath("$.verification_status").value("VERIFIED"))
                 .andExpect(jsonPath("$.embedding_status").value("COMPLETED"))
-                .andExpect(jsonPath("$.qdrant_point_id").isString())
-                .andExpect(jsonPath("$.max_similarity_score").value(0.69999))
+                .andExpect(jsonPath("$.qdrant_point_id").doesNotExist())
+                .andExpect(jsonPath("$.max_similarity_score").value(0.0))
+                .andExpect(jsonPath("$.embedding_mode").value("MULTI_REFERENCE"))
+                .andExpect(jsonPath("$.reference_count").value(3))
                 .andExpect(jsonPath("$.top_match").doesNotExist())
                 .andReturn();
 
@@ -353,22 +375,16 @@ class DogRegisterAuthPrincipalIntegrationTest {
         assertThat(onlyVerificationLog().getResult()).isEqualTo(VerificationResult.PASSED);
 
         String responseDogId = objectMapper.readTree(responseBody(result)).get("dog_id").asText();
-        String qdrantPointId = objectMapper.readTree(responseBody(result)).get("qdrant_point_id").asText();
-        assertThat(qdrantPointId).isEqualTo(responseDogId);
+        assertThat(responseDogId).isEqualTo(dog.getId());
+        assertThat(objectMapper.readTree(responseBody(result)).get("qdrant_point_id").isNull()).isTrue();
 
-        verify(qdrantDogVectorClient).upsert(anyString(), anyList(), any());
+        verify(qdrantDogVectorClient).upsertAll(anyList());
     }
 
     private Dog onlyDog() {
         List<Dog> dogs = dogRepository.findAll();
         assertThat(dogs).hasSize(1);
         return dogs.get(0);
-    }
-
-    private DogImage onlyDogImage() {
-        List<DogImage> images = dogImageRepository.findAll();
-        assertThat(images).hasSize(1);
-        return images.get(0);
     }
 
     private VerificationLog onlyVerificationLog() {
@@ -378,21 +394,21 @@ class DogRegisterAuthPrincipalIntegrationTest {
     }
 
     private MockHttpServletRequestBuilder validDogMultipart(Long userId) {
-        return dogMultipart(userId, noseImage("nose.jpg"), "Bori", "Jindo", "MALE")
+        return dogMultipart(userId, noseImages(3), "Bori", "Jindo", "MALE")
                 .param("birth_date", "2024-01-01")
                 .param("description", "friendly");
     }
 
     private MockHttpServletRequestBuilder dogMultipart(
             Long userId,
-            MockMultipartFile noseImage,
+            List<MockMultipartFile> noseImages,
             String name,
             String breed,
             String gender
     ) {
         MockMultipartHttpServletRequestBuilder builder = multipart("/api/dogs/register");
-        if (noseImage != null) {
-            builder.file(noseImage);
+        if (noseImages != null) {
+            noseImages.forEach(builder::file);
         }
         if (name != null) {
             builder.param("name", name);
@@ -409,13 +425,30 @@ class DogRegisterAuthPrincipalIntegrationTest {
         return builder;
     }
 
-    private MockMultipartFile noseImage(String filename) {
-        return new MockMultipartFile(
-                "nose_image",
-                filename,
-                "image/jpeg",
-                new byte[]{1, 2, 3}
-        );
+    private MockHttpServletRequestBuilder legacyDogMultipart(
+            String filename,
+            String name,
+            String breed,
+            String gender
+    ) {
+        return multipart("/api/dogs/register")
+                .file(new MockMultipartFile("nose_image", filename, "image/jpeg", new byte[]{1, 2, 3}))
+                .param("name", name)
+                .param("breed", breed)
+                .param("gender", gender);
+    }
+
+    private List<MockMultipartFile> noseImages(int count) {
+        List<MockMultipartFile> files = new java.util.ArrayList<>();
+        for (int i = 1; i <= count; i++) {
+            files.add(new MockMultipartFile(
+                    "nose_images",
+                    "nose_%d.jpg".formatted(i),
+                    "image/jpeg",
+                    new byte[]{1, 2, 3}
+            ));
+        }
+        return files;
     }
 
     private void registerUser(String email) throws Exception {
@@ -474,14 +507,65 @@ class DogRegisterAuthPrincipalIntegrationTest {
     }
 
     private void verifyPipelineNotStarted() {
-        verify(embedClient, never()).embed(any(byte[].class), anyString(), anyString());
-        verify(qdrantDogVectorClient, never()).search(anyList());
-        verify(qdrantDogVectorClient, never()).upsert(anyString(), anyList(), any());
+        verify(embedClient, never()).embedBatch(anyList());
+        verify(qdrantDogVectorClient, never()).searchReferencePoints(anyList(), anyInt(), anyDouble());
+        verify(qdrantDogVectorClient, never()).upsertAll(anyList());
     }
 
     private void assertPipelineRowsAbsent() {
         assertThat(dogRepository.count()).isZero();
         assertThat(dogImageRepository.count()).isZero();
+        assertThat(dogNoseReferenceRepository.count()).isZero();
         assertThat(verificationLogRepository.count()).isZero();
+    }
+
+    private List<EmbedClient.BatchEmbedItem> batchItems(List<List<Double>> vectors) {
+        List<EmbedClient.BatchEmbedItem> items = new java.util.ArrayList<>();
+        for (int i = 0; i < vectors.size(); i++) {
+            items.add(new EmbedClient.BatchEmbedItem(i, "nose_%d.jpg".formatted(i + 1), vectors.get(i)));
+        }
+        return items;
+    }
+
+    private List<List<Double>> consistentVectors() {
+        return List.of(
+                vector(1.0, 0.0),
+                vector(0.9, 0.1),
+                vector(0.85, 0.15)
+        );
+    }
+
+    private List<Double> vector(double first, double second) {
+        List<Double> values = new java.util.ArrayList<>();
+        for (int i = 0; i < 128; i++) {
+            values.add(0.0);
+        }
+        values.set(0, first);
+        values.set(1, second);
+        return values;
+    }
+
+    private QdrantDogVectorClient.QdrantVectorSearchResult vectorResult(String dogId, double score) {
+        return new QdrantDogVectorClient.QdrantVectorSearchResult(
+                "point-" + dogId,
+                dogId,
+                score,
+                "REFERENCE",
+                1L,
+                1,
+                "test-model",
+                128,
+                "rgb_resize224_bicubic_imagenet_l2_v1"
+        );
+    }
+
+    private void saveCandidateDog(String dogId, String breed) {
+        Dog dog = new Dog();
+        dog.setId(dogId);
+        dog.setOwnerUserId(999L);
+        dog.setName("Candidate");
+        dog.setBreed(breed);
+        dog.setStatus(DogStatus.REGISTERED);
+        dogRepository.saveAndFlush(dog);
     }
 }

@@ -2,6 +2,8 @@ package com.petnose.api.dto.registration;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 
+import java.util.List;
+
 public record DogRegisterResponse(
         @JsonProperty("dog_id")
         String dogId,
@@ -27,6 +29,14 @@ public record DogRegisterResponse(
         String profileImageUrl,
         @JsonProperty("top_match")
         DuplicateCandidateResponse topMatch,
+        @JsonProperty("embedding_mode")
+        String embeddingMode,
+        @JsonProperty("reference_count")
+        Integer referenceCount,
+        @JsonProperty("score_breakdown")
+        ScoreBreakdownResponse scoreBreakdown,
+        @JsonProperty("nose_image_urls")
+        List<String> noseImageUrls,
         @JsonProperty("message")
         String message
 ) {

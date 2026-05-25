@@ -34,8 +34,8 @@ spring:
 
   servlet:
     multipart:
-      max-file-size: ${MAX_UPLOAD_SIZE_MB:20}MB
-      max-request-size: ${MAX_UPLOAD_SIZE_MB:20}MB
+      max-file-size: ${MAX_UPLOAD_FILE_SIZE_MB:20}MB
+      max-request-size: ${MAX_UPLOAD_REQUEST_SIZE_MB:80}MB
 
 server:
   port: 8080
@@ -52,7 +52,7 @@ management:
 embed:
   url: ${PYTHON_EMBED_URL:http://localhost:8000}
   connect-timeout-ms: ${PYTHON_EMBED_CONNECT_TIMEOUT_MS:3000}
-  response-timeout-ms: ${PYTHON_EMBED_RESPONSE_TIMEOUT_MS:10000}
+  response-timeout-ms: ${PYTHON_EMBED_RESPONSE_TIMEOUT_MS:30000}
 
 qdrant:
   host: ${QDRANT_HOST:qdrant}
@@ -61,7 +61,7 @@ qdrant:
   vector-dimension: ${QDRANT_VECTOR_DIM:128}
   distance: ${QDRANT_DISTANCE:Cosine}
   search-top-k: ${QDRANT_SEARCH_TOP_K:5}
-  search-score-threshold: ${QDRANT_SEARCH_SCORE_THRESHOLD:0.70}
+  search-score-threshold: ${QDRANT_SEARCH_SCORE_THRESHOLD:0.55}
   search-timeout-ms: ${QDRANT_SEARCH_TIMEOUT_MS:3000}
   upsert-timeout-ms: ${QDRANT_UPSERT_TIMEOUT_MS:3000}
 
@@ -69,7 +69,12 @@ upload:
   base-path: ${UPLOAD_BASE_PATH:/var/uploads}
 
 nose:
-  duplicate-threshold: ${NOSE_DUPLICATE_THRESHOLD:0.70}
+  duplicate-threshold: ${NOSE_DUPLICATE_THRESHOLD:0.75}
+  review-lower-bound: ${NOSE_REVIEW_LOWER_BOUND:0.60}
+  reference-min-count: ${NOSE_REFERENCE_MIN_COUNT:3}
+  reference-max-count: ${NOSE_REFERENCE_MAX_COUNT:5}
+  reference-consistency-threshold: ${NOSE_REFERENCE_CONSISTENCY_THRESHOLD:0.60}
+  preprocess-version: ${NOSE_PREPROCESS_VERSION:rgb_resize224_bicubic_imagenet_l2_v1}
 
 petnose:
   handover-verification:

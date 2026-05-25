@@ -11,6 +11,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.util.List;
+
 @RestController
 @RequestMapping("/api/dogs")
 @RequiredArgsConstructor
@@ -27,11 +29,11 @@ public class DogRegistrationController {
             @RequestParam(value = "gender", required = false) String gender,
             @RequestParam(value = "birth_date", required = false) String birthDate,
             @RequestParam(value = "description", required = false) String description,
-            @RequestParam(value = "nose_image", required = false) MultipartFile noseImage
+            @RequestParam(value = "nose_images", required = false) List<MultipartFile> noseImages
     ) {
         Long ownerUserId = authService.currentActiveUserId(authorization);
         DogRegisterResponse response = dogRegistrationService.register(
-                new DogRegisterRequest(ownerUserId, name, breed, gender, birthDate, description, noseImage)
+                new DogRegisterRequest(ownerUserId, name, breed, gender, birthDate, description, noseImages)
         );
 
         if (response.registrationAllowed()) {
