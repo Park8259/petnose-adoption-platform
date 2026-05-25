@@ -30,6 +30,12 @@ qdrant:
 upload:
   base-path: /tmp/uploads-test
 
+petnose:
+  handover-verification:
+    match-threshold: ${PETNOSE_HANDOVER_VERIFICATION_MATCH_THRESHOLD:0.75}
+    ambiguous-threshold: ${PETNOSE_HANDOVER_VERIFICATION_AMBIGUOUS_THRESHOLD:0.60}
+    top-k: ${PETNOSE_HANDOVER_VERIFICATION_TOP_K:5}
+
 auth:
   jwt:
     secret: test-petnose-jwt-secret-change-me-32bytes

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.petnose.api.client.EmbedClient;
 import com.petnose.api.client.QdrantDogVectorClient;
+import com.petnose.api.client.QdrantDogVectorClient.QdrantVectorSearchResult;
 import com.petnose.api.config.HandoverVerificationProperties;
 import com.petnose.api.domain.entity.AdoptionPost;
 import com.petnose.api.domain.entity.Dog;
@@ -12,7 +13,6 @@ import com.petnose.api.domain.enums.AdoptionPostStatus;
 import com.petnose.api.domain.enums.DogGender;
 import com.petnose.api.domain.enums.DogStatus;
 import com.petnose.api.domain.enums.UserRole;
-import com.petnose.api.dto.registration.QdrantSearchResult;
 import com.petnose.api.repository.AdoptionPostRepository;
 import com.petnose.api.repository.DogImageRepository;
 import com.petnose.api.repository.DogRepository;
@@ -41,6 +41,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -70,8 +71,8 @@ class HandoverVerificationControllerTest {
 
     private static final String JWT_SECRET = "test-petnose-jwt-secret-change-me-32bytes";
     private static final String MODEL = "dog-nose-identification2:s101_224";
-    private static final double MATCH_THRESHOLD = 0.70;
-    private static final double AMBIGUOUS_THRESHOLD = 0.70;
+    private static final double MATCH_THRESHOLD = 0.75;
+    private static final double AMBIGUOUS_THRESHOLD = 0.60;
     private static final int TOP_K = 5;
     private static final int VECTOR_DIMENSION = 128;
 
@@ -86,7 +87,16 @@ class HandoverVerificationControllerTest {
             "top_match_is_expected",
             "model",
             "dimension",
-            "message"
+            "message",
+            "score_breakdown"
+    );
+
+    private static final Set<String> SCORE_BREAKDOWN_FIELDS = Set.of(
+            "final_score",
+            "max_reference_score",
+            "top2_average_score",
+            "centroid_score",
+            "hit_count"
     );
 
     @Autowired
@@ -233,8 +243,7 @@ class HandoverVerificationControllerTest {
         Dog dog = saveDog(user, DogStatus.REGISTERED);
         AdoptionPost post = savePost(user, dog, status);
         mockEmbedding();
-        when(qdrantDogVectorClient.searchExpectedDog(anyList(), eq(dog.getId())))
-                .thenReturn(List.of(expectedDogResult(dog, 0.95)));
+        mockExpectedDogReferenceSet(dog, 0.95);
 
         handoverRequest(tokenFor(user), post.getId())
                 .andExpect(status().isOk())
@@ -261,8 +270,7 @@ class HandoverVerificationControllerTest {
         Dog dog = saveDog(user, DogStatus.REGISTERED);
         AdoptionPost post = savePost(user, dog, AdoptionPostStatus.OPEN);
         mockEmbedding();
-        when(qdrantDogVectorClient.searchExpectedDog(anyList(), eq(dog.getId())))
-                .thenReturn(List.of(expectedDogResult(dog, MATCH_THRESHOLD)));
+        mockExpectedDogReferenceSet(dog, MATCH_THRESHOLD);
 
         handoverRequest(tokenFor(user), post.getId())
                 .andExpect(status().isOk())
@@ -399,7 +407,7 @@ class HandoverVerificationControllerTest {
         Dog dog = saveDog(user, DogStatus.REGISTERED);
         AdoptionPost post = savePost(user, dog, AdoptionPostStatus.OPEN);
         mockEmbedding();
-        when(qdrantDogVectorClient.searchExpectedDog(anyList(), eq(dog.getId())))
+        when(qdrantDogVectorClient.searchExpectedDogReferences(anyList(), eq(dog.getId()), eq(TOP_K)))
                 .thenThrow(new QdrantDogVectorClient.QdrantClientException(
                         "qdrant down",
                         QdrantDogVectorClient.QdrantOperation.SEARCH,
@@ -420,8 +428,7 @@ class HandoverVerificationControllerTest {
         Dog dog = saveDog(user, DogStatus.REGISTERED);
         AdoptionPost post = savePost(user, dog, AdoptionPostStatus.OPEN);
         mockEmbedding();
-        when(qdrantDogVectorClient.searchExpectedDog(anyList(), eq(dog.getId())))
-                .thenReturn(List.of(expectedDogResult(dog, 0.98231)));
+        mockExpectedDogReferenceSetWithCentroid(dog, 0.91, 0.98231, 0.81769);
 
         MvcResult result = handoverRequest(tokenFor(user), post.getId())
                 .andExpect(status().isOk())
@@ -436,25 +443,32 @@ class HandoverVerificationControllerTest {
                 .andExpect(jsonPath("$.model").value(MODEL))
                 .andExpect(jsonPath("$.dimension").value(VECTOR_DIMENSION))
                 .andExpect(jsonPath("$.message").value("분양글에 등록된 강아지와 일치합니다."))
+                .andExpect(jsonPath("$.score_breakdown.final_score").value(0.98231))
+                .andExpect(jsonPath("$.score_breakdown.max_reference_score").value(0.98231))
+                .andExpect(jsonPath("$.score_breakdown.top2_average_score").value(0.9))
+                .andExpect(jsonPath("$.score_breakdown.centroid_score").value(0.91))
+                .andExpect(jsonPath("$.score_breakdown.hit_count").value(2))
                 .andReturn();
 
         assertResponseIsSafe(result);
-        verify(qdrantDogVectorClient).searchExpectedDog(anyList(), eq(dog.getId()));
+        verify(qdrantDogVectorClient).searchExpectedDogReferences(anyList(), eq(dog.getId()), eq(TOP_K));
+        verify(qdrantDogVectorClient).searchExpectedDogCentroid(anyList(), eq(dog.getId()));
     }
 
     @Test
-    void handoverVerificationSearchesOnlyTheExpectedDogIdAndDoesNotUseGlobalTopK() throws Exception {
+    void handoverVerificationUsesExpectedDogReferenceSetAndDoesNotUseGlobalTopK() throws Exception {
         User user = saveUser(true);
         Dog dog = saveDog(user, DogStatus.REGISTERED);
         AdoptionPost post = savePost(user, dog, AdoptionPostStatus.OPEN);
         mockEmbedding();
-        when(qdrantDogVectorClient.searchExpectedDog(anyList(), eq(dog.getId())))
-                .thenReturn(List.of(expectedDogResult(dog, 0.95)));
+        mockExpectedDogReferenceSet(dog, 0.95);
 
         handoverRequest(tokenFor(user), post.getId())
                 .andExpect(status().isOk());
 
-        verify(qdrantDogVectorClient).searchExpectedDog(eq(List.of(0.1, 0.2, 0.3)), eq(dog.getId()));
+        verify(qdrantDogVectorClient).searchExpectedDogReferences(eq(List.of(0.1, 0.2, 0.3)), eq(dog.getId()), eq(TOP_K));
+        verify(qdrantDogVectorClient).searchExpectedDogCentroid(eq(List.of(0.1, 0.2, 0.3)), eq(dog.getId()));
+        verify(qdrantDogVectorClient, never()).searchExpectedDog(anyList(), anyString());
         verify(qdrantDogVectorClient, never()).search(anyList(), eq(TOP_K));
         verify(qdrantDogVectorClient, never()).search(anyList());
     }
@@ -462,11 +476,12 @@ class HandoverVerificationControllerTest {
     @ParameterizedTest
     @CsvSource({
             "0.80630887, MATCHED, true",
-            "0.70001, MATCHED, true",
-            "0.70, MATCHED, true",
-            "0.69999, NOT_MATCHED, false"
+            "0.75, MATCHED, true",
+            "0.74999, AMBIGUOUS, false",
+            "0.60, AMBIGUOUS, false",
+            "0.59999, NOT_MATCHED, false"
     })
-    void handoverVerificationAppliesExpectedDogDecisionBoundaries(
+    void handoverVerificationAppliesExpectedDogReferenceDecisionBoundaries(
             double score,
             String expectedDecision,
             boolean expectedMatched
@@ -475,8 +490,7 @@ class HandoverVerificationControllerTest {
         Dog dog = saveDog(user, DogStatus.REGISTERED);
         AdoptionPost post = savePost(user, dog, AdoptionPostStatus.OPEN);
         mockEmbedding();
-        when(qdrantDogVectorClient.searchExpectedDog(anyList(), eq(dog.getId())))
-                .thenReturn(List.of(expectedDogResult(dog, score)));
+        mockExpectedDogReferenceSet(dog, score);
 
         MvcResult result = handoverRequest(tokenFor(user), post.getId())
                 .andExpect(status().isOk())
@@ -492,38 +506,46 @@ class HandoverVerificationControllerTest {
     }
 
     @Test
-    void handoverVerificationDoesNotEmitAmbiguousInDirectExpectedDogLogic() throws Exception {
+    void handoverVerificationReturnsAmbiguousWhenReferenceScoreIsBetweenThresholds() throws Exception {
         handoverVerificationProperties.setMatchThreshold(0.80);
         handoverVerificationProperties.setAmbiguousThreshold(0.70);
         User user = saveUser(true);
         Dog dog = saveDog(user, DogStatus.REGISTERED);
         AdoptionPost post = savePost(user, dog, AdoptionPostStatus.OPEN);
         mockEmbedding();
-        when(qdrantDogVectorClient.searchExpectedDog(anyList(), eq(dog.getId())))
-                .thenReturn(List.of(expectedDogResult(dog, 0.75)));
+        mockExpectedDogReferenceSet(dog, 0.75);
 
         MvcResult result = handoverRequest(tokenFor(user), post.getId())
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.decision").value("NOT_MATCHED"))
+                .andExpect(jsonPath("$.decision").value("AMBIGUOUS"))
                 .andExpect(jsonPath("$.matched").value(false))
                 .andExpect(jsonPath("$.top_match_is_expected").value(true))
                 .andExpect(jsonPath("$.similarity_score").value(0.75))
                 .andExpect(jsonPath("$.threshold").value(0.80))
                 .andExpect(jsonPath("$.ambiguous_threshold").value(0.70))
+                .andExpect(jsonPath("$.message").value("유사도가 기준에 근접하지만 확정하기 어렵습니다. 비문 이미지를 다시 촬영해주세요."))
                 .andReturn();
 
         assertResponseIsSafe(result);
     }
 
     @Test
-    void handoverVerificationReturnsNotMatchedWhenAnotherDogIsTopResultEvenWithHighScore() throws Exception {
+    void handoverVerificationSkipsNonExpectedDogReferenceResultsWithoutLeakingIdentifiers() throws Exception {
         User user = saveUser(true);
         Dog dog = saveDog(user, DogStatus.REGISTERED);
         AdoptionPost post = savePost(user, dog, AdoptionPostStatus.RESERVED);
         String otherDogId = UUID.randomUUID().toString();
         mockEmbedding();
-        when(qdrantDogVectorClient.searchExpectedDog(anyList(), eq(dog.getId())))
-                .thenReturn(List.of(new QdrantSearchResult("other-point", otherDogId, 0.99123, "Jindo", "other/nose.jpg")));
+        when(qdrantDogVectorClient.searchExpectedDogReferences(anyList(), eq(dog.getId()), eq(TOP_K)))
+                .thenReturn(List.of(
+                        foreignReferenceResult("other-point", otherDogId, 0.99123),
+                        referenceResult(dog, 0, 0.55)
+                ));
+        when(qdrantDogVectorClient.searchExpectedDogCentroid(anyList(), eq(dog.getId())))
+                .thenReturn(List.of(
+                        foreignCentroidResult("other-centroid", otherDogId, 0.99),
+                        centroidResult(dog, 0.56)
+                ));
 
         MvcResult result = handoverRequest(tokenFor(user), post.getId())
                 .andExpect(status().isOk())
@@ -531,13 +553,14 @@ class HandoverVerificationControllerTest {
                 .andExpect(jsonPath("$.expected_dog_id").value(dog.getId()))
                 .andExpect(jsonPath("$.matched").value(false))
                 .andExpect(jsonPath("$.decision").value("NOT_MATCHED"))
-                .andExpect(jsonPath("$.similarity_score").value(0.99123))
-                .andExpect(jsonPath("$.top_match_is_expected").value(false))
+                .andExpect(jsonPath("$.similarity_score").value(0.55))
+                .andExpect(jsonPath("$.top_match_is_expected").value(true))
+                .andExpect(jsonPath("$.score_breakdown.centroid_score").value(0.56))
                 .andExpect(jsonPath("$.message").value("분양글에 등록된 강아지와 일치하지 않습니다. 거래 전 확인이 필요합니다."))
                 .andReturn();
 
         assertResponseIsSafe(result);
-        assertThat(responseBody(result)).doesNotContain(otherDogId, "other-point", "other/nose.jpg");
+        assertThat(responseBody(result)).doesNotContain(otherDogId, "other-point", "other-centroid");
     }
 
     @Test
@@ -550,8 +573,13 @@ class HandoverVerificationControllerTest {
         String privateBreed = "private-payload-breed";
         String privateNosePath = "dogs/private-dog/nose/private-nose-image.jpg";
         mockEmbedding();
-        when(qdrantDogVectorClient.searchExpectedDog(anyList(), eq(dog.getId())))
-                .thenReturn(List.of(new QdrantSearchResult(otherPointId, otherDogId, 0.99123, privateBreed, privateNosePath)));
+        when(qdrantDogVectorClient.searchExpectedDogReferences(anyList(), eq(dog.getId()), eq(TOP_K)))
+                .thenReturn(List.of(
+                        foreignReferenceResult(otherPointId, otherDogId, 0.99123),
+                        referenceResult(dog, 0, 0.55)
+                ));
+        when(qdrantDogVectorClient.searchExpectedDogCentroid(anyList(), eq(dog.getId())))
+                .thenReturn(List.of(centroidResult(dog, 0.56)));
 
         MvcResult result = handoverRequest(tokenFor(user), post.getId())
                 .andExpect(status().isOk())
@@ -559,7 +587,7 @@ class HandoverVerificationControllerTest {
                 .andExpect(jsonPath("$.expected_dog_id").value(dog.getId()))
                 .andExpect(jsonPath("$.matched").value(false))
                 .andExpect(jsonPath("$.decision").value("NOT_MATCHED"))
-                .andExpect(jsonPath("$.top_match_is_expected").value(false))
+                .andExpect(jsonPath("$.top_match_is_expected").value(true))
                 .andReturn();
 
         assertResponseIsSafe(result);
@@ -580,7 +608,8 @@ class HandoverVerificationControllerTest {
         Dog dog = saveDog(user, DogStatus.REGISTERED);
         AdoptionPost post = savePost(user, dog, AdoptionPostStatus.OPEN);
         mockEmbedding();
-        when(qdrantDogVectorClient.searchExpectedDog(anyList(), eq(dog.getId()))).thenReturn(List.of());
+        when(qdrantDogVectorClient.searchExpectedDogReferences(anyList(), eq(dog.getId()), eq(TOP_K))).thenReturn(List.of());
+        when(qdrantDogVectorClient.searchExpectedDogCentroid(anyList(), eq(dog.getId()))).thenReturn(List.of());
 
         MvcResult result = handoverRequest(tokenFor(user), post.getId())
                 .andExpect(status().isOk())
@@ -588,6 +617,11 @@ class HandoverVerificationControllerTest {
                 .andExpect(jsonPath("$.decision").value("NO_MATCH_CANDIDATE"))
                 .andExpect(jsonPath("$.similarity_score").value(nullValue()))
                 .andExpect(jsonPath("$.top_match_is_expected").value(false))
+                .andExpect(jsonPath("$.score_breakdown.final_score").value(nullValue()))
+                .andExpect(jsonPath("$.score_breakdown.max_reference_score").value(nullValue()))
+                .andExpect(jsonPath("$.score_breakdown.top2_average_score").value(nullValue()))
+                .andExpect(jsonPath("$.score_breakdown.centroid_score").value(nullValue()))
+                .andExpect(jsonPath("$.score_breakdown.hit_count").value(0))
                 .andExpect(jsonPath("$.message").value("일치 후보를 찾지 못했습니다. 비문 이미지를 다시 촬영해주세요."))
                 .andReturn();
 
@@ -601,8 +635,7 @@ class HandoverVerificationControllerTest {
         AdoptionPost post = savePost(user, dog, AdoptionPostStatus.RESERVED);
         PersistenceSnapshot before = snapshot(post, dog);
         mockEmbedding();
-        when(qdrantDogVectorClient.searchExpectedDog(anyList(), eq(dog.getId())))
-                .thenReturn(List.of(expectedDogResult(dog, 0.95)));
+        mockExpectedDogReferenceSet(dog, 0.95);
 
         handoverRequest(tokenFor(user), post.getId())
                 .andExpect(status().isOk())
@@ -616,8 +649,79 @@ class HandoverVerificationControllerTest {
                 .thenReturn(new EmbedClient.EmbedResponse(List.of(0.1, 0.2, 0.3), VECTOR_DIMENSION, MODEL));
     }
 
-    private QdrantSearchResult expectedDogResult(Dog dog, double score) {
-        return new QdrantSearchResult(dog.getId(), dog.getId(), score, dog.getBreed(), "secret/nose.jpg");
+    private void mockExpectedDogReferenceSet(Dog dog, double... referenceScores) {
+        mockExpectedDogReferenceSetWithCentroid(dog, 0.88, referenceScores);
+    }
+
+    private void mockExpectedDogReferenceSetWithCentroid(Dog dog, double centroidScore, double... referenceScores) {
+        when(qdrantDogVectorClient.searchExpectedDogReferences(anyList(), eq(dog.getId()), eq(TOP_K)))
+                .thenReturn(referenceResults(dog, referenceScores));
+        when(qdrantDogVectorClient.searchExpectedDogCentroid(anyList(), eq(dog.getId())))
+                .thenReturn(List.of(centroidResult(dog, centroidScore)));
+    }
+
+    private List<QdrantVectorSearchResult> referenceResults(Dog dog, double... scores) {
+        List<QdrantVectorSearchResult> results = new ArrayList<>();
+        for (int i = 0; i < scores.length; i++) {
+            results.add(referenceResult(dog, i, scores[i]));
+        }
+        return results;
+    }
+
+    private QdrantVectorSearchResult referenceResult(Dog dog, int referenceIndex, double score) {
+        return new QdrantVectorSearchResult(
+                "reference-point-" + referenceIndex,
+                dog.getId(),
+                score,
+                "REFERENCE",
+                (long) referenceIndex + 1,
+                referenceIndex,
+                MODEL,
+                VECTOR_DIMENSION,
+                "test-preprocess"
+        );
+    }
+
+    private QdrantVectorSearchResult centroidResult(Dog dog, double score) {
+        return new QdrantVectorSearchResult(
+                "centroid-point",
+                dog.getId(),
+                score,
+                "CENTROID",
+                null,
+                null,
+                MODEL,
+                VECTOR_DIMENSION,
+                "test-preprocess"
+        );
+    }
+
+    private QdrantVectorSearchResult foreignReferenceResult(String pointId, String dogId, double score) {
+        return new QdrantVectorSearchResult(
+                pointId,
+                dogId,
+                score,
+                "REFERENCE",
+                999L,
+                0,
+                MODEL,
+                VECTOR_DIMENSION,
+                "private-preprocess"
+        );
+    }
+
+    private QdrantVectorSearchResult foreignCentroidResult(String pointId, String dogId, double score) {
+        return new QdrantVectorSearchResult(
+                pointId,
+                dogId,
+                score,
+                "CENTROID",
+                null,
+                null,
+                MODEL,
+                VECTOR_DIMENSION,
+                "private-preprocess"
+        );
     }
 
     private ResultActions handoverRequest(String token, Long postId) throws Exception {
@@ -737,12 +841,18 @@ class HandoverVerificationControllerTest {
         JsonNode body = objectMapper.readTree(responseBody(result));
         assertThat(fieldNames(body)).containsExactlyInAnyOrderElementsOf(RESPONSE_FIELDS);
         assertThat(fieldNames(body)).allMatch(name -> name.matches("[a-z0-9_]+"));
+        JsonNode scoreBreakdown = body.get("score_breakdown");
+        assertThat(scoreBreakdown).isNotNull();
+        assertThat(fieldNames(scoreBreakdown)).containsExactlyInAnyOrderElementsOf(SCORE_BREAKDOWN_FIELDS);
+        assertThat(fieldNames(scoreBreakdown)).allMatch(name -> name.matches("[a-z0-9_]+"));
         assertThat(responseBody(result)).doesNotContain(
                 "nose_image_url",
                 "nose_image_path",
                 "top_matched_dog_id",
                 "qdrant_point_id",
                 "point_id",
+                "dog_image_id",
+                "reference_index",
                 "payload",
                 "author_user_id",
                 "postId",
