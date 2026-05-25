@@ -258,6 +258,7 @@ public class DogQueryService {
                 case PASSED -> new VerificationProjection(result, "VERIFIED", "COMPLETED");
                 case DUPLICATE_SUSPECTED ->
                         new VerificationProjection(result, "DUPLICATE_SUSPECTED", "SKIPPED_DUPLICATE");
+                case REVIEW_REQUIRED -> new VerificationProjection(result, "REVIEW_REQUIRED", "SKIPPED_REVIEW");
                 case PENDING -> new VerificationProjection(result, "PENDING", "PENDING");
                 case EMBED_FAILED, QDRANT_SEARCH_FAILED -> new VerificationProjection(result, "FAILED", "FAILED");
                 case QDRANT_UPSERT_FAILED -> new VerificationProjection(result, "FAILED", "QDRANT_SYNC_FAILED");

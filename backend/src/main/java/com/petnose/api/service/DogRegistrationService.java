@@ -355,6 +355,7 @@ public class DogRegistrationService {
         return switch (result) {
             case PASSED -> "VERIFIED";
             case DUPLICATE_SUSPECTED -> "DUPLICATE_SUSPECTED";
+            case REVIEW_REQUIRED -> "REVIEW_REQUIRED";
             case PENDING -> "PENDING";
             case EMBED_FAILED, QDRANT_SEARCH_FAILED, QDRANT_UPSERT_FAILED -> "FAILED";
         };
@@ -364,6 +365,7 @@ public class DogRegistrationService {
         return switch (result) {
             case PASSED -> "COMPLETED";
             case DUPLICATE_SUSPECTED -> "SKIPPED_DUPLICATE";
+            case REVIEW_REQUIRED -> "SKIPPED_REVIEW";
             case PENDING -> "PENDING";
             case EMBED_FAILED, QDRANT_SEARCH_FAILED -> "FAILED";
             case QDRANT_UPSERT_FAILED -> "QDRANT_SYNC_FAILED";

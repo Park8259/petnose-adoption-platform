@@ -47,7 +47,7 @@ CREATE TABLE dogs (
     CONSTRAINT chk_dogs_gender
         CHECK (gender IS NULL OR gender IN ('MALE', 'FEMALE', 'UNKNOWN')),
     CONSTRAINT chk_dogs_status
-        CHECK (status IN ('PENDING', 'REGISTERED', 'DUPLICATE_SUSPECTED', 'REJECTED', 'ADOPTED', 'INACTIVE'))
+        CHECK (status IN ('PENDING', 'REGISTERED', 'DUPLICATE_SUSPECTED', 'REVIEW_REQUIRED', 'REJECTED', 'ADOPTED', 'INACTIVE'))
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
   COLLATE = utf8mb4_unicode_ci;
@@ -73,6 +73,37 @@ CREATE TABLE dog_images (
         CHECK (image_type IN ('NOSE', 'PROFILE'))
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
+    COLLATE = utf8mb4_unicode_ci;
+
+CREATE TABLE dog_nose_references (
+    id CHAR(36) NOT NULL,
+    dog_id CHAR(36) NOT NULL,
+    dog_image_id BIGINT NULL,
+    qdrant_point_id CHAR(36) NOT NULL,
+    embedding_kind VARCHAR(20) NOT NULL,
+    reference_index INT NULL,
+    model VARCHAR(100) NOT NULL,
+    dimension INT NOT NULL,
+    preprocess_version VARCHAR(100) NOT NULL,
+    quality_status VARCHAR(30) NOT NULL DEFAULT 'ACCEPTED',
+    quality_score DECIMAL(6, 5) NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_dog_nose_references_qdrant_point_id (qdrant_point_id),
+    KEY idx_dog_nose_references_dog_id (dog_id),
+    KEY idx_dog_nose_references_dog_kind_active (dog_id, embedding_kind, is_active),
+    KEY idx_dog_nose_references_image_id (dog_image_id),
+    CONSTRAINT fk_dog_nose_references_dog
+        FOREIGN KEY (dog_id) REFERENCES dogs (id),
+    CONSTRAINT fk_dog_nose_references_image
+        FOREIGN KEY (dog_image_id) REFERENCES dog_images (id),
+    CONSTRAINT chk_dog_nose_references_kind
+        CHECK (embedding_kind IN ('REFERENCE', 'CENTROID')),
+    CONSTRAINT chk_dog_nose_references_quality
+        CHECK (quality_status IN ('ACCEPTED', 'REJECTED', 'NEEDS_REVIEW'))
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
   COLLATE = utf8mb4_unicode_ci;
 
 CREATE TABLE verification_logs (
@@ -87,6 +118,7 @@ CREATE TABLE verification_logs (
     result VARCHAR(40) NOT NULL,
     purpose VARCHAR(40) NOT NULL DEFAULT 'DOG_REGISTRATION',
     similarity_score DECIMAL(6, 5) NULL,
+    score_breakdown_json TEXT NULL,
     candidate_dog_id CHAR(36) NULL,
     model VARCHAR(100) NULL,
     dimension INT NULL,
@@ -110,7 +142,7 @@ CREATE TABLE verification_logs (
         FOREIGN KEY (candidate_dog_id) REFERENCES dogs (id)
             ON DELETE SET NULL,
     CONSTRAINT chk_verification_logs_result
-        CHECK (result IN ('PENDING', 'PASSED', 'DUPLICATE_SUSPECTED', 'EMBED_FAILED', 'QDRANT_SEARCH_FAILED', 'QDRANT_UPSERT_FAILED')),
+        CHECK (result IN ('PENDING', 'PASSED', 'DUPLICATE_SUSPECTED', 'REVIEW_REQUIRED', 'EMBED_FAILED', 'QDRANT_SEARCH_FAILED', 'QDRANT_UPSERT_FAILED')),
     CONSTRAINT chk_verification_logs_purpose
         CHECK (purpose IN ('DOG_REGISTRATION', 'HANDOVER_COMPARE'))
 ) ENGINE = InnoDB
