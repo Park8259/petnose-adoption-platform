@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 import re
 from pathlib import Path
 from typing import Any
 
-from .base import BaseEmbedder, EmbedResult, EmbedderError, EmbedderNotReadyError
+from .base import BaseEmbedder, EmbedInput, EmbedResult, EmbedderError, EmbedderNotReadyError
 from .image_preprocess import decode_rgb_image
 
 
@@ -110,24 +111,36 @@ class DogNoseIdentification2Embedder(BaseEmbedder):
             return False
 
     def embed(self, image_bytes: bytes, content_type: str | None = None) -> EmbedResult:
+        return self.embed_batch([EmbedInput(image_bytes=image_bytes, content_type=content_type)])[0]
+
+    def embed_batch(self, images: Sequence[EmbedInput]) -> list[EmbedResult]:
         if not self.model_loaded or self._model is None or self._preprocess is None:
             raise EmbedderNotReadyError("실제 모델이 아직 로드되지 않았습니다.")
+        if not images:
+            return []
 
-        image = decode_rgb_image(image_bytes)
-        tensor = self._preprocess(image).unsqueeze(0).to(self._runtime_device)
+        tensors = []
+        for item in images:
+            image = decode_rgb_image(item.image_bytes)
+            tensors.append(self._preprocess(image))
+
+        batch = self._torch.stack(tensors).to(self._runtime_device)
 
         with self._torch.inference_mode():
-            feature = self._model(tensor, return_logits=False)
+            feature = self._model(batch, return_logits=False)
             # dog_nose_inference_colab.ipynb 셀 13 근거: L2 normalize 후 cosine 사용
             feature = self._torch.nn.functional.normalize(feature, p=2, dim=1)
 
-        vector = feature.squeeze(0).detach().cpu().float().tolist()
-        if not vector:
-            raise EmbedderError("모델 출력 벡터가 비어 있습니다.")
+        vectors = feature.detach().cpu().float().tolist()
+        results: list[EmbedResult] = []
+        for vector in vectors:
+            if not vector:
+                raise EmbedderError("모델 출력 벡터가 비어 있습니다.")
 
-        dimension = len(vector)
-        self.vector_dim = dimension
-        return EmbedResult(vector=vector, dimension=dimension, model=self.model_name)
+            dimension = len(vector)
+            self.vector_dim = dimension
+            results.append(EmbedResult(vector=vector, dimension=dimension, model=self.model_name))
+        return results
 
     def health_dict(self) -> dict[str, Any]:
         data = super().health_dict()
