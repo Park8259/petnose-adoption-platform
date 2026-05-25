@@ -25,6 +25,8 @@ public record HandoverVerificationResponse(
         @JsonProperty("dimension")
         int dimension,
         @JsonProperty("message")
-        String message
+        String message,
+        @JsonProperty("score_breakdown")
+        HandoverScoreBreakdownResponse scoreBreakdown
 ) {
 }
