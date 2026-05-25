@@ -257,7 +257,7 @@ Error codes:
 
 ## Dog Registration
 
-### Nose Image로 Dog 등록
+### Nose Images로 Dog 등록
 
 ```http
 POST /api/dogs/register
@@ -283,7 +283,17 @@ Form fields:
 - `gender`: required, `MALE`, `FEMALE`, or `UNKNOWN`
 - `birth_date`: `YYYY-MM-DD`, optional
 - `description`: string, optional
-- `nose_image`: file, required
+- `nose_images`: file[], required, min `3`, max `5`
+
+Dog nose v2 active contract:
+
+- `nose_image` 단건 field는 v2 active registration contract가 아니다.
+- Client는 close-up cropped dog nose image 3~5장을 제출해야 한다.
+- Backend는 crop/detection/alignment를 수행하지 않는다.
+- Registration embedding은 Python Embed `/embed-batch`를 1회 호출한다.
+- Normal registration은 Qdrant `REFERENCE` point 3~5개와 `CENTROID` point 1개를 upsert한다.
+- Qdrant point id는 UUID이며 dog id와 같지 않다.
+- API response의 `qdrant_point_id`는 v2에서 `null`이다.
 
 Response `201`, normal registration:
 
@@ -294,13 +304,28 @@ Response `201`, normal registration:
   "status": "REGISTERED",
   "verification_status": "VERIFIED",
   "embedding_status": "COMPLETED",
-  "qdrant_point_id": "uuid",
+  "qdrant_point_id": null,
   "model": "dog-nose-identification2:s101_224",
   "dimension": 2048,
   "max_similarity_score": 0.41,
-  "nose_image_url": "/files/dogs/{uuid}/nose/20260508_010203_nose.jpg",
+  "nose_image_url": "/files/dogs/{uuid}/nose/20260508_010203_nose_1.jpg",
   "profile_image_url": null,
   "top_match": null,
+  "embedding_mode": "MULTI_REFERENCE",
+  "reference_count": 3,
+  "score_breakdown": {
+    "final_score": 0.41,
+    "max_reference_score": 0.43,
+    "top2_average_score": 0.40,
+    "centroid_score": 0.39,
+    "hit_count": 1,
+    "reference_consistency_score": 0.82
+  },
+  "nose_image_urls": [
+    "/files/dogs/{uuid}/nose/20260508_010203_nose_1.jpg",
+    "/files/dogs/{uuid}/nose/20260508_010204_nose_2.jpg",
+    "/files/dogs/{uuid}/nose/20260508_010205_nose_3.jpg"
+  ],
   "message": "중복 의심 개체가 없어 등록이 완료되었습니다."
 }
 ```
@@ -312,6 +337,12 @@ Normal registration fields:
 - `status`
 - `verification_status`
 - `embedding_status`
+- `qdrant_point_id` (`null`)
+- `embedding_mode` (`MULTI_REFERENCE`)
+- `reference_count`
+- `score_breakdown`
+- `nose_image_url` (대표 첫 reference image URL)
+- `nose_image_urls` (전체 reference image URL list)
 - `profile_image_url` (`null`)
 - `top_match`
 - `message`
@@ -321,7 +352,7 @@ App integration notes:
 - Flutter adoption-post creation uses the returned `dog_id` when `registration_allowed=true`.
 - Dog registration does not accept or store `profile_image`; dog profile image is uploaded later through `POST /api/adoption-posts` and stored as `dog_images.image_type=PROFILE`.
 - Clients should use `dog_id`, `registration_allowed`, `status`, `verification_status`, `embedding_status`, `top_match`, and `message` for the active registration UI flow.
-- Current response also includes diagnostic fields such as `qdrant_point_id`, `model`, `dimension`, `max_similarity_score`, and owner-scoped `nose_image_url`; app screens should not require these for normal flow rendering.
+- Current response also includes diagnostic fields such as `model`, `dimension`, `max_similarity_score`, `score_breakdown`, and owner-scoped `nose_image_url`/`nose_image_urls`; app screens should not require these for normal flow rendering.
 
 Response `200`, duplicate suspected:
 
@@ -343,6 +374,21 @@ Response `200`, duplicate suspected:
     "similarity_score": 0.99782,
     "breed": "말티즈"
   },
+  "embedding_mode": "MULTI_REFERENCE",
+  "reference_count": 3,
+  "score_breakdown": {
+    "final_score": 0.99782,
+    "max_reference_score": 0.99812,
+    "top2_average_score": 0.99721,
+    "centroid_score": 0.99687,
+    "hit_count": 4,
+    "reference_consistency_score": 0.84
+  },
+  "nose_image_urls": [
+    "/files/dogs/new-dog-id/nose/..._1.jpg",
+    "/files/dogs/new-dog-id/nose/..._2.jpg",
+    "/files/dogs/new-dog-id/nose/..._3.jpg"
+  ],
   "message": "기존 등록견과 동일 개체로 의심되어 등록이 제한됩니다."
 }
 ```
@@ -355,6 +401,7 @@ Duplicate suspected contract:
 - `embedding_status`는 `SKIPPED_DUPLICATE`다.
 - `qdrant_point_id`는 `null`이다.
 - `max_similarity_score`는 반환된 match 중 가장 높은 score다.
+- `score_breakdown`을 포함한다.
 - `top_match`는 `dog_id`, `similarity_score`, `breed`만 포함한다.
 - `top_match`는 `nose_image_url`을 포함하지 않는다.
 - top-level `nose_image_url`은 owner-scoped registration response에서 새로 제출한 dog image이며 public exposure가 아니다.
@@ -362,29 +409,85 @@ Duplicate suspected contract:
 - `breed`와 `gender`는 DB-level flexibility와 별개로 dog registration API request에서는 required다.
 - `UNKNOWN`은 client가 명시적으로 제출할 수 있는 gender 값이며 DB default로 자동 적용되는 값이 아니다.
 
+Response `200`, review required:
+
+```json
+{
+  "dog_id": "new-dog-id",
+  "registration_allowed": false,
+  "status": "REVIEW_REQUIRED",
+  "verification_status": "REVIEW_REQUIRED",
+  "embedding_status": "SKIPPED_REVIEW",
+  "qdrant_point_id": null,
+  "model": "dog-nose-identification2:s101_224",
+  "dimension": 2048,
+  "max_similarity_score": 0.68211,
+  "nose_image_url": "/files/dogs/new-dog-id/nose/...",
+  "profile_image_url": null,
+  "top_match": {
+    "dog_id": "existing-dog-id",
+    "similarity_score": 0.68211,
+    "breed": "말티즈"
+  },
+  "embedding_mode": "MULTI_REFERENCE",
+  "reference_count": 3,
+  "score_breakdown": {
+    "final_score": 0.68211,
+    "max_reference_score": 0.70122,
+    "top2_average_score": 0.67654,
+    "centroid_score": 0.64123,
+    "hit_count": 2,
+    "reference_consistency_score": 0.81
+  },
+  "nose_image_urls": [
+    "/files/dogs/new-dog-id/nose/..._1.jpg",
+    "/files/dogs/new-dog-id/nose/..._2.jpg",
+    "/files/dogs/new-dog-id/nose/..._3.jpg"
+  ],
+  "message": "기존 등록견과 유사도가 애매해 검토가 필요합니다."
+}
+```
+
+Review required contract:
+
+- `registration_allowed`는 `false`다.
+- `status`는 `REVIEW_REQUIRED`다.
+- `verification_status`는 `REVIEW_REQUIRED`다.
+- `embedding_status`는 `SKIPPED_REVIEW`다.
+- `qdrant_point_id`는 `null`이다.
+- Qdrant upsert와 `dog_nose_references` 생성은 수행하지 않는다.
+
 Duplicate threshold policy:
 
 - dog registration duplicate detection uses Qdrant cosine search score.
-- current MVP duplicate threshold is `0.70`.
-- duplicate if Qdrant score `>= 0.70`.
-- not duplicate if Qdrant score `< 0.70`.
-- Qdrant candidate search threshold default is `0.70`.
-- Spring duplicate decision threshold default is `0.70`.
+- Qdrant candidate search threshold default is `0.55`.
+- Spring duplicate decision threshold default is `0.75`.
+- Spring review lower bound default is `0.60`.
+- duplicate if final score `>= 0.75`.
+- review required if `0.60 <= final_score < 0.75`.
+- pass if final score `< 0.60`.
 - threshold values are runtime configuration, not DB fields.
-- Qdrant threshold and Spring threshold must stay aligned because Qdrant filters candidates before Spring makes the final duplicate decision.
 - duplicate suspected response remains HTTP `200` with `registration_allowed=false`.
+- review required response remains HTTP `200` with `registration_allowed=false`.
 - normal registration response remains HTTP `201` with `registration_allowed=true`.
 - `top_match` privacy is unchanged and does not expose raw `nose_image_url`.
-- handover verification is a separate stateless flow, but current MVP aligns the same/different threshold to the same Qdrant cosine score `0.70` standard for simplicity.
-- In normal registration, `max_similarity_score=0.0` can mean no Qdrant candidate was returned above `score_threshold=0.70`; it is not necessarily a literal model similarity score of zero.
+- In normal registration, `max_similarity_score=0.0` can mean no Qdrant candidate was returned above `score_threshold=0.55`; it is not necessarily a literal model similarity score of zero.
 
 Calculation policy:
 
-- `qdrant_point_id`는 normal registration에서 `dog_id`, duplicate suspected registration에서 `null`로 계산한다.
+- `qdrant_point_id`는 dog nose v2 response에서 `null`로 계산한다.
 - `verification_status`는 latest verification result에서 계산한다.
 - `embedding_status`는 latest verification result에서 계산한다.
 - similarity, duplicate candidate, model, dimension, failure metadata는 verification history에 저장한다.
+- `score_breakdown`은 response에 포함하며 persistence에서는 `verification_logs.score_breakdown_json`으로 저장할 수 있다.
 - embedding vector는 Qdrant에만 저장한다.
+
+Side-effect policy:
+
+- reference consistency 실패는 HTTP `400`이다.
+- reference consistency 실패 시 file/DB/Qdrant side effect가 없어야 한다.
+- `DUPLICATE_SUSPECTED`와 `REVIEW_REQUIRED`는 file/DB/log evidence를 남길 수 있지만 Qdrant upsert는 수행하지 않는다.
+- `PASSED`만 Qdrant upsert와 `dog_nose_references` 생성을 수행한다.
 
 Error codes:
 
@@ -393,7 +496,9 @@ Error codes:
 - `USER_INACTIVE`: JWT subject가 inactive user로 resolve됨
 - `NAME_REQUIRED`: `name`이 missing 또는 blank
 - `BREED_REQUIRED`: `breed`가 missing 또는 blank
-- `NOSE_IMAGE_REQUIRED`: `nose_image` field가 없거나 비어 있음
+- `NOSE_IMAGES_REQUIRED`: `nose_images` field가 없거나 비어 있음
+- `NOSE_IMAGES_COUNT_INVALID`: `nose_images` 개수가 3~5 범위 밖임
+- `NOSE_REFERENCE_INCONSISTENT`: 제출된 reference image 간 consistency가 기준 미만임
 - `VALIDATION_FAILED`: malformed request field 또는 invalid `gender`
 - `INVALID_BIRTH_DATE`: `birth_date`가 `YYYY-MM-DD` 형식이 아님
 - `INVALID_NOSE_IMAGE`: nose image를 처리할 수 없음
@@ -823,6 +928,8 @@ Purpose:
 
 - stateless handover-time identity verification이다.
 - 새로 촬영한 dog nose image가 `adoption_posts.dog_id`에 연결된 dog와 일치하는지 확인한다.
+- Python Embed 호출은 `/embed` 단건 endpoint를 사용한다.
+- Qdrant 비교 대상은 expected dog의 active `REFERENCE`/`CENTROID` point set이다.
 - persistent record를 만들거나 수정하지 않는다.
 - handover image를 저장하지 않는다.
 - dog를 생성하지 않는다.
@@ -852,7 +959,7 @@ Expected dog policy:
 
 - `expected_dog_id`는 `adoption_posts.dog_id`다.
 - `post_id`는 `adoption_posts.id`다.
-- `expected_dog_id`는 `dogs.id`와 같고 Qdrant point id와도 같다.
+- Qdrant point id는 `expected_dog_id`와 같지 않다. expected dog의 active Qdrant point ids는 `dog_nose_references`가 추적한다.
 - expected dog가 존재하지 않으면 `DOG_NOT_FOUND`를 반환한다.
 - expected dog는 `REGISTERED`여야 한다.
 - expected dog가 `REGISTERED`가 아니면 `DOG_NOT_VERIFIED`를 반환한다.
@@ -860,10 +967,9 @@ Expected dog policy:
 Default MVP `200` decision values:
 
 - `MATCHED`
+- `AMBIGUOUS`
 - `NOT_MATCHED`
 - `NO_MATCH_CANDIDATE`
-
-`AMBIGUOUS` enum value는 response compatibility를 위해 남아 있지만 direct expected-dog MVP runtime에서는 기본적으로 반환하지 않는다.
 
 Response `200`, matched:
 
@@ -874,12 +980,44 @@ Response `200`, matched:
   "matched": true,
   "decision": "MATCHED",
   "similarity_score": 0.80631,
-  "threshold": 0.70,
-  "ambiguous_threshold": 0.70,
+  "threshold": 0.75,
+  "ambiguous_threshold": 0.60,
   "top_match_is_expected": true,
   "model": "dog-nose-identification2:s101_224",
   "dimension": 2048,
-  "message": "분양글에 등록된 강아지와 일치합니다."
+  "message": "분양글에 등록된 강아지와 일치합니다.",
+  "score_breakdown": {
+    "final_score": 0.80631,
+    "max_reference_score": 0.81234,
+    "top2_average_score": 0.80111,
+    "centroid_score": 0.79012,
+    "hit_count": 4
+  }
+}
+```
+
+Response `200`, ambiguous:
+
+```json
+{
+  "post_id": 501,
+  "expected_dog_id": "dog-uuid",
+  "matched": false,
+  "decision": "AMBIGUOUS",
+  "similarity_score": 0.67211,
+  "threshold": 0.75,
+  "ambiguous_threshold": 0.60,
+  "top_match_is_expected": true,
+  "model": "dog-nose-identification2:s101_224",
+  "dimension": 2048,
+  "message": "유사도가 기준에 근접하지만 확정하기 어렵습니다. 비문 이미지를 다시 촬영해주세요.",
+  "score_breakdown": {
+    "final_score": 0.67211,
+    "max_reference_score": 0.67211,
+    "top2_average_score": 0.65102,
+    "centroid_score": 0.64088,
+    "hit_count": 2
+  }
 }
 ```
 
@@ -891,12 +1029,19 @@ Response `200`, not matched:
   "expected_dog_id": "dog-uuid",
   "matched": false,
   "decision": "NOT_MATCHED",
-  "similarity_score": 0.69999,
-  "threshold": 0.70,
-  "ambiguous_threshold": 0.70,
+  "similarity_score": 0.59999,
+  "threshold": 0.75,
+  "ambiguous_threshold": 0.60,
   "top_match_is_expected": true,
   "model": "dog-nose-identification2:s101_224",
   "dimension": 2048,
+  "score_breakdown": {
+    "final_score": 0.59999,
+    "max_reference_score": 0.59999,
+    "top2_average_score": 0.57123,
+    "centroid_score": 0.55234,
+    "hit_count": 1
+  },
   "message": "분양글에 등록된 강아지와 일치하지 않습니다. 거래 전 확인이 필요합니다."
 }
 ```
@@ -910,11 +1055,18 @@ Response `200`, no match candidate:
   "matched": false,
   "decision": "NO_MATCH_CANDIDATE",
   "similarity_score": null,
-  "threshold": 0.70,
-  "ambiguous_threshold": 0.70,
+  "threshold": 0.75,
+  "ambiguous_threshold": 0.60,
   "top_match_is_expected": false,
   "model": "dog-nose-identification2:s101_224",
   "dimension": 2048,
+  "score_breakdown": {
+    "final_score": null,
+    "max_reference_score": null,
+    "top2_average_score": null,
+    "centroid_score": null,
+    "hit_count": 0
+  },
   "message": "일치 후보를 찾지 못했습니다. 비문 이미지를 다시 촬영해주세요."
 }
 ```
@@ -922,13 +1074,14 @@ Response `200`, no match candidate:
 Decision algorithm:
 
 - `expected_dog_id = adoption_posts.dog_id`
-- Qdrant point id는 `expected_dog_id`와 같은 `dog_id`다. `post_id`를 Qdrant id로 사용하지 않는다.
-- Lookup path는 `post_id -> adoption_posts.dog_id -> Qdrant point id = dog_id`다.
+- Qdrant point id는 `expected_dog_id`와 같지 않다. `post_id`를 Qdrant id로 사용하지 않는다.
+- Lookup path는 `post_id -> adoption_posts.dog_id -> dog_nose_references/Qdrant expected reference set`이다.
 - Python Embed는 handover image에서 `vector`, `dimension`, `model`만 반환한다.
 - Qdrant가 cosine similarity `score`를 생성하고 Spring이 threshold policy를 적용한다.
-- Spring은 handover image embedding vector로 Qdrant search를 수행하되, query filter를 `is_active=true`와 `dog_id=expected_dog_id`로 제한한다.
-- 이 direct expected-dog query에는 `score_threshold`를 보내지 않는다. expected dog point가 존재하지만 `0.70` 미만인 경우에도 Spring이 score를 받아 `NOT_MATCHED`로 판단해야 하기 때문이다.
-- default MVP handover policy uses Qdrant cosine score `0.70` as the same-dog threshold.
+- Spring은 handover image embedding vector로 Qdrant search를 수행하되, query filter를 `is_active=true`, `dog_id=expected_dog_id`, `embedding_kind=REFERENCE` 또는 `CENTROID`로 제한한다.
+- Reference 결과와 centroid 결과를 expected dog 기준으로 aggregate하고 `score_breakdown`을 만든다.
+- Decision threshold는 `max_reference_score`에 적용한다.
+- default MVP handover match threshold는 `0.75`, ambiguous threshold는 `0.60`이다.
 - `matched`가 canonical yes/no result이고 `decision`은 reason code다.
 
 Expected dog candidate가 반환되지 않는 경우:
@@ -938,29 +1091,34 @@ Expected dog candidate가 반환되지 않는 경우:
 - `similarity_score = null`
 - `top_match_is_expected = false`
 
-Expected dog candidate가 반환되고 `candidate.dog_id == expected_dog_id`이며 `score >= 0.70`인 경우:
+Expected dog candidate가 반환되고 `candidate.dog_id == expected_dog_id`이며 decision score가 `0.75` 이상인 경우:
 
 - `decision = MATCHED`
 - `matched = true`
-- `similarity_score = score`
+- `similarity_score = final_score`
 - `top_match_is_expected = true`
 
-Expected dog candidate가 반환되고 `candidate.dog_id == expected_dog_id`이며 `score < 0.70`인 경우:
+Expected dog candidate가 반환되고 `candidate.dog_id == expected_dog_id`이며 decision score가 `0.60` 이상 `0.75` 미만인 경우:
+
+- `decision = AMBIGUOUS`
+- `matched = false`
+- `similarity_score = final_score`
+- `top_match_is_expected = true`
+
+Expected dog candidate가 반환되고 `candidate.dog_id == expected_dog_id`이며 decision score가 `0.60` 미만인 경우:
 
 - `decision = NOT_MATCHED`
 - `matched = false`
-- `similarity_score = score`
+- `similarity_score = final_score`
 - `top_match_is_expected = true`
 
 Defensive case에서 filtered query가 `candidate.dog_id != expected_dog_id`를 반환하는 경우:
 
 - `decision = NOT_MATCHED`
 - `matched = false`
-- `similarity_score = score`
+- `similarity_score = null`
 - `top_match_is_expected = false`
 - 다른 dog id 또는 Qdrant payload details는 response에 노출하지 않는다.
-
-`AMBIGUOUS`는 legacy/custom compatibility enum으로 남아 있지만 default MVP direct expected-dog handover runtime에서는 기대하지 않는다.
 
 Privacy rules:
 
@@ -970,14 +1128,14 @@ Privacy rules:
 - handover verification response는 Qdrant payload details를 노출하지 않는다.
 - handover verification response는 `author_user_id`를 노출하지 않는다.
 - `expected_dog_id`는 adoption post workflow가 이미 dog를 참조하므로 노출할 수 있다.
-- current response에는 diagnostic field인 `similarity_score`, `threshold`, `ambiguous_threshold`, `model`, `dimension`, `top_match_is_expected`가 포함된다. Flutter 화면 분기와 사용자 안내는 `matched`, `decision`, `message`를 우선 사용하고 model/dimension 같은 내부 진단값에 의존하지 않는다.
+- current response에는 diagnostic field인 `similarity_score`, `threshold`, `ambiguous_threshold`, `model`, `dimension`, `top_match_is_expected`, `score_breakdown`이 포함된다. Flutter 화면 분기와 사용자 안내는 `matched`, `decision`, `message`를 우선 사용하고 model/dimension 같은 내부 진단값에 의존하지 않는다.
 
 Config defaults:
 
-- `match_threshold = 0.70`
-- `ambiguous_threshold = 0.70`
+- `match_threshold = 0.75`
+- `ambiguous_threshold = 0.60`
 - `top_k = 5`
-- 이 값들은 runtime configuration이며 DB field가 아니다. Direct expected-dog Qdrant query itself uses `limit=1`.
+- 이 값들은 runtime configuration이며 DB field가 아니다.
 
 Failure behavior:
 
@@ -1040,7 +1198,9 @@ curl -X POST "http://localhost/api/dogs/register" \
   -F "name=초코" \
   -F "breed=말티즈" \
   -F "gender=MALE" \
-  -F "nose_image=@/path/to/nose.jpg"
+  -F "nose_images=@/path/to/nose-1.jpg" \
+  -F "nose_images=@/path/to/nose-2.jpg" \
+  -F "nose_images=@/path/to/nose-3.jpg"
 
 curl -X POST "http://localhost/api/adoption-posts" \
   -H "Authorization: Bearer <JWT>" \
@@ -1082,7 +1242,7 @@ curl -X POST "http://localhost/api/adoption-posts/<post_id>/handover-verificatio
 
 ## Firebase Chat API (Optional)
 
-Firebase chat/push is an optional communication layer. It does not change the canonical 5-table MySQL schema and does not replace MySQL as the source of truth.
+Firebase chat/push is an optional communication layer. It does not change the canonical 6-table MySQL schema and does not replace MySQL as the source of truth.
 
 All endpoints in this section require a Spring Bearer token. When Firebase is disabled, authenticated requests return `503` with `FIREBASE_DISABLED`.
 

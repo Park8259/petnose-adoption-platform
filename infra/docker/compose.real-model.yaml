@@ -1,6 +1,6 @@
 # Optional override for real embedding model mode.
 # This file intentionally forces the real-model runtime values so mock
-# defaults from .env.example cannot leak into an MVP real-model run.
+# defaults from base compose or local env cannot leak into an MVP real-model run.
 # Usage example:
 #   docker compose --env-file infra/docker/.env \
 #     -f infra/docker/compose.yaml \
@@ -18,10 +18,24 @@ services:
       EMBED_VECTOR_DIM: "2048"
       EMBED_DEVICE: ${EMBED_DEVICE:-cpu}
       DOG_NOSE_MODEL_DIR: /models/dog_nose_identification2
+      MAX_BATCH_IMAGES: "5"
+      MAX_BATCH_TOTAL_BYTES: "83886080"
     volumes:
       - ${DOG_NOSE_MODEL_DIR_HOST:-../../../dog_nose_identification2/dog_nose_identification2}:/models/dog_nose_identification2:ro
 
   spring-api:
     environment:
-      QDRANT_COLLECTION: dog_nose_embeddings_real_v1
+      QDRANT_COLLECTION: dog_nose_embeddings_real_v2
       QDRANT_VECTOR_DIM: "2048"
+      QDRANT_SEARCH_SCORE_THRESHOLD: "0.55"
+      NOSE_DUPLICATE_THRESHOLD: "0.75"
+      NOSE_REVIEW_LOWER_BOUND: "0.60"
+      NOSE_REFERENCE_MIN_COUNT: "3"
+      NOSE_REFERENCE_MAX_COUNT: "5"
+      NOSE_REFERENCE_CONSISTENCY_THRESHOLD: "0.60"
+      NOSE_PREPROCESS_VERSION: rgb_resize224_bicubic_imagenet_l2_v1
+      PETNOSE_HANDOVER_VERIFICATION_MATCH_THRESHOLD: "0.75"
+      PETNOSE_HANDOVER_VERIFICATION_AMBIGUOUS_THRESHOLD: "0.60"
+      MAX_UPLOAD_FILE_SIZE_MB: "20"
+      MAX_UPLOAD_REQUEST_SIZE_MB: "80"
+      PYTHON_EMBED_RESPONSE_TIMEOUT_MS: "30000"

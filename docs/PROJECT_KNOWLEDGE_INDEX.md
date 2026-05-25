@@ -35,7 +35,7 @@
 
 ## Pre-Share Schema Count Note
 
-schema count 불일치는 해결되었다. pre-adoption nose verification ticket은 `verification_logs`로 통합되었고 current MVP app table은 5개다. 상세 refactor 기록은 `docs/reference/MVP_SCHEMA_TABLE_COUNT_REVIEW.md`를 확인한다.
+schema count 불일치는 해결되었다. pre-adoption nose verification ticket은 `verification_logs`로 통합되었고 dog nose v2 reference metadata는 `dog_nose_references`가 추적한다. current MVP app table은 6개다. 상세 refactor 기록은 `docs/reference/MVP_SCHEMA_TABLE_COUNT_REVIEW.md`를 확인한다.
 
 ## Task-Specific Routing
 
@@ -58,19 +58,24 @@ schema count 불일치는 해결되었다. pre-adoption nose verification ticket
 - 활성 role은 `USER` / `ADMIN`만 사용한다.
 - `SHELTER` / `ADOPTER`는 active role이 아니다.
 - `publisher_profiles`, `shelter_profiles`, `seller_profiles`, `auth_logs`, `reports`, `refresh_tokens`는 active MVP에 없다.
-- 활성 domain table은 아래 5개다.
+- 활성 domain table은 아래 6개다.
   - `users`
   - `dogs`
   - `dog_images`
+  - `dog_nose_references`
   - `verification_logs`
   - `adoption_posts`
 - `users`가 `display_name`, `contact_phone`, `region`, `is_active`를 직접 가진다.
 - MySQL이 source of truth다.
 - Qdrant는 dog nose vector index일 뿐이다.
 - Firebase chat/push는 optional communication layer로 구현될 수 있으며 MySQL 대체물이 아니다.
-- Firebase chat/push는 canonical 5-table MySQL schema를 변경하지 않는다.
+- Firebase chat/push는 canonical 6-table MySQL schema를 변경하지 않는다.
 - `dog_images.file_path`는 upload root 기준 상대 경로만 저장한다.
 - API 응답 필드 `qdrant_point_id`, `verification_status`, `embedding_status`는 계산 필드이며 DB column이 아니다.
+- Dog nose v2 real Qdrant collection은 `dog_nose_embeddings_real_v2`이며 vector dimension은 `2048`, distance는 `Cosine`이다.
+- Qdrant point id는 UUID이고 `dogs.id`와 같지 않다. dog id와 point metadata는 Qdrant payload 및 MySQL `dog_nose_references`로 추적한다.
+- 정상 등록은 `REFERENCE` 3~5개와 `CENTROID` 1개를 Qdrant에 저장한다.
+- `qdrant_point_id` response field는 dog nose v2에서 `null`이다.
 - 모든 JSON response field는 `snake_case`를 유지한다.
 - 공통 error response shape는 아래 형태를 유지한다.
 
@@ -84,7 +89,7 @@ schema count 불일치는 해결되었다. pre-adoption nose verification ticket
 
 ## Current Implemented API Flow
 
-현재 `develop` 기준 Flutter MVP/API 흐름은 아래 endpoint를 구현된 기준으로 다룬다.
+현재 dog nose v2 branch 기준 Flutter MVP/API 흐름은 아래 endpoint를 구현된 기준으로 다룬다.
 
 - `POST /api/auth/register`
 - `POST /api/auth/login`
@@ -116,13 +121,15 @@ These endpoints do not change the canonical MySQL domain schema. Firebase disabl
 Dog registration과 adoption post creation ownership은 JWT-principal-only다.
 
 - request `user_id`는 active API contract input이 아니다.
-- 신규 Flutter 분양글 작성 flow는 `POST /api/dogs/register`에서 dog 기본 정보와 `nose_image`를 등록하고 duplicate suspicion을 검사한다.
+- 신규 Flutter 분양글 작성 flow는 `POST /api/dogs/register`에서 dog 기본 정보와 `nose_images` 3~5장을 등록하고 duplicate/review/pass decision을 검사한다.
+- dog registration embedding은 Python `/embed-batch` 1회 호출을 사용한다.
+- client가 close-up cropped nose image를 제공한다고 가정하며 backend는 crop/detection/alignment를 수행하지 않는다.
 - `POST /api/dogs/register` 성공 시 반환된 `dog_id`가 `POST /api/adoption-posts` request의 기준이다.
 - `POST /api/adoption-posts`는 multipart request로 required `profile_image`를 받고 `dog_images.image_type=PROFILE` row를 저장한다.
 - adoption post creation은 JWT principal과 `dog.owner_user_id`를 함께 검증한다.
 - adoption post creation은 embed service 호출이나 Qdrant upsert를 수행하지 않는다.
 
-Dog Query API는 current `develop`에 구현되어 있다.
+Dog Query API는 current dog nose v2 branch에 구현되어 있다.
 
 - dog list는 `nose_image_url`을 노출하지 않는다.
 - owner dog detail은 owner 자신의 dog `nose_image_url`을 노출할 수 있다.
@@ -135,9 +142,11 @@ Dog Query API는 current `develop`에 구현되어 있다.
 인도 시점 비문 확인(Handover-Time Dog Nose Verification)은 current MVP trust/safety flow에 포함되어 있다.
 
 - `POST /api/adoption-posts/{post_id}/handover-verifications`는 stateless API로 구현되어 있다.
-- 새로 촬영한 `nose_image`를 `adoption_posts.dog_id`에 연결된 expected dog와 비교한다.
-- Qdrant point id는 `post_id`가 아니라 `dog_id`다.
-- handover lookup path는 `post_id -> adoption_posts.dog_id -> Qdrant point id = dog_id`다.
+- 새로 촬영한 `nose_image`를 `adoption_posts.dog_id`에 연결된 expected dog reference set과 비교한다.
+- handover embedding은 Python `/embed` 단건 호출을 사용한다.
+- Qdrant point id는 `post_id`나 `dog_id`가 아니라 UUID다.
+- handover lookup path는 `post_id -> adoption_posts.dog_id -> dog_nose_references/Qdrant expected REFERENCE/CENTROID set`이다.
+- default decision thresholds는 `MATCHED >= 0.75`, `AMBIGUOUS 0.60 이상 0.75 미만`, `NOT_MATCHED < 0.60`이다.
 - Spring Boot가 Python Embed와 Qdrant 호출을 오케스트레이션한다.
 - Flutter는 Python Embed, Qdrant, MySQL을 직접 호출하지 않는다.
 - 이 흐름은 DB table을 추가하지 않는다.

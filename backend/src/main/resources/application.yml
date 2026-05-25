@@ -57,8 +57,8 @@ embed:
 qdrant:
   host: ${QDRANT_HOST:qdrant}
   port: ${QDRANT_PORT:6333}
-  collection: ${QDRANT_COLLECTION:dog_nose_embeddings}
-  vector-dimension: ${QDRANT_VECTOR_DIM:128}
+  collection: ${QDRANT_COLLECTION:dog_nose_embeddings_real_v2}
+  vector-dimension: ${QDRANT_VECTOR_DIM:2048}
   distance: ${QDRANT_DISTANCE:Cosine}
   search-top-k: ${QDRANT_SEARCH_TOP_K:5}
   search-score-threshold: ${QDRANT_SEARCH_SCORE_THRESHOLD:0.55}
