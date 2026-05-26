@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 
 from .embedding import create_embedder_from_env
 from .embedding.base import BaseEmbedder, EmbedInput, EmbedResult, EmbedderError, EmbedderNotReadyError
@@ -182,10 +182,13 @@ async def embed(image: UploadFile = File(...)):
 
 
 @app.post("/embed-batch")
-async def embed_batch(images: list[UploadFile] | None = File(default=None)):
+async def embed_batch(request: Request):
     embedder = _require_embedder()
 
-    if not images:
+    form = await request.form()
+    raw_images = form.getlist("images")
+
+    if not raw_images:
         raise HTTPException(
             status_code=400,
             detail={
@@ -193,6 +196,19 @@ async def embed_batch(images: list[UploadFile] | None = File(default=None)):
                 "message": "이미지 목록이 비어 있습니다.",
             },
         )
+
+    images: list[UploadFile] = []
+    for index, item in enumerate(raw_images):
+        if not hasattr(item, "filename") or not hasattr(item, "read"):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "INVALID_IMAGE",
+                    "message": "images multipart field는 file이어야 합니다.",
+                    "index": index,
+                },
+            )
+        images.append(item)
 
     if len(images) > MAX_BATCH_IMAGES:
         raise HTTPException(
