@@ -10,5 +10,5 @@ public record DogNoseScoreBreakdown(
         String policy
 ) {
 
-    public static final String MAX_REFERENCE_POLICY = "max_reference_v1";
+    public static final String MAX_REFERENCE_OR_CENTROID_POLICY = "max_reference_or_centroid_v1";
 }

@@ -32,6 +32,7 @@ import com.petnose.api.service.nose.DogNoseCandidateAggregator.DogNoseAggregatio
 import com.petnose.api.service.nose.DogNoseCandidateAggregator.DogNoseCandidateScore;
 import com.petnose.api.service.nose.DogNoseDecisionPolicy;
 import com.petnose.api.service.nose.DogNoseDecisionPolicy.DogNoseDecision;
+import com.petnose.api.service.nose.DogNoseScoreBreakdown;
 import com.petnose.api.service.nose.NoseReferenceConsistencyChecker;
 import com.petnose.api.service.nose.NoseReferenceConsistencyChecker.ReferenceConsistencyResult;
 import com.petnose.api.service.nose.NoseVectorMath;
@@ -61,7 +62,7 @@ import java.util.UUID;
 public class DogRegistrationService {
 
     private static final String EMBEDDING_MODE_MULTI_REFERENCE = "MULTI_REFERENCE";
-    private static final String SCORE_POLICY = "max_reference_v1";
+    private static final String SCORE_POLICY = DogNoseScoreBreakdown.MAX_REFERENCE_OR_CENTROID_POLICY;
 
     private final UserRepository userRepository;
     private final DogRepository dogRepository;

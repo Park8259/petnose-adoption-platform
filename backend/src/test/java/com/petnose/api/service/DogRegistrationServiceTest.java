@@ -47,6 +47,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.within;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyDouble;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -179,7 +180,7 @@ class DogRegistrationServiceTest {
         assertThat(dogImages).hasSize(3);
         assertThat(log.getResult()).isEqualTo(VerificationResult.PASSED);
         assertThat(log.getSimilarityScore()).isEqualByComparingTo(new BigDecimal("0.00000"));
-        assertThat(log.getScoreBreakdownJson()).contains("\"policy\":\"max_reference_v1\"");
+        assertThat(log.getScoreBreakdownJson()).contains("\"policy\":\"max_reference_or_centroid_v1\"");
 
         assertThat(response.registrationAllowed()).isTrue();
         assertThat(response.status()).isEqualTo("REGISTERED");
@@ -189,7 +190,7 @@ class DogRegistrationServiceTest {
         assertThat(response.referenceCount()).isEqualTo(3);
         assertThat(response.noseImageUrls()).hasSize(3);
         assertThat(response.noseImageUrl()).isEqualTo(response.noseImageUrls().get(0));
-        assertThat(response.scoreBreakdown().referenceConsistencyScore()).isGreaterThanOrEqualTo(0.60);
+        assertThat(response.scoreBreakdown().referenceConsistencyScore()).isGreaterThanOrEqualTo(0.55);
 
         ArgumentCaptor<List<QdrantDogVectorClient.QdrantPointUpsertRequest>> upsertCaptor = ArgumentCaptor.forClass(List.class);
         verify(qdrantDogVectorClient).upsertAll(upsertCaptor.capture());
@@ -261,6 +262,29 @@ class DogRegistrationServiceTest {
     }
 
     @Test
+    void registerAcceptsReferencesAtCalibratedConsistencyThreshold() {
+        when(embedClient.embedBatch(anyList())).thenReturn(batchResponse(vectorsWithAveragePairwiseScore(0.56)));
+
+        DogRegisterResponse response = service.register(request(noseImages(3)));
+
+        assertThat(response.status()).isEqualTo("REGISTERED");
+        assertThat(response.scoreBreakdown().referenceConsistencyScore()).isCloseTo(0.56, within(1.0e-12));
+        assertThat(onlyVerificationLog().getResult()).isEqualTo(VerificationResult.PASSED);
+    }
+
+    @Test
+    void registerRejectsReferencesBelowCalibratedConsistencyThreshold() {
+        when(embedClient.embedBatch(anyList())).thenReturn(batchResponse(vectorsWithAveragePairwiseScore(0.54)));
+
+        assertThatThrownBy(() -> service.register(request(noseImages(3))))
+                .isInstanceOfSatisfying(ApiException.class, e ->
+                        assertThat(e.getErrorCode()).isEqualTo("NOSE_REFERENCE_INCONSISTENT"));
+
+        assertNoPipelineRows();
+        verify(qdrantDogVectorClient, never()).searchReferencePoints(anyList(), anyInt(), anyDouble());
+    }
+
+    @Test
     void registerDuplicateSuspectedStoresRowsAndSkipsQdrantUpsert() {
         Dog candidate = candidateDog("candidate-dog", "Maltese");
         dogs.put(candidate.getId(), candidate);
@@ -296,7 +320,7 @@ class DogRegistrationServiceTest {
         dogs.put(candidate.getId(), candidate);
         when(embedClient.embedBatch(anyList())).thenReturn(batchResponse(consistentVectors()));
         when(qdrantDogVectorClient.searchReferencePoints(anyList(), anyInt(), anyDouble()))
-                .thenReturn(List.of(vectorResult("candidate-dog", 0.65)));
+                .thenReturn(List.of(vectorResult("candidate-dog", 0.62)));
 
         DogRegisterResponse response = service.register(request(noseImages(3)));
 
@@ -307,7 +331,7 @@ class DogRegistrationServiceTest {
         assertThat(dogImages).hasSize(3);
         assertThat(dogNoseReferences).isEmpty();
         assertThat(log.getResult()).isEqualTo(VerificationResult.REVIEW_REQUIRED);
-        assertThat(log.getSimilarityScore()).isEqualByComparingTo(new BigDecimal("0.65000"));
+        assertThat(log.getSimilarityScore()).isEqualByComparingTo(new BigDecimal("0.62000"));
         assertThat(log.getCandidateDogId()).isEqualTo("candidate-dog");
 
         assertThat(response.registrationAllowed()).isFalse();
@@ -317,6 +341,66 @@ class DogRegistrationServiceTest {
         assertThat(response.topMatch().breed()).isEqualTo("Jindo");
 
         verify(qdrantDogVectorClient, never()).upsertAll(anyList());
+    }
+
+    @Test
+    void registerDuplicateDecisionUsesCentroidWhenHigherThanMaxReferenceScore() {
+        Dog candidate = candidateDog("candidate-dog", "Maltese");
+        dogs.put(candidate.getId(), candidate);
+        when(embedClient.embedBatch(anyList())).thenReturn(batchResponse(consistentVectors()));
+        when(qdrantDogVectorClient.searchReferencePoints(anyList(), anyInt(), anyDouble()))
+                .thenReturn(List.of(vectorResult("candidate-dog", 0.58)));
+        when(qdrantDogVectorClient.searchCentroidPoints(anyList(), anyInt(), anyDouble()))
+                .thenReturn(List.of(centroidResult("candidate-dog", 0.66)));
+
+        DogRegisterResponse response = service.register(request(noseImages(3)));
+
+        assertThat(response.status()).isEqualTo("DUPLICATE_SUSPECTED");
+        assertThat(response.scoreBreakdown().finalScore()).isEqualTo(0.66);
+        assertThat(response.scoreBreakdown().maxReferenceScore()).isEqualTo(0.58);
+        assertThat(response.scoreBreakdown().centroidScore()).isEqualTo(0.66);
+        assertThat(onlyVerificationLog().getSimilarityScore()).isEqualByComparingTo(new BigDecimal("0.66000"));
+        verify(qdrantDogVectorClient, never()).upsertAll(anyList());
+    }
+
+    @Test
+    void registerReviewDecisionUsesCentroidWhenCompositeScoreFallsInReviewBand() {
+        Dog candidate = candidateDog("candidate-dog", "Jindo");
+        dogs.put(candidate.getId(), candidate);
+        when(embedClient.embedBatch(anyList())).thenReturn(batchResponse(consistentVectors()));
+        when(qdrantDogVectorClient.searchReferencePoints(anyList(), anyInt(), anyDouble()))
+                .thenReturn(List.of(vectorResult("candidate-dog", 0.58)));
+        when(qdrantDogVectorClient.searchCentroidPoints(anyList(), anyInt(), anyDouble()))
+                .thenReturn(List.of(centroidResult("candidate-dog", 0.62)));
+
+        DogRegisterResponse response = service.register(request(noseImages(3)));
+
+        assertThat(response.status()).isEqualTo("REVIEW_REQUIRED");
+        assertThat(response.scoreBreakdown().finalScore()).isEqualTo(0.62);
+        assertThat(response.scoreBreakdown().maxReferenceScore()).isEqualTo(0.58);
+        assertThat(response.scoreBreakdown().centroidScore()).isEqualTo(0.62);
+        assertThat(onlyVerificationLog().getSimilarityScore()).isEqualByComparingTo(new BigDecimal("0.62000"));
+        verify(qdrantDogVectorClient, never()).upsertAll(anyList());
+    }
+
+    @Test
+    void registerPassesWhenCompositeScoreIsBelowReviewLowerBound() {
+        Dog candidate = candidateDog("candidate-dog", "Poodle");
+        dogs.put(candidate.getId(), candidate);
+        when(embedClient.embedBatch(anyList())).thenReturn(batchResponse(consistentVectors()));
+        when(qdrantDogVectorClient.searchReferencePoints(anyList(), anyInt(), anyDouble()))
+                .thenReturn(List.of(vectorResult("candidate-dog", 0.50)));
+        when(qdrantDogVectorClient.searchCentroidPoints(anyList(), anyInt(), anyDouble()))
+                .thenReturn(List.of(centroidResult("candidate-dog", 0.59)));
+
+        DogRegisterResponse response = service.register(request(noseImages(3)));
+
+        assertThat(response.status()).isEqualTo("REGISTERED");
+        assertThat(response.scoreBreakdown().finalScore()).isEqualTo(0.59);
+        assertThat(response.scoreBreakdown().maxReferenceScore()).isEqualTo(0.50);
+        assertThat(response.scoreBreakdown().centroidScore()).isEqualTo(0.59);
+        assertThat(onlyVerificationLog().getSimilarityScore()).isEqualByComparingTo(new BigDecimal("0.59000"));
+        verify(qdrantDogVectorClient).upsertAll(anyList());
     }
 
     @Test
@@ -389,6 +473,16 @@ class DogRegistrationServiceTest {
         );
     }
 
+    private static List<List<Double>> vectorsWithAveragePairwiseScore(double averagePairwiseScore) {
+        double thirdVectorDot = ((3.0 * averagePairwiseScore) - 1.0) / 2.0;
+        double thirdVectorY = Math.sqrt(1.0 - (thirdVectorDot * thirdVectorDot));
+        return List.of(
+                List.of(1.0, 0.0, 0.0),
+                List.of(1.0, 0.0, 0.0),
+                List.of(thirdVectorDot, thirdVectorY, 0.0)
+        );
+    }
+
     private static QdrantDogVectorClient.QdrantVectorSearchResult vectorResult(String dogId, double score) {
         return new QdrantDogVectorClient.QdrantVectorSearchResult(
                 "point-%s".formatted(dogId),
@@ -397,6 +491,20 @@ class DogRegistrationServiceTest {
                 "REFERENCE",
                 99L,
                 1,
+                MODEL,
+                3,
+                "rgb_resize224_bicubic_imagenet_l2_v1"
+        );
+    }
+
+    private static QdrantDogVectorClient.QdrantVectorSearchResult centroidResult(String dogId, double score) {
+        return new QdrantDogVectorClient.QdrantVectorSearchResult(
+                "centroid-%s".formatted(dogId),
+                dogId,
+                score,
+                "CENTROID",
+                null,
+                null,
                 MODEL,
                 3,
                 "rgb_resize224_bicubic_imagenet_l2_v1"

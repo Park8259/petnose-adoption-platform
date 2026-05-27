@@ -8,7 +8,7 @@ Dog nose v2 multi-reference registration과 expected-dog handover reference-set 
 
 ## 전제
 
-- PR #62가 `next/dog-nose-v2`에 merge되어 있어야 한다.
+- PR #62와 PR #64가 `next/dog-nose-v2`에 merge되어 있어야 한다.
 - 개발/검증 데이터는 reset 가능하다고 가정한다.
 - 기존 Qdrant v1 backfill은 수행하지 않는다.
 - v2 smoke는 `dog_nose_embeddings_real_v2` clean start를 기준으로 한다.
@@ -27,17 +27,20 @@ Dog nose v2 multi-reference registration과 expected-dog handover reference-set 
 | Registration embed endpoint | `/embed-batch` |
 | Handover embed endpoint | `/embed` |
 | Qdrant candidate search threshold | `0.55` |
-| Duplicate threshold | `0.75` |
+| Duplicate threshold | `0.65` |
 | Review lower bound | `0.60` |
 | Reference count | min `3`, max `5` |
-| Reference consistency threshold | `0.60` |
-| Handover match threshold | `0.75` |
+| Reference consistency threshold | `0.55` |
+| Final score policy | `max(max_reference_score, centroid_score)` |
+| Handover match threshold | `0.65` |
 | Handover ambiguous threshold | `0.60` |
 | Max batch images | `5` |
 | Max batch total bytes | `83886080` |
 | Max upload file size | `20MB` |
 | Max upload request size | `80MB` |
 | Python embed response timeout | `30000ms` |
+
+이번 policy는 제출된 3~5장 전체 reference와 centroid를 그대로 사용한다. 5장 중 best3/best4 자동 선택, outlier reference 제거, quality rejected image 저장 제외는 후속 개선 후보로 분리한다.
 
 ## Clean Reset / No-Backfill Note
 
@@ -140,7 +143,7 @@ Expected:
 
 ### 4. REVIEW_REQUIRED 확인
 
-Mock, fixture, 또는 threshold-controlled local data로 final score가 `0.60` 이상 `0.75` 미만인 registration을 확인한다.
+Mock, fixture, 또는 threshold-controlled local data로 final score가 `0.60` 이상 `0.65` 미만인 registration을 확인한다.
 
 Expected:
 
@@ -181,13 +184,14 @@ Expected:
 - HTTP `200`
 - `matched=true`
 - `decision=MATCHED`
-- `threshold=0.75`
+- `threshold=0.65`
 - `ambiguous_threshold=0.60`
 - `score_breakdown` 포함
+- `score_breakdown.max_reference_score`와 `score_breakdown.centroid_score`가 분리 제공됨
 
 ### 8. Handover AMBIGUOUS
 
-Mock, fixture, 또는 threshold-controlled local data로 decision score가 `0.60` 이상 `0.75` 미만인 handover를 확인한다.
+Mock, fixture, 또는 threshold-controlled local data로 decision score가 `0.60` 이상 `0.65` 미만인 handover를 확인한다.
 
 Expected:
 

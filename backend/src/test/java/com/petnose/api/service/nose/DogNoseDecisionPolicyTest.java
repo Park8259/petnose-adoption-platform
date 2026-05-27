@@ -12,7 +12,7 @@ class DogNoseDecisionPolicyTest {
 
     @Test
     void nullTopCandidatePassesAndAllowsRegistration() {
-        DogNoseDecisionPolicy.DogNoseDecision decision = policy.evaluate(null, 0.75, 0.60);
+        DogNoseDecisionPolicy.DogNoseDecision decision = policy.evaluate(null, 0.65, 0.60);
 
         assertThat(decision.result()).isEqualTo(VerificationResult.PASSED);
         assertThat(decision.registrationAllowed()).isTrue();
@@ -22,16 +22,16 @@ class DogNoseDecisionPolicyTest {
 
     @Test
     void scoreAtDuplicateThresholdIsDuplicateSuspected() {
-        DogNoseDecisionPolicy.DogNoseDecision decision = policy.evaluate(candidate(0.75), 0.75, 0.60);
+        DogNoseDecisionPolicy.DogNoseDecision decision = policy.evaluate(candidate(0.65), 0.65, 0.60);
 
         assertThat(decision.result()).isEqualTo(VerificationResult.DUPLICATE_SUSPECTED);
         assertThat(decision.registrationAllowed()).isFalse();
-        assertThat(decision.finalScore()).isEqualTo(0.75);
+        assertThat(decision.finalScore()).isEqualTo(0.65);
     }
 
     @Test
     void scoreBetweenReviewAndDuplicateRequiresReview() {
-        DogNoseDecisionPolicy.DogNoseDecision decision = policy.evaluate(candidate(0.60), 0.75, 0.60);
+        DogNoseDecisionPolicy.DogNoseDecision decision = policy.evaluate(candidate(0.60), 0.65, 0.60);
 
         assertThat(decision.result()).isEqualTo(VerificationResult.REVIEW_REQUIRED);
         assertThat(decision.registrationAllowed()).isFalse();
@@ -40,7 +40,7 @@ class DogNoseDecisionPolicyTest {
 
     @Test
     void scoreBelowReviewLowerBoundPasses() {
-        DogNoseDecisionPolicy.DogNoseDecision decision = policy.evaluate(candidate(0.59), 0.75, 0.60);
+        DogNoseDecisionPolicy.DogNoseDecision decision = policy.evaluate(candidate(0.59), 0.65, 0.60);
 
         assertThat(decision.result()).isEqualTo(VerificationResult.PASSED);
         assertThat(decision.registrationAllowed()).isTrue();
@@ -51,7 +51,7 @@ class DogNoseDecisionPolicyTest {
     void invalidThresholdsThrow() {
         assertThatThrownBy(() -> policy.evaluate(candidate(0.70), 0.60, 0.60))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> policy.evaluate(candidate(0.70), 0.75, -0.01))
+        assertThatThrownBy(() -> policy.evaluate(candidate(0.70), 0.65, -0.01))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> policy.evaluate(candidate(0.70), 1.01, 0.60))
                 .isInstanceOf(IllegalArgumentException.class);

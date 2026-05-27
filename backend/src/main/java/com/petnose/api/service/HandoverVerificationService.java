@@ -195,7 +195,7 @@ public class HandoverVerificationService {
             );
         }
 
-        HandoverVerificationDecision decision = decide(candidate.maxReferenceScore());
+        HandoverVerificationDecision decision = decide(candidate.finalScore());
         return response(
                 postId,
                 expectedDogId,
@@ -232,11 +232,11 @@ public class HandoverVerificationService {
         );
     }
 
-    private HandoverVerificationDecision decide(double maxReferenceScore) {
-        if (maxReferenceScore >= properties.getMatchThreshold()) {
+    private HandoverVerificationDecision decide(double finalScore) {
+        if (finalScore >= properties.getMatchThreshold()) {
             return HandoverVerificationDecision.MATCHED;
         }
-        if (maxReferenceScore >= properties.getAmbiguousThreshold()) {
+        if (finalScore >= properties.getAmbiguousThreshold()) {
             return HandoverVerificationDecision.AMBIGUOUS;
         }
         return HandoverVerificationDecision.NOT_MATCHED;

@@ -71,7 +71,7 @@ class HandoverVerificationControllerTest {
 
     private static final String JWT_SECRET = "test-petnose-jwt-secret-change-me-32bytes";
     private static final String MODEL = "dog-nose-identification2:s101_224";
-    private static final double MATCH_THRESHOLD = 0.75;
+    private static final double MATCH_THRESHOLD = 0.65;
     private static final double AMBIGUOUS_THRESHOLD = 0.60;
     private static final int TOP_K = 5;
     private static final int VECTOR_DIMENSION = 128;
@@ -476,8 +476,8 @@ class HandoverVerificationControllerTest {
     @ParameterizedTest
     @CsvSource({
             "0.80630887, MATCHED, true",
-            "0.75, MATCHED, true",
-            "0.74999, AMBIGUOUS, false",
+            "0.65, MATCHED, true",
+            "0.64999, AMBIGUOUS, false",
             "0.60, AMBIGUOUS, false",
             "0.59999, NOT_MATCHED, false"
     })
@@ -506,6 +506,27 @@ class HandoverVerificationControllerTest {
     }
 
     @Test
+    void handoverVerificationUsesCentroidScoreForDecisionWhenHigherThanReferences() throws Exception {
+        User user = saveUser(true);
+        Dog dog = saveDog(user, DogStatus.REGISTERED);
+        AdoptionPost post = savePost(user, dog, AdoptionPostStatus.OPEN);
+        mockEmbedding();
+        mockExpectedDogReferenceSetWithCentroid(dog, 0.66, 0.58);
+
+        MvcResult result = handoverRequest(tokenFor(user), post.getId())
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.decision").value("MATCHED"))
+                .andExpect(jsonPath("$.matched").value(true))
+                .andExpect(jsonPath("$.similarity_score").value(0.66))
+                .andExpect(jsonPath("$.score_breakdown.final_score").value(0.66))
+                .andExpect(jsonPath("$.score_breakdown.max_reference_score").value(0.58))
+                .andExpect(jsonPath("$.score_breakdown.centroid_score").value(0.66))
+                .andReturn();
+
+        assertResponseIsSafe(result);
+    }
+
+    @Test
     void handoverVerificationReturnsAmbiguousWhenReferenceScoreIsBetweenThresholds() throws Exception {
         handoverVerificationProperties.setMatchThreshold(0.80);
         handoverVerificationProperties.setAmbiguousThreshold(0.70);
@@ -513,7 +534,7 @@ class HandoverVerificationControllerTest {
         Dog dog = saveDog(user, DogStatus.REGISTERED);
         AdoptionPost post = savePost(user, dog, AdoptionPostStatus.OPEN);
         mockEmbedding();
-        mockExpectedDogReferenceSet(dog, 0.75);
+        mockExpectedDogReferenceSetWithCentroid(dog, 0.74, 0.75);
 
         MvcResult result = handoverRequest(tokenFor(user), post.getId())
                 .andExpect(status().isOk())
@@ -553,7 +574,7 @@ class HandoverVerificationControllerTest {
                 .andExpect(jsonPath("$.expected_dog_id").value(dog.getId()))
                 .andExpect(jsonPath("$.matched").value(false))
                 .andExpect(jsonPath("$.decision").value("NOT_MATCHED"))
-                .andExpect(jsonPath("$.similarity_score").value(0.55))
+                .andExpect(jsonPath("$.similarity_score").value(0.56))
                 .andExpect(jsonPath("$.top_match_is_expected").value(true))
                 .andExpect(jsonPath("$.score_breakdown.centroid_score").value(0.56))
                 .andExpect(jsonPath("$.message").value("분양글에 등록된 강아지와 일치하지 않습니다. 거래 전 확인이 필요합니다."))
@@ -650,7 +671,7 @@ class HandoverVerificationControllerTest {
     }
 
     private void mockExpectedDogReferenceSet(Dog dog, double... referenceScores) {
-        mockExpectedDogReferenceSetWithCentroid(dog, 0.88, referenceScores);
+        mockExpectedDogReferenceSetWithCentroid(dog, maxScore(referenceScores), referenceScores);
     }
 
     private void mockExpectedDogReferenceSetWithCentroid(Dog dog, double centroidScore, double... referenceScores) {
@@ -658,6 +679,14 @@ class HandoverVerificationControllerTest {
                 .thenReturn(referenceResults(dog, referenceScores));
         when(qdrantDogVectorClient.searchExpectedDogCentroid(anyList(), eq(dog.getId())))
                 .thenReturn(List.of(centroidResult(dog, centroidScore)));
+    }
+
+    private double maxScore(double... scores) {
+        double maxScore = 0.0;
+        for (double score : scores) {
+            maxScore = Math.max(maxScore, score);
+        }
+        return maxScore;
     }
 
     private List<QdrantVectorSearchResult> referenceResults(Dog dog, double... scores) {

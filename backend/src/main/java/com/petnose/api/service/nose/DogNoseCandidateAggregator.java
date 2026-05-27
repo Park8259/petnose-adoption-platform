@@ -38,6 +38,8 @@ public class DogNoseCandidateAggregator {
             QdrantVectorSearchResult bestReferenceResult = dogReferenceResults.get(0);
             double maxReferenceScore = bestReferenceResult.score();
             double top2AverageScore = topAverage(dogReferenceResults, 2);
+            Double centroidScore = centroidScoresByDogId.get(entry.getKey());
+            double finalScore = centroidScore == null ? maxReferenceScore : Math.max(maxReferenceScore, centroidScore);
             int hitCount = 0;
             for (QdrantVectorSearchResult result : dogReferenceResults) {
                 if (result.score() >= reviewLowerBound) {
@@ -47,10 +49,10 @@ public class DogNoseCandidateAggregator {
 
             candidates.add(new DogNoseCandidateScore(
                     entry.getKey(),
-                    maxReferenceScore,
+                    finalScore,
                     maxReferenceScore,
                     top2AverageScore,
-                    centroidScoresByDogId.get(entry.getKey()),
+                    centroidScore,
                     hitCount,
                     bestReferenceResult.pointId(),
                     bestReferenceResult.dogImageId(),

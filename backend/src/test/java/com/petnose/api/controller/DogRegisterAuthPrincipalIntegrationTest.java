@@ -143,7 +143,7 @@ class DogRegisterAuthPrincipalIntegrationTest {
         assertThat(verificationLog.getDogImageId()).isEqualTo(noseImages.get(0).getId());
         assertThat(verificationLog.getRequestedByUserId()).isEqualTo(user.getId());
         assertThat(verificationLog.getResult()).isEqualTo(VerificationResult.PASSED);
-        assertThat(verificationLog.getScoreBreakdownJson()).contains("\"policy\":\"max_reference_v1\"");
+        assertThat(verificationLog.getScoreBreakdownJson()).contains("\"policy\":\"max_reference_or_centroid_v1\"");
 
         String responseDogId = objectMapper.readTree(responseBody(result)).get("dog_id").asText();
         assertThat(responseDogId).isEqualTo(dog.getId());

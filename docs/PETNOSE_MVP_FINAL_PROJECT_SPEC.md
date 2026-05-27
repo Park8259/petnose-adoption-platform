@@ -243,11 +243,12 @@ MVP handover verification check는 stateless다.
 - 자동으로 adoption completion을 수행하지 않는다.
 - adoption completion은 별도의 owner-only status update action으로 남는다.
 
-Dog nose v2 handover threshold policy는 expected dog reference set에서 나온 decision score(`max_reference_score`)에 적용한다.
+Dog nose v2 handover threshold policy는 expected dog reference set에서 나온 decision score(`final_score`)에 적용한다.
 
 - Qdrant query는 `dog_id=adoption_posts.dog_id`, `is_active=true`, `embedding_kind in (REFERENCE, CENTROID)`인 expected dog reference set만 찾는다.
-- decision score가 `0.75` 이상이면 같은 dog로 보고 `matched=true`, `MATCHED`를 반환한다.
-- decision score가 `0.60` 이상 `0.75` 미만이면 `matched=false`, `AMBIGUOUS`를 반환한다.
+- `final_score = max(max_reference_score, centroid_score)`이며 `score_breakdown`은 두 점수를 분리 제공한다.
+- decision score가 `0.65` 이상이면 같은 dog로 보고 `matched=true`, `MATCHED`를 반환한다.
+- decision score가 `0.60` 이상 `0.65` 미만이면 `matched=false`, `AMBIGUOUS`를 반환한다.
 - decision score가 `0.60` 미만이면 `matched=false`, `NOT_MATCHED`를 반환한다.
 - expected dog candidate가 없으면 `matched=false`, `NO_MATCH_CANDIDATE`를 반환한다.
 - handover `MATCHED`는 safety signal이며 adoption post를 자동 완료하지 않는다.
@@ -265,12 +266,15 @@ Dog ownership은 JWT principal-only다. `dogs.owner_user_id`는 Bearer JWT로 re
 Dog nose v2 duplicate/review/pass policy는 Spring score breakdown의 final score 기준이다.
 
 - Qdrant candidate search pre-filter threshold는 `0.55`다.
-- `final_score >= 0.75`이면 `DUPLICATE_SUSPECTED`다.
-- `0.60 <= final_score < 0.75`이면 `REVIEW_REQUIRED`다.
+- reference consistency threshold는 `0.55`다.
+- `final_score = max(max_reference_score, centroid_score)`이며 `score_breakdown`은 두 점수를 분리 제공한다.
+- `final_score >= 0.65`이면 `DUPLICATE_SUSPECTED`다.
+- `0.60 <= final_score < 0.65`이면 `REVIEW_REQUIRED`다.
 - `final_score < 0.60`이면 `PASSED`다.
 - Reference consistency failure는 HTTP `400`이며 file/DB/Qdrant side effect를 만들지 않는다.
 - `DUPLICATE_SUSPECTED`와 `REVIEW_REQUIRED`는 file/DB/log evidence를 남길 수 있지만 Qdrant upsert를 수행하지 않는다.
 - `PASSED`만 Qdrant upsert와 `dog_nose_references` 생성을 수행한다.
+- 5장 중 best3/best4 선택, outlier reference 제거, quality rejected image 저장 제외는 이번 정책에 포함하지 않고 후속 개선 후보로 둔다.
 
 계산되는 response field:
 

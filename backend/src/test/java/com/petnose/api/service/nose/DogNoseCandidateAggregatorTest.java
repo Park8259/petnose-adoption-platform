@@ -23,7 +23,7 @@ class DogNoseCandidateAggregatorTest {
                 reference("point-null", null, 0.99, 32L, 0)
         ), List.of(
                 centroid("centroid-a-low", "dog-a", 0.61),
-                centroid("centroid-a-best", "dog-a", 0.77),
+                centroid("centroid-a-best", "dog-a", 0.83),
                 centroid("centroid-only", "dog-c", 0.99)
         ), 0.60);
 
@@ -32,14 +32,19 @@ class DogNoseCandidateAggregatorTest {
         assertThat(result.topCandidate().dogId()).isEqualTo("dog-a");
 
         DogNoseCandidateAggregator.DogNoseCandidateScore dogA = result.candidates().get(0);
-        assertThat(dogA.finalScore()).isEqualTo(0.80);
+        assertThat(dogA.finalScore()).isEqualTo(0.83);
         assertThat(dogA.maxReferenceScore()).isEqualTo(0.80);
         assertThat(dogA.top2AverageScore()).isCloseTo(0.72, within(1.0e-12));
-        assertThat(dogA.centroidScore()).isEqualTo(0.77);
+        assertThat(dogA.centroidScore()).isEqualTo(0.83);
         assertThat(dogA.hitCount()).isEqualTo(2);
         assertThat(dogA.bestReferencePointId()).isEqualTo("point-a-best");
         assertThat(dogA.bestDogImageId()).isEqualTo(12L);
         assertThat(dogA.bestReferenceIndex()).isEqualTo(1);
+
+        DogNoseCandidateAggregator.DogNoseCandidateScore dogB = result.candidates().get(1);
+        assertThat(dogB.finalScore()).isEqualTo(0.70);
+        assertThat(dogB.maxReferenceScore()).isEqualTo(0.70);
+        assertThat(dogB.centroidScore()).isNull();
     }
 
     @Test
@@ -63,6 +68,22 @@ class DogNoseCandidateAggregatorTest {
 
         assertThat(result.candidates()).extracting(DogNoseCandidateAggregator.DogNoseCandidateScore::dogId)
                 .containsExactly("dog-high", "dog-d", "dog-c", "dog-b", "dog-a");
+    }
+
+    @Test
+    void sortsCandidatesByCompositeFinalScore() {
+        DogNoseCandidateAggregator.DogNoseAggregationResult result = aggregator.aggregate(List.of(
+                reference("reference-high", "dog-reference-high", 0.80, 1L, 0),
+                reference("reference-low", "dog-centroid-high", 0.62, 2L, 0)
+        ), List.of(
+                centroid("centroid-high", "dog-centroid-high", 0.90)
+        ), 0.60);
+
+        assertThat(result.candidates()).extracting(DogNoseCandidateAggregator.DogNoseCandidateScore::dogId)
+                .containsExactly("dog-centroid-high", "dog-reference-high");
+        assertThat(result.topCandidate().finalScore()).isEqualTo(0.90);
+        assertThat(result.topCandidate().maxReferenceScore()).isEqualTo(0.62);
+        assertThat(result.topCandidate().centroidScore()).isEqualTo(0.90);
     }
 
     private static QdrantVectorSearchResult reference(

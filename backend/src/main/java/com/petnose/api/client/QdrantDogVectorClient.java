@@ -31,7 +31,7 @@ public class QdrantDogVectorClient {
             @Value("${qdrant.port}") int port,
             @Value("${qdrant.collection}") String collection,
             @Value("${qdrant.search-top-k:5}") int searchTopK,
-            @Value("${qdrant.search-score-threshold:0.70}") double searchScoreThreshold,
+            @Value("${qdrant.search-score-threshold:0.55}") double searchScoreThreshold,
             @Value("${qdrant.search-timeout-ms:3000}") long searchTimeoutMs,
             @Value("${qdrant.upsert-timeout-ms:3000}") long upsertTimeoutMs
     ) {

@@ -26,13 +26,19 @@ qdrant:
   collection: test_collection
   vector-dimension: 128
   distance: Cosine
+  search-score-threshold: ${QDRANT_SEARCH_SCORE_THRESHOLD:0.55}
 
 upload:
   base-path: /tmp/uploads-test
 
+nose:
+  duplicate-threshold: ${NOSE_DUPLICATE_THRESHOLD:0.65}
+  review-lower-bound: ${NOSE_REVIEW_LOWER_BOUND:0.60}
+  reference-consistency-threshold: ${NOSE_REFERENCE_CONSISTENCY_THRESHOLD:0.55}
+
 petnose:
   handover-verification:
-    match-threshold: ${PETNOSE_HANDOVER_VERIFICATION_MATCH_THRESHOLD:0.75}
+    match-threshold: ${PETNOSE_HANDOVER_VERIFICATION_MATCH_THRESHOLD:0.65}
     ambiguous-threshold: ${PETNOSE_HANDOVER_VERIFICATION_AMBIGUOUS_THRESHOLD:0.60}
     top-k: ${PETNOSE_HANDOVER_VERIFICATION_TOP_K:5}
 

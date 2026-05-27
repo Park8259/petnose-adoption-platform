@@ -421,20 +421,20 @@ Response `200`, review required:
   "qdrant_point_id": null,
   "model": "dog-nose-identification2:s101_224",
   "dimension": 2048,
-  "max_similarity_score": 0.68211,
+  "max_similarity_score": 0.64123,
   "nose_image_url": "/files/dogs/new-dog-id/nose/...",
   "profile_image_url": null,
   "top_match": {
     "dog_id": "existing-dog-id",
-    "similarity_score": 0.68211,
+    "similarity_score": 0.64123,
     "breed": "말티즈"
   },
   "embedding_mode": "MULTI_REFERENCE",
   "reference_count": 3,
   "score_breakdown": {
-    "final_score": 0.68211,
-    "max_reference_score": 0.70122,
-    "top2_average_score": 0.67654,
+    "final_score": 0.64123,
+    "max_reference_score": 0.63211,
+    "top2_average_score": 0.62654,
     "centroid_score": 0.64123,
     "hit_count": 2,
     "reference_consistency_score": 0.81
@@ -461,10 +461,12 @@ Duplicate threshold policy:
 
 - dog registration duplicate detection uses Qdrant cosine search score.
 - Qdrant candidate search threshold default is `0.55`.
-- Spring duplicate decision threshold default is `0.75`.
+- Spring duplicate decision threshold default is `0.65`.
 - Spring review lower bound default is `0.60`.
-- duplicate if final score `>= 0.75`.
-- review required if `0.60 <= final_score < 0.75`.
+- reference consistency threshold default is `0.55`.
+- `final_score = max(max_reference_score, centroid_score)`.
+- duplicate if final score `>= 0.65`.
+- review required if `0.60 <= final_score < 0.65`.
 - pass if final score `< 0.60`.
 - threshold values are runtime configuration, not DB fields.
 - duplicate suspected response remains HTTP `200` with `registration_allowed=false`.
@@ -480,6 +482,8 @@ Calculation policy:
 - `embedding_status`는 latest verification result에서 계산한다.
 - similarity, duplicate candidate, model, dimension, failure metadata는 verification history에 저장한다.
 - `score_breakdown`은 response에 포함하며 persistence에서는 `verification_logs.score_breakdown_json`으로 저장할 수 있다.
+- `score_breakdown`은 `max_reference_score`와 `centroid_score`를 분리 제공하며, `final_score`는 두 값 중 높은 값을 사용한다.
+- Reference subset/outlier filtering은 현재 contract에 포함하지 않고 후속 개선 후보로 둔다.
 - embedding vector는 Qdrant에만 저장한다.
 
 Side-effect policy:
@@ -980,7 +984,7 @@ Response `200`, matched:
   "matched": true,
   "decision": "MATCHED",
   "similarity_score": 0.80631,
-  "threshold": 0.75,
+  "threshold": 0.65,
   "ambiguous_threshold": 0.60,
   "top_match_is_expected": true,
   "model": "dog-nose-identification2:s101_224",
@@ -1004,18 +1008,18 @@ Response `200`, ambiguous:
   "expected_dog_id": "dog-uuid",
   "matched": false,
   "decision": "AMBIGUOUS",
-  "similarity_score": 0.67211,
-  "threshold": 0.75,
+  "similarity_score": 0.64211,
+  "threshold": 0.65,
   "ambiguous_threshold": 0.60,
   "top_match_is_expected": true,
   "model": "dog-nose-identification2:s101_224",
   "dimension": 2048,
   "message": "유사도가 기준에 근접하지만 확정하기 어렵습니다. 비문 이미지를 다시 촬영해주세요.",
   "score_breakdown": {
-    "final_score": 0.67211,
-    "max_reference_score": 0.67211,
+    "final_score": 0.64211,
+    "max_reference_score": 0.63211,
     "top2_average_score": 0.65102,
-    "centroid_score": 0.64088,
+    "centroid_score": 0.64211,
     "hit_count": 2
   }
 }
@@ -1030,7 +1034,7 @@ Response `200`, not matched:
   "matched": false,
   "decision": "NOT_MATCHED",
   "similarity_score": 0.59999,
-  "threshold": 0.75,
+  "threshold": 0.65,
   "ambiguous_threshold": 0.60,
   "top_match_is_expected": true,
   "model": "dog-nose-identification2:s101_224",
@@ -1055,7 +1059,7 @@ Response `200`, no match candidate:
   "matched": false,
   "decision": "NO_MATCH_CANDIDATE",
   "similarity_score": null,
-  "threshold": 0.75,
+  "threshold": 0.65,
   "ambiguous_threshold": 0.60,
   "top_match_is_expected": false,
   "model": "dog-nose-identification2:s101_224",
@@ -1080,8 +1084,8 @@ Decision algorithm:
 - Qdrant가 cosine similarity `score`를 생성하고 Spring이 threshold policy를 적용한다.
 - Spring은 handover image embedding vector로 Qdrant search를 수행하되, query filter를 `is_active=true`, `dog_id=expected_dog_id`, `embedding_kind=REFERENCE` 또는 `CENTROID`로 제한한다.
 - Reference 결과와 centroid 결과를 expected dog 기준으로 aggregate하고 `score_breakdown`을 만든다.
-- Decision threshold는 `max_reference_score`에 적용한다.
-- default MVP handover match threshold는 `0.75`, ambiguous threshold는 `0.60`이다.
+- `final_score = max(max_reference_score, centroid_score)`이며 decision threshold는 `final_score`에 적용한다.
+- default MVP handover match threshold는 `0.65`, ambiguous threshold는 `0.60`이다.
 - `matched`가 canonical yes/no result이고 `decision`은 reason code다.
 
 Expected dog candidate가 반환되지 않는 경우:
@@ -1091,14 +1095,14 @@ Expected dog candidate가 반환되지 않는 경우:
 - `similarity_score = null`
 - `top_match_is_expected = false`
 
-Expected dog candidate가 반환되고 `candidate.dog_id == expected_dog_id`이며 decision score가 `0.75` 이상인 경우:
+Expected dog candidate가 반환되고 `candidate.dog_id == expected_dog_id`이며 decision score가 `0.65` 이상인 경우:
 
 - `decision = MATCHED`
 - `matched = true`
 - `similarity_score = final_score`
 - `top_match_is_expected = true`
 
-Expected dog candidate가 반환되고 `candidate.dog_id == expected_dog_id`이며 decision score가 `0.60` 이상 `0.75` 미만인 경우:
+Expected dog candidate가 반환되고 `candidate.dog_id == expected_dog_id`이며 decision score가 `0.60` 이상 `0.65` 미만인 경우:
 
 - `decision = AMBIGUOUS`
 - `matched = false`
@@ -1132,7 +1136,7 @@ Privacy rules:
 
 Config defaults:
 
-- `match_threshold = 0.75`
+- `match_threshold = 0.65`
 - `ambiguous_threshold = 0.60`
 - `top_k = 5`
 - 이 값들은 runtime configuration이며 DB field가 아니다.
