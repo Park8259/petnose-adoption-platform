@@ -1,8 +1,11 @@
 package com.petnose.api.domain.entity;
 
+import com.petnose.api.domain.enums.DogNoseEmbeddingKind;
 import com.petnose.api.domain.enums.DogImageType;
 import com.petnose.api.domain.enums.DogStatus;
+import com.petnose.api.domain.enums.NoseReferenceQualityStatus;
 import com.petnose.api.domain.enums.VerificationPurpose;
+import com.petnose.api.domain.enums.VerificationResult;
 import jakarta.persistence.Column;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
@@ -69,6 +72,7 @@ class CanonicalEntityShapeTest {
                 "result",
                 "purpose",
                 "similarityScore",
+                "scoreBreakdownJson",
                 "candidateDogId",
                 "model",
                 "dimension",
@@ -87,11 +91,30 @@ class CanonicalEntityShapeTest {
                 DogStatus.PENDING,
                 DogStatus.REGISTERED,
                 DogStatus.DUPLICATE_SUSPECTED,
+                DogStatus.REVIEW_REQUIRED,
                 DogStatus.REJECTED,
                 DogStatus.ADOPTED,
                 DogStatus.INACTIVE
         );
         assertThat(DogImageType.values()).containsExactly(DogImageType.NOSE, DogImageType.PROFILE);
+        assertThat(VerificationResult.values()).containsExactly(
+                VerificationResult.PENDING,
+                VerificationResult.PASSED,
+                VerificationResult.DUPLICATE_SUSPECTED,
+                VerificationResult.REVIEW_REQUIRED,
+                VerificationResult.EMBED_FAILED,
+                VerificationResult.QDRANT_SEARCH_FAILED,
+                VerificationResult.QDRANT_UPSERT_FAILED
+        );
+        assertThat(DogNoseEmbeddingKind.values()).containsExactly(
+                DogNoseEmbeddingKind.REFERENCE,
+                DogNoseEmbeddingKind.CENTROID
+        );
+        assertThat(NoseReferenceQualityStatus.values()).containsExactly(
+                NoseReferenceQualityStatus.ACCEPTED,
+                NoseReferenceQualityStatus.REJECTED,
+                NoseReferenceQualityStatus.NEEDS_REVIEW
+        );
     }
 
     @Test
@@ -134,6 +157,7 @@ class CanonicalEntityShapeTest {
                 "submittedImageSha256",
                 "result",
                 "similarityScore",
+                "scoreBreakdownJson",
                 "candidateDogId",
                 "model",
                 "dimension",
@@ -159,6 +183,63 @@ class CanonicalEntityShapeTest {
                 "ADD COLUMN purpose VARCHAR(40) NOT NULL DEFAULT 'DOG_REGISTRATION'",
                 "'HANDOVER_COMPARE'",
                 "DROP TABLE " + join("nose", "_verification_attempts")
+        );
+    }
+
+    @Test
+    void dogNoseReferenceEntityAndMigrationTrackMultiReferenceQdrantPoints() throws Exception {
+        Set<String> fields = declaredFieldNames(DogNoseReference.class);
+        Column dogId = DogNoseReference.class.getDeclaredField("dogId").getAnnotation(Column.class);
+        Column dogImageId = DogNoseReference.class.getDeclaredField("dogImageId").getAnnotation(Column.class);
+        Column qdrantPointId = DogNoseReference.class.getDeclaredField("qdrantPointId").getAnnotation(Column.class);
+        Enumerated embeddingKind = DogNoseReference.class.getDeclaredField("embeddingKind").getAnnotation(Enumerated.class);
+        Column model = DogNoseReference.class.getDeclaredField("model").getAnnotation(Column.class);
+        Column dimension = DogNoseReference.class.getDeclaredField("dimension").getAnnotation(Column.class);
+        Column preprocessVersion = DogNoseReference.class.getDeclaredField("preprocessVersion").getAnnotation(Column.class);
+        Enumerated qualityStatus = DogNoseReference.class.getDeclaredField("qualityStatus").getAnnotation(Enumerated.class);
+        Column qualityScore = DogNoseReference.class.getDeclaredField("qualityScore").getAnnotation(Column.class);
+        Column active = DogNoseReference.class.getDeclaredField("active").getAnnotation(Column.class);
+
+        assertThat(fields).contains(
+                "id",
+                "dogId",
+                "dogImageId",
+                "qdrantPointId",
+                "embeddingKind",
+                "referenceIndex",
+                "model",
+                "dimension",
+                "preprocessVersion",
+                "qualityStatus",
+                "qualityScore",
+                "active",
+                "createdAt"
+        );
+        assertThat(dogId.length()).isEqualTo(36);
+        assertThat(dogId.nullable()).isFalse();
+        assertThat(dogImageId.nullable()).isTrue();
+        assertThat(qdrantPointId.length()).isEqualTo(36);
+        assertThat(qdrantPointId.nullable()).isFalse();
+        assertThat(qdrantPointId.unique()).isTrue();
+        assertThat(embeddingKind.value()).isEqualTo(EnumType.STRING);
+        assertThat(model.length()).isEqualTo(100);
+        assertThat(model.nullable()).isFalse();
+        assertThat(dimension.nullable()).isFalse();
+        assertThat(preprocessVersion.length()).isEqualTo(100);
+        assertThat(preprocessVersion.nullable()).isFalse();
+        assertThat(qualityStatus.value()).isEqualTo(EnumType.STRING);
+        assertThat(qualityScore.precision()).isEqualTo(6);
+        assertThat(qualityScore.scale()).isEqualTo(5);
+        assertThat(active.name()).isEqualTo("is_active");
+        assertThat(active.nullable()).isFalse();
+
+        String migration = resourceText("db/migration/V5__add_multi_reference_nose_references.sql");
+        assertThat(migration).contains(
+                "CREATE TABLE dog_nose_references",
+                "qdrant_point_id CHAR(36) NOT NULL",
+                "CHECK (embedding_kind IN ('REFERENCE', 'CENTROID'))",
+                "CHECK (quality_status IN ('ACCEPTED', 'REJECTED', 'NEEDS_REVIEW'))",
+                "ADD COLUMN score_breakdown_json TEXT NULL AFTER similarity_score"
         );
     }
 

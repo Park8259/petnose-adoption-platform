@@ -4,6 +4,7 @@ public enum DogStatus {
     PENDING,
     REGISTERED,
     DUPLICATE_SUSPECTED,
+    REVIEW_REQUIRED,
     REJECTED,
     ADOPTED,
     INACTIVE

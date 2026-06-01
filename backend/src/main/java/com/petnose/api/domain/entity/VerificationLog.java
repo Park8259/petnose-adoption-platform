@@ -53,6 +53,9 @@ public class VerificationLog {
     @Column(name = "similarity_score", precision = 6, scale = 5)
     private BigDecimal similarityScore;
 
+    @Column(name = "score_breakdown_json", columnDefinition = "TEXT")
+    private String scoreBreakdownJson;
+
     @Column(name = "candidate_dog_id", length = 36)
     private String candidateDogId;
 

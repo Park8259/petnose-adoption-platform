@@ -612,6 +612,7 @@ public class AdoptionPostService {
         return switch (result) {
             case PASSED -> "VERIFIED";
             case DUPLICATE_SUSPECTED -> "DUPLICATE_SUSPECTED";
+            case REVIEW_REQUIRED -> "REVIEW_REQUIRED";
             case PENDING -> "PENDING";
             case EMBED_FAILED, QDRANT_SEARCH_FAILED, QDRANT_UPSERT_FAILED -> "FAILED";
         };

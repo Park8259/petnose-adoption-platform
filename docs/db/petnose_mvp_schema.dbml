@@ -18,6 +18,7 @@ Enum dog_status {
   PENDING
   REGISTERED
   DUPLICATE_SUSPECTED
+  REVIEW_REQUIRED
   REJECTED
   ADOPTED
   INACTIVE
@@ -32,9 +33,21 @@ Enum verification_result {
   PENDING
   PASSED
   DUPLICATE_SUSPECTED
+  REVIEW_REQUIRED
   EMBED_FAILED
   QDRANT_SEARCH_FAILED
   QDRANT_UPSERT_FAILED
+}
+
+Enum dog_nose_embedding_kind {
+  REFERENCE
+  CENTROID
+}
+
+Enum nose_reference_quality_status {
+  ACCEPTED
+  REJECTED
+  NEEDS_REVIEW
 }
 
 Enum verification_purpose {
@@ -63,7 +76,7 @@ Table users {
 }
 
 Table dogs {
-  id char(36) [pk, note: "UUID string. Also used as Qdrant point id."]
+  id char(36) [pk, note: "UUID string. Qdrant point ids are tracked separately in dog_nose_references."]
   owner_user_id bigint [not null, ref: > users.id]
   name varchar(100) [not null]
   breed varchar(100) [note: "DB nullable for operational/import flexibility. POST /api/dogs/register requires a non-blank breed."]
@@ -86,6 +99,28 @@ Table dog_images {
   uploaded_at timestamp [not null, default: `CURRENT_TIMESTAMP`]
 }
 
+Table dog_nose_references {
+  id char(36) [pk]
+  dog_id char(36) [not null, ref: > dogs.id]
+  dog_image_id bigint [ref: > dog_images.id]
+  qdrant_point_id char(36) [not null, unique]
+  embedding_kind dog_nose_embedding_kind [not null]
+  reference_index int
+  model varchar(100) [not null]
+  dimension int [not null]
+  preprocess_version varchar(100) [not null]
+  quality_status nose_reference_quality_status [not null, default: "ACCEPTED"]
+  quality_score decimal(6,5)
+  is_active boolean [not null, default: true]
+  created_at timestamp [not null, default: `CURRENT_TIMESTAMP`]
+
+  Indexes {
+    dog_id [name: "idx_dog_nose_references_dog_id"]
+    (dog_id, embedding_kind, is_active) [name: "idx_dog_nose_references_dog_kind_active"]
+    dog_image_id [name: "idx_dog_nose_references_image_id"]
+  }
+}
+
 Table verification_logs {
   id bigint [pk, increment]
   dog_id char(36) [not null, ref: > dogs.id]
@@ -98,6 +133,7 @@ Table verification_logs {
   result verification_result [not null]
   purpose verification_purpose [not null, default: "DOG_REGISTRATION"]
   similarity_score decimal(6,5)
+  score_breakdown_json text
   candidate_dog_id char(36) [ref: > dogs.id]
   model varchar(100)
   dimension int

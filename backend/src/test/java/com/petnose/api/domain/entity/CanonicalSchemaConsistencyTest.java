@@ -24,6 +24,7 @@ class CanonicalSchemaConsistencyTest {
             "users",
             "dogs",
             "dog_images",
+            "dog_nose_references",
             "verification_logs",
             "adoption_posts"
     );
@@ -39,10 +40,26 @@ class CanonicalSchemaConsistencyTest {
             "result",
             "purpose",
             "similarity_score",
+            "score_breakdown_json",
             "candidate_dog_id",
             "model",
             "dimension",
             "failure_reason",
+            "created_at"
+    );
+    private static final Set<String> DOG_NOSE_REFERENCE_COLUMNS = Set.of(
+            "id",
+            "dog_id",
+            "dog_image_id",
+            "qdrant_point_id",
+            "embedding_kind",
+            "reference_index",
+            "model",
+            "dimension",
+            "preprocess_version",
+            "quality_status",
+            "quality_score",
+            "is_active",
             "created_at"
     );
     private static final List<String> RETIRED_PRECHECK_FIELDS = List.of(
@@ -92,7 +109,30 @@ class CanonicalSchemaConsistencyTest {
         assertThat(verificationLogs).contains(
                 "dog_image_id BIGINT NULL",
                 "purpose VARCHAR(40) NOT NULL DEFAULT 'DOG_REGISTRATION'",
-                "similarity_score DECIMAL(6, 5) NULL"
+                "similarity_score DECIMAL(6, 5) NULL",
+                "score_breakdown_json TEXT NULL"
+        );
+    }
+
+    @Test
+    void activeCleanSqlDogNoseReferencesTrackQdrantPointsAndMetadata() throws Exception {
+        String sql = canonicalSql();
+        Map<String, Set<String>> columnsByTable = columnsByTable(sql);
+        String dogNoseReferences = tableDefinitions(sql).get("dog_nose_references");
+
+        assertThat(columnsByTable.get("dog_nose_references"))
+                .containsExactlyInAnyOrderElementsOf(DOG_NOSE_REFERENCE_COLUMNS);
+        assertThat(dogNoseReferences).contains(
+                "qdrant_point_id CHAR(36) NOT NULL",
+                "embedding_kind VARCHAR(20) NOT NULL",
+                "preprocess_version VARCHAR(100) NOT NULL",
+                "quality_status VARCHAR(30) NOT NULL DEFAULT 'ACCEPTED'",
+                "UNIQUE KEY uk_dog_nose_references_qdrant_point_id (qdrant_point_id)",
+                "KEY idx_dog_nose_references_dog_kind_active (dog_id, embedding_kind, is_active)",
+                "FOREIGN KEY (dog_id) REFERENCES dogs (id)",
+                "FOREIGN KEY (dog_image_id) REFERENCES dog_images (id)",
+                "CHECK (embedding_kind IN ('REFERENCE', 'CENTROID'))",
+                "CHECK (quality_status IN ('ACCEPTED', 'REJECTED', 'NEEDS_REVIEW'))"
         );
     }
 
@@ -116,7 +156,14 @@ class CanonicalSchemaConsistencyTest {
         assertThat(dbmlTableNames(dbml)).containsExactlyInAnyOrderElementsOf(ACTIVE_TABLES);
         assertThat(dbml).doesNotContain(removedAttemptTableName());
         assertThat(dbml).doesNotContain(RETIRED_PRECHECK_FIELDS.toArray(String[]::new));
+        assertThat(dbmlEnumValues(dbml, "dog_status"))
+                .containsExactly("PENDING", "REGISTERED", "DUPLICATE_SUSPECTED", "REVIEW_REQUIRED", "REJECTED", "ADOPTED", "INACTIVE");
         assertThat(dbmlEnumValues(dbml, "dog_image_type")).containsExactly("NOSE", "PROFILE");
+        assertThat(dbmlEnumValues(dbml, "verification_result"))
+                .containsExactly("PENDING", "PASSED", "DUPLICATE_SUSPECTED", "REVIEW_REQUIRED", "EMBED_FAILED", "QDRANT_SEARCH_FAILED", "QDRANT_UPSERT_FAILED");
+        assertThat(dbmlEnumValues(dbml, "dog_nose_embedding_kind")).containsExactly("REFERENCE", "CENTROID");
+        assertThat(dbmlEnumValues(dbml, "nose_reference_quality_status"))
+                .containsExactly("ACCEPTED", "REJECTED", "NEEDS_REVIEW");
         assertThat(dbmlEnumValues(dbml, "verification_purpose"))
                 .containsExactly("DOG_REGISTRATION", "HANDOVER_COMPARE");
     }

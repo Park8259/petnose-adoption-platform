@@ -13,7 +13,7 @@ public class NoseVerificationPolicy {
 
     private final double duplicateThreshold;
 
-    public NoseVerificationPolicy(@Value("${nose.duplicate-threshold:0.70}") double duplicateThreshold) {
+    public NoseVerificationPolicy(@Value("${nose.duplicate-threshold:0.65}") double duplicateThreshold) {
         this.duplicateThreshold = duplicateThreshold;
     }
 
