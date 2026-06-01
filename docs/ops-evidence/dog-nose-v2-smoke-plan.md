@@ -13,7 +13,7 @@ Dog nose v2 multi-reference registration과 expected-dog handover reference-set 
 - 기존 Qdrant v1 backfill은 수행하지 않는다.
 - v2 smoke는 `dog_nose_embeddings_real_v2` clean start를 기준으로 한다.
 - 실제 운영 데이터가 있는 환경에서는 아래 reset 절차를 실행하면 안 된다.
-- 사용자는 close-up cropped dog nose image 3~5장을 준비한다. Backend는 crop/detection/alignment를 수행하지 않는다.
+- 사용자는 close-up cropped dog nose image를 정확히 5장 준비한다. Backend는 crop/detection/alignment를 수행하지 않는다.
 
 ## Runtime 기준값
 
@@ -40,7 +40,7 @@ Dog nose v2 multi-reference registration과 expected-dog handover reference-set 
 | Max upload request size | `80MB` |
 | Python embed response timeout | `30000ms` |
 
-이번 policy는 제출된 3~5장 전체 reference와 centroid를 그대로 사용한다. 5장 중 best3/best4 자동 선택, outlier reference 제거, quality rejected image 저장 제외는 후속 개선 후보로 분리한다.
+이번 policy는 제출된 정확히 5장 전체 reference와 centroid를 그대로 사용한다. Python `/embed-batch`는 내부 endpoint로서 1~5장 batch 입력을 허용하지만, dog registration API는 5장 입력만 통과시킨다. best3/best4 자동 선택, outlier reference 제거, quality rejected image 저장 제외는 후속 개선 후보로 분리한다.
 
 ## Clean Reset / No-Backfill Note
 
@@ -108,7 +108,7 @@ Expected:
 
 ### 2. Dog registration 정상 등록
 
-`POST /api/dogs/register`에 `nose_images` 3장을 multipart로 보낸다.
+`POST /api/dogs/register`에 `nose_images` 5장을 multipart로 보낸다.
 
 Expected:
 
@@ -119,12 +119,17 @@ Expected:
 - `embedding_status=COMPLETED`
 - `qdrant_point_id=null`
 - `embedding_mode=MULTI_REFERENCE`
-- `reference_count=3`
+- `reference_count=5`
 - `score_breakdown` 포함
 - `nose_image_url`은 첫 reference 대표 URL
 - `nose_image_urls`는 전체 reference image URL list
-- Qdrant에는 `REFERENCE` 3개와 `CENTROID` 1개 point가 생김
-- MySQL `dog_nose_references`에 4개 row가 생김
+- Qdrant에는 `REFERENCE` 5개와 `CENTROID` 1개 point가 생김
+- MySQL `dog_nose_references`에 6개 row가 생김
+
+Count validation:
+
+- `nose_images` 2장, 3장, 4장, 6장은 HTTP `400`, `error_code=NOSE_IMAGES_COUNT_INVALID`
+- count invalid response는 `details.expected_count=5`, `details.actual_count=<submitted count>`를 포함한다.
 
 ### 3. Same dog duplicate suspected
 
@@ -241,7 +246,7 @@ Expected:
 - 기존 v1 collection 또는 stale Qdrant volume을 보고 있지 않은지 확인한다.
 - Python Embed가 `dog-nose-identification2`로 실행 중인지 확인한다.
 - 모델 directory mount가 read-only로 연결되어 있는지 확인한다.
-- `nose_images` field name과 image count가 3~5 범위인지 확인한다.
+- `nose_images` field name과 image count가 정확히 5장인지 확인한다.
 - request 전체 크기가 `80MB`를 넘지 않는지 확인한다.
 - reference image가 close-up cropped nose image인지 확인한다.
 - Firebase 관련 설정을 dog nose smoke failure 원인으로 오해하지 않는다. Firebase는 optional communication layer다.

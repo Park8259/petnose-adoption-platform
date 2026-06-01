@@ -74,7 +74,7 @@ schema count 불일치는 해결되었다. pre-adoption nose verification ticket
 - API 응답 필드 `qdrant_point_id`, `verification_status`, `embedding_status`는 계산 필드이며 DB column이 아니다.
 - Dog nose v2 real Qdrant collection은 `dog_nose_embeddings_real_v2`이며 vector dimension은 `2048`, distance는 `Cosine`이다.
 - Qdrant point id는 UUID이고 `dogs.id`와 같지 않다. dog id와 point metadata는 Qdrant payload 및 MySQL `dog_nose_references`로 추적한다.
-- 정상 등록은 `REFERENCE` 3~5개와 `CENTROID` 1개를 Qdrant에 저장한다.
+- 정상 등록은 `REFERENCE` 5개와 `CENTROID` 1개를 Qdrant에 저장한다.
 - `qdrant_point_id` response field는 dog nose v2에서 `null`이다.
 - 모든 JSON response field는 `snake_case`를 유지한다.
 - 공통 error response shape는 아래 형태를 유지한다.
@@ -121,7 +121,7 @@ These endpoints do not change the canonical MySQL domain schema. Firebase disabl
 Dog registration과 adoption post creation ownership은 JWT-principal-only다.
 
 - request `user_id`는 active API contract input이 아니다.
-- 신규 Flutter 분양글 작성 flow는 `POST /api/dogs/register`에서 dog 기본 정보와 `nose_images` 3~5장을 등록하고 duplicate/review/pass decision을 검사한다.
+- 신규 Flutter 분양글 작성 flow는 `POST /api/dogs/register`에서 dog 기본 정보와 `nose_images` 정확히 5장을 등록하고 duplicate/review/pass decision을 검사한다.
 - dog registration embedding은 Python `/embed-batch` 1회 호출을 사용한다.
 - client가 close-up cropped nose image를 제공한다고 가정하며 backend는 crop/detection/alignment를 수행하지 않는다.
 - `POST /api/dogs/register` 성공 시 반환된 `dog_id`가 `POST /api/adoption-posts` request의 기준이다.

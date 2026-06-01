@@ -67,12 +67,14 @@ class DogRegistrationControllerTest {
                         null,
                         null,
                         "MULTI_REFERENCE",
-                        3,
+                        5,
                         scoreBreakdown(0.12345),
                         List.of(
                                 "/files/dogs/dog-1/nose/sample.png",
                                 "/files/dogs/dog-1/nose/sample-2.png",
-                                "/files/dogs/dog-1/nose/sample-3.png"
+                                "/files/dogs/dog-1/nose/sample-3.png",
+                                "/files/dogs/dog-1/nose/sample-4.png",
+                                "/files/dogs/dog-1/nose/sample-5.png"
                         ),
                         "registered"
                 ));
@@ -92,12 +94,14 @@ class DogRegistrationControllerTest {
                 .andExpect(jsonPath("$.profile_image_url").value(nullValue()))
                 .andExpect(jsonPath("$.top_match").doesNotExist())
                 .andExpect(jsonPath("$.embedding_mode").value("MULTI_REFERENCE"))
-                .andExpect(jsonPath("$.reference_count").value(3))
+                .andExpect(jsonPath("$.reference_count").value(5))
                 .andExpect(jsonPath("$.score_breakdown.final_score").value(0.12345))
                 .andExpect(jsonPath("$.score_breakdown.reference_consistency_score").value(0.86))
                 .andExpect(jsonPath("$.nose_image_urls[0]").value("/files/dogs/dog-1/nose/sample.png"))
                 .andExpect(jsonPath("$.nose_image_urls[1]").value("/files/dogs/dog-1/nose/sample-2.png"))
                 .andExpect(jsonPath("$.nose_image_urls[2]").value("/files/dogs/dog-1/nose/sample-3.png"))
+                .andExpect(jsonPath("$.nose_image_urls[3]").value("/files/dogs/dog-1/nose/sample-4.png"))
+                .andExpect(jsonPath("$.nose_image_urls[4]").value("/files/dogs/dog-1/nose/sample-5.png"))
                 .andExpect(jsonPath("$.message").value("registered"))
                 .andExpect(jsonPath("$.dogId").doesNotExist())
                 .andExpect(jsonPath("$.registrationAllowed").doesNotExist())
@@ -106,7 +110,7 @@ class DogRegistrationControllerTest {
         ArgumentCaptor<DogRegisterRequest> requestCaptor = ArgumentCaptor.forClass(DogRegisterRequest.class);
         verify(dogRegistrationService).register(requestCaptor.capture());
         assertThat(requestCaptor.getValue().userId()).isEqualTo(42L);
-        assertThat(requestCaptor.getValue().noseImages()).hasSize(3);
+        assertThat(requestCaptor.getValue().noseImages()).hasSize(5);
 
         JsonNode body = objectMapper.readTree(responseBody(result));
         assertThat(body.fieldNames())
@@ -150,12 +154,14 @@ class DogRegistrationControllerTest {
                         null,
                         new DuplicateCandidateResponse("existing-dog-1", 0.98765, "Jindo"),
                         "MULTI_REFERENCE",
-                        3,
+                        5,
                         scoreBreakdown(0.98765),
                         List.of(
                                 "/files/dogs/dog-2/nose/sample.png",
                                 "/files/dogs/dog-2/nose/sample-2.png",
-                                "/files/dogs/dog-2/nose/sample-3.png"
+                                "/files/dogs/dog-2/nose/sample-3.png",
+                                "/files/dogs/dog-2/nose/sample-4.png",
+                                "/files/dogs/dog-2/nose/sample-5.png"
                         ),
                         "duplicate suspected"
                 ));
@@ -178,7 +184,7 @@ class DogRegistrationControllerTest {
                 .andExpect(jsonPath("$.top_match.breed").value("Jindo"))
                 .andExpect(jsonPath("$.top_match.nose_image_url").doesNotExist())
                 .andExpect(jsonPath("$.embedding_mode").value("MULTI_REFERENCE"))
-                .andExpect(jsonPath("$.reference_count").value(3))
+                .andExpect(jsonPath("$.reference_count").value(5))
                 .andExpect(jsonPath("$.score_breakdown.final_score").value(0.98765))
                 .andExpect(jsonPath("$.nose_image_urls").isArray())
                 .andExpect(jsonPath("$.message").value("duplicate suspected"))
@@ -225,12 +231,14 @@ class DogRegistrationControllerTest {
                         null,
                         null,
                         "MULTI_REFERENCE",
-                        3,
+                        5,
                         scoreBreakdown(0.12345),
                         List.of(
                                 "/files/dogs/dog-1/nose/sample.png",
                                 "/files/dogs/dog-1/nose/sample-2.png",
-                                "/files/dogs/dog-1/nose/sample-3.png"
+                                "/files/dogs/dog-1/nose/sample-3.png",
+                                "/files/dogs/dog-1/nose/sample-4.png",
+                                "/files/dogs/dog-1/nose/sample-5.png"
                         ),
                         "registered"
                 ));
@@ -270,11 +278,15 @@ class DogRegistrationControllerTest {
         MockMultipartFile noseImage1 = new MockMultipartFile("nose_images", "sample.png", "image/png", new byte[]{1, 2, 3});
         MockMultipartFile noseImage2 = new MockMultipartFile("nose_images", "sample-2.png", "image/png", new byte[]{1, 2, 3});
         MockMultipartFile noseImage3 = new MockMultipartFile("nose_images", "sample-3.png", "image/png", new byte[]{1, 2, 3});
+        MockMultipartFile noseImage4 = new MockMultipartFile("nose_images", "sample-4.png", "image/png", new byte[]{1, 2, 3});
+        MockMultipartFile noseImage5 = new MockMultipartFile("nose_images", "sample-5.png", "image/png", new byte[]{1, 2, 3});
 
         return multipart("/api/dogs/register")
                 .file(noseImage1)
                 .file(noseImage2)
                 .file(noseImage3)
+                .file(noseImage4)
+                .file(noseImage5)
                 .param("name", "Bori")
                 .param("breed", "Jindo")
                 .param("gender", "MALE")
@@ -283,7 +295,7 @@ class DogRegistrationControllerTest {
     }
 
     private static ScoreBreakdownResponse scoreBreakdown(double finalScore) {
-        return new ScoreBreakdownResponse(finalScore, finalScore, finalScore, finalScore, 3, 0.86);
+        return new ScoreBreakdownResponse(finalScore, finalScore, finalScore, finalScore, 5, 0.86);
     }
 
     private String responseBody(MvcResult result) {
