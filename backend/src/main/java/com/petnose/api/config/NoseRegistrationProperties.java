@@ -10,7 +10,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 public class NoseRegistrationProperties {
 
     private double duplicateThreshold = 0.65;
-    private double reviewLowerBound = 0.60;
+    private double reviewLowerBound = 0.65;
     private int referenceMinCount = 5;
     private int referenceMaxCount = 5;
     private double referenceConsistencyThreshold = 0.55;

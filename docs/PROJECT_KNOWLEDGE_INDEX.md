@@ -146,7 +146,7 @@ Dog Query API는 current dog nose v2 branch에 구현되어 있다.
 - handover embedding은 Python `/embed` 단건 호출을 사용한다.
 - Qdrant point id는 `post_id`나 `dog_id`가 아니라 UUID다.
 - handover lookup path는 `post_id -> adoption_posts.dog_id -> dog_nose_references/Qdrant expected REFERENCE/CENTROID set`이다.
-- default decision thresholds는 `MATCHED >= 0.75`, `AMBIGUOUS 0.60 이상 0.75 미만`, `NOT_MATCHED < 0.60`이다.
+- active decision threshold는 binary policy다. `final_score >= 0.65`이면 `MATCHED`, `final_score < 0.65`이면 `NOT_MATCHED`이며 `AMBIGUOUS`는 호환 값으로만 유지한다.
 - Spring Boot가 Python Embed와 Qdrant 호출을 오케스트레이션한다.
 - Flutter는 Python Embed, Qdrant, MySQL을 직접 호출하지 않는다.
 - 이 흐름은 DB table을 추가하지 않는다.

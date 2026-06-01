@@ -59,8 +59,8 @@ public class DogNoseDecisionPolicy {
         if (!Double.isFinite(duplicateThreshold) || !Double.isFinite(reviewLowerBound)) {
             throw new IllegalArgumentException("Thresholds must be finite.");
         }
-        if (duplicateThreshold <= reviewLowerBound) {
-            throw new IllegalArgumentException("Duplicate threshold must be greater than review lower bound.");
+        if (duplicateThreshold < reviewLowerBound) {
+            throw new IllegalArgumentException("Duplicate threshold must be greater than or equal to review lower bound.");
         }
         if (reviewLowerBound < 0.0 || duplicateThreshold > 1.0) {
             throw new IllegalArgumentException("Thresholds must be within the 0..1 range.");

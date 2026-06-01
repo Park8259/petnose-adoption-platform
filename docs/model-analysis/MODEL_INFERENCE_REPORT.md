@@ -133,4 +133,3 @@ Threshold:
 | threshold 문제 | 중간 | cropped sample에서는 0.70이 충분하지만, manual review band를 만들려면 Qdrant pre-filter를 0.60 이하로 낮춰야 함 |
 
 현재 관찰되는 "동일 비문인데 낮은 similarity"는 모델보다 입력 도메인 mismatch가 가장 유력하다. 특히 앱/운영에서 full face, muzzle, 어두운 사진, 반사광, 초점 흐림이 들어오면 같은 모델이라도 score가 급락할 수 있다.
-

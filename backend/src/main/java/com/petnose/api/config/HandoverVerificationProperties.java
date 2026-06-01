@@ -10,7 +10,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 public class HandoverVerificationProperties {
 
     private double matchThreshold = 0.65;
-    private double ambiguousThreshold = 0.60;
+    private double ambiguousThreshold = 0.65;
     private int topK = 5;
 
     public int effectiveTopK() {

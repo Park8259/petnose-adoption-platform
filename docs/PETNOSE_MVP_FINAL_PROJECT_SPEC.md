@@ -72,7 +72,7 @@ Columns:
 - `ADOPTED`
 - `INACTIVE`
 
-`DUPLICATE_SUSPECTED`와 `REVIEW_REQUIRED`는 adoption post creation을 막아야 하므로 `dogs.status`에 남긴다. similarity, duplicate candidate, model, dimension, score breakdown 같은 detailed verification information은 `verification_logs`에 속한다.
+`DUPLICATE_SUSPECTED`와 `REVIEW_REQUIRED`는 adoption post creation을 막는 호환 상태로 `dogs.status`에 남긴다. Active dog nose v2 normal registration decision은 `REVIEW_REQUIRED`를 반환하지 않지만, 기존 데이터와 enum 호환성을 유지한다. similarity, duplicate candidate, model, dimension, score breakdown 같은 detailed verification information은 `verification_logs`에 속한다.
 
 `dogs`는 `qdrant_point_id`를 저장하지 않는다. Dog nose v2에서는 등록된 dog마다 Qdrant `REFERENCE` point 5개와 `CENTROID` point 1개를 UUID point id로 만든다. point id와 reference metadata는 `dog_nose_references`가 추적한다.
 
@@ -135,7 +135,7 @@ Columns:
 - `REJECTED`
 - `NEEDS_REVIEW`
 
-정상 등록(`PASSED`)에서만 `REFERENCE` 5개와 `CENTROID` 1개가 Qdrant에 upsert되고 `dog_nose_references` row 6개가 생성된다. `DUPLICATE_SUSPECTED` 또는 `REVIEW_REQUIRED` decision은 file/DB/log evidence를 남길 수 있지만 active Qdrant point와 `dog_nose_references`를 만들지 않는다.
+정상 등록(`PASSED`)에서만 `REFERENCE` 5개와 `CENTROID` 1개가 Qdrant에 upsert되고 `dog_nose_references` row 6개가 생성된다. `DUPLICATE_SUSPECTED` decision은 file/DB/log evidence를 남길 수 있지만 active Qdrant point와 `dog_nose_references`를 만들지 않는다. `REVIEW_REQUIRED`는 호환 상태로 유지하지만 active dog nose v2 normal registration decision에서는 반환하지 않는다.
 
 ## Verification Logs
 
@@ -248,9 +248,9 @@ Dog nose v2 handover threshold policy는 expected dog reference set에서 나온
 - Qdrant query는 `dog_id=adoption_posts.dog_id`, `is_active=true`, `embedding_kind in (REFERENCE, CENTROID)`인 expected dog reference set만 찾는다.
 - `final_score = max(max_reference_score, centroid_score)`이며 `score_breakdown`은 두 점수를 분리 제공한다.
 - decision score가 `0.65` 이상이면 같은 dog로 보고 `matched=true`, `MATCHED`를 반환한다.
-- decision score가 `0.60` 이상 `0.65` 미만이면 `matched=false`, `AMBIGUOUS`를 반환한다.
-- decision score가 `0.60` 미만이면 `matched=false`, `NOT_MATCHED`를 반환한다.
+- decision score가 `0.65` 미만이면 다른 dog로 보고 `matched=false`, `NOT_MATCHED`를 반환한다.
 - expected dog candidate가 없으면 `matched=false`, `NO_MATCH_CANDIDATE`를 반환한다.
+- `AMBIGUOUS` enum과 response field는 호환성을 위해 유지하지만 active dog nose v2 normal decision에서는 사용하지 않는다.
 - handover `MATCHED`는 safety signal이며 adoption post를 자동 완료하지 않는다.
 
 이 기능은 reservation, payment, contract, report/admin, `SHELTER`, `ADOPTER` concept을 추가하지 않는다. Firebase chat/push는 선택적 communication layer일 수 있지만, handover verification이나 dog registration trust pipeline의 일부가 아니다.
@@ -263,19 +263,20 @@ Dog nose v2 handover threshold policy는 expected dog reference set에서 나온
 
 Dog ownership은 JWT principal-only다. `dogs.owner_user_id`는 Bearer JWT로 resolve된 current active user에서 결정하며, public API contract는 request `user_id`를 ownership input으로 받지 않는다.
 
-Dog nose v2 duplicate/review/pass policy는 Spring score breakdown의 final score 기준이다.
+Dog nose v2 duplicate/pass policy는 Spring score breakdown의 final score 기준이다.
 
 - Qdrant candidate search pre-filter threshold는 `0.55`다.
+- 이 값은 Spring이 후보를 넓게 보기 위한 내부 검색 기준이며 보류 구간이 아니다.
 - reference quality pairwise threshold는 `0.55`다.
 - reference outlier improvement threshold는 `0.04`다.
 - reference quality verdict는 `ACCEPTED`, `WARN_ACCEPTED`, `RETAKE_ONE`, `RETAKE_ALL`이다.
 - `final_score = max(max_reference_score, centroid_score)`이며 `score_breakdown`은 두 점수를 분리 제공한다.
 - `final_score >= 0.65`이면 `DUPLICATE_SUSPECTED`다.
-- `0.60 <= final_score < 0.65`이면 `REVIEW_REQUIRED`다.
-- `final_score < 0.60`이면 `PASSED`다.
+- `final_score < 0.65`이면 `PASSED`다.
+- `REVIEW_REQUIRED` enum/status는 호환성을 위해 유지하지만 active dog nose v2 normal registration decision에서는 사용하지 않는다.
 - `WARN_ACCEPTED`는 등록을 막지 않고 `score_breakdown_json.reference_quality`에 warning summary를 저장한다.
 - `RETAKE_ONE` 또는 `RETAKE_ALL`은 `NOSE_REFERENCE_INCONSISTENT` HTTP `400`이며 details에 `quality_verdict`, `weakest_image_index`, `best_subset_indexes`, `recommendation`, `pairwise_scores`를 포함하고 file/DB/Qdrant side effect를 만들지 않는다.
-- `DUPLICATE_SUSPECTED`와 `REVIEW_REQUIRED`는 file/DB/log evidence를 남길 수 있지만 Qdrant upsert를 수행하지 않는다.
+- `DUPLICATE_SUSPECTED`는 file/DB/log evidence를 남길 수 있지만 Qdrant upsert를 수행하지 않는다.
 - `PASSED`만 Qdrant upsert와 `dog_nose_references` 생성을 수행한다.
 - Leave-one-out subset은 진단용으로만 계산한다. best3/best4 자동 선택, outlier reference 제거, quality rejected image 저장 제외는 이번 정책에 포함하지 않는다.
 
@@ -285,10 +286,10 @@ Dog nose v2 duplicate/review/pass policy는 Spring score breakdown의 final scor
   - dog nose v2 active contract에서는 항상 `null`
 - `verification_status`
   - latest `verification_logs.result`에서 계산
-  - `REVIEW_REQUIRED` 포함
+  - `REVIEW_REQUIRED`는 호환 값으로 유지하지만 active normal registration decision에서는 반환하지 않음
 - `embedding_status`
   - latest `verification_logs.result`에서 계산
-  - `REVIEW_REQUIRED`는 `SKIPPED_REVIEW`
+  - `REVIEW_REQUIRED`는 호환 값으로 `SKIPPED_REVIEW`
 
 Dog registration만 Qdrant에 dog nose reference vectors를 저장한다. 저장 시 point id는 UUID이고 payload에 `dog_id`, `embedding_kind`, reference metadata를 포함한다. Adoption post creation은 Qdrant를 호출하지 않으며, `profile_image` 저장은 MySQL/file storage metadata에만 영향을 준다. Duplicate suspected/review-required flow는 새 dog에 대한 active Qdrant point를 upsert하지 않아야 한다. `post_id`는 Qdrant id가 아니며, handover verification은 `post_id -> adoption_posts.dog_id -> dog_nose_references/Qdrant expected reference set` 순서로 expected vectors를 찾는다.
 

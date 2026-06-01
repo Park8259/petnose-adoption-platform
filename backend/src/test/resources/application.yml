@@ -33,7 +33,7 @@ upload:
 
 nose:
   duplicate-threshold: ${NOSE_DUPLICATE_THRESHOLD:0.65}
-  review-lower-bound: ${NOSE_REVIEW_LOWER_BOUND:0.60}
+  review-lower-bound: ${NOSE_REVIEW_LOWER_BOUND:0.65}
   reference-min-count: ${NOSE_REFERENCE_MIN_COUNT:5}
   reference-max-count: ${NOSE_REFERENCE_MAX_COUNT:5}
   reference-consistency-threshold: ${NOSE_REFERENCE_CONSISTENCY_THRESHOLD:0.55}
@@ -43,7 +43,7 @@ nose:
 petnose:
   handover-verification:
     match-threshold: ${PETNOSE_HANDOVER_VERIFICATION_MATCH_THRESHOLD:0.65}
-    ambiguous-threshold: ${PETNOSE_HANDOVER_VERIFICATION_AMBIGUOUS_THRESHOLD:0.60}
+    ambiguous-threshold: ${PETNOSE_HANDOVER_VERIFICATION_AMBIGUOUS_THRESHOLD:0.65}
     top-k: ${PETNOSE_HANDOVER_VERIFICATION_TOP_K:5}
 
 auth:

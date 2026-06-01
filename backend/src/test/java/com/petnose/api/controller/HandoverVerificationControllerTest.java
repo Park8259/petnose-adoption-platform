@@ -72,7 +72,7 @@ class HandoverVerificationControllerTest {
     private static final String JWT_SECRET = "test-petnose-jwt-secret-change-me-32bytes";
     private static final String MODEL = "dog-nose-identification2:s101_224";
     private static final double MATCH_THRESHOLD = 0.65;
-    private static final double AMBIGUOUS_THRESHOLD = 0.60;
+    private static final double AMBIGUOUS_THRESHOLD = 0.65;
     private static final int TOP_K = 5;
     private static final int VECTOR_DIMENSION = 128;
 
@@ -477,8 +477,9 @@ class HandoverVerificationControllerTest {
     @CsvSource({
             "0.80630887, MATCHED, true",
             "0.65, MATCHED, true",
-            "0.64999, AMBIGUOUS, false",
-            "0.60, AMBIGUOUS, false",
+            "0.6500001, MATCHED, true",
+            "0.649999, NOT_MATCHED, false",
+            "0.60, NOT_MATCHED, false",
             "0.59999, NOT_MATCHED, false"
     })
     void handoverVerificationAppliesExpectedDogReferenceDecisionBoundaries(
@@ -527,27 +528,39 @@ class HandoverVerificationControllerTest {
     }
 
     @Test
-    void handoverVerificationReturnsAmbiguousWhenReferenceScoreIsBetweenThresholds() throws Exception {
-        handoverVerificationProperties.setMatchThreshold(0.80);
-        handoverVerificationProperties.setAmbiguousThreshold(0.70);
+    void handoverVerificationReturnsNotMatchedBelowMatchThresholdUnderBinaryPolicy() throws Exception {
         User user = saveUser(true);
         Dog dog = saveDog(user, DogStatus.REGISTERED);
         AdoptionPost post = savePost(user, dog, AdoptionPostStatus.OPEN);
         mockEmbedding();
-        mockExpectedDogReferenceSetWithCentroid(dog, 0.74, 0.75);
+        mockExpectedDogReferenceSetWithCentroid(dog, 0.64, 0.63);
 
         MvcResult result = handoverRequest(tokenFor(user), post.getId())
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.decision").value("AMBIGUOUS"))
+                .andExpect(jsonPath("$.decision").value("NOT_MATCHED"))
                 .andExpect(jsonPath("$.matched").value(false))
                 .andExpect(jsonPath("$.top_match_is_expected").value(true))
-                .andExpect(jsonPath("$.similarity_score").value(0.75))
-                .andExpect(jsonPath("$.threshold").value(0.80))
-                .andExpect(jsonPath("$.ambiguous_threshold").value(0.70))
-                .andExpect(jsonPath("$.message").value("유사도가 기준에 근접하지만 확정하기 어렵습니다. 비문 이미지를 다시 촬영해주세요."))
+                .andExpect(jsonPath("$.similarity_score").value(0.64))
+                .andExpect(jsonPath("$.threshold").value(MATCH_THRESHOLD))
+                .andExpect(jsonPath("$.ambiguous_threshold").value(AMBIGUOUS_THRESHOLD))
+                .andExpect(jsonPath("$.message").value("분양글에 등록된 강아지와 일치하지 않습니다. 거래 전 확인이 필요합니다."))
                 .andReturn();
 
         assertResponseIsSafe(result);
+    }
+
+    @Test
+    void handoverVerificationRejectsAmbiguousThresholdAboveMatchThreshold() throws Exception {
+        handoverVerificationProperties.setAmbiguousThreshold(MATCH_THRESHOLD + 0.01);
+        User user = saveUser(true);
+        Dog dog = saveDog(user, DogStatus.REGISTERED);
+        AdoptionPost post = savePost(user, dog, AdoptionPostStatus.OPEN);
+        mockEmbedding();
+        mockExpectedDogReferenceSet(dog, 0.70);
+
+        handoverRequest(tokenFor(user), post.getId())
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.error_code").value("INVALID_HANDOVER_VERIFICATION_THRESHOLD"));
     }
 
     @Test

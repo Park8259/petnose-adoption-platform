@@ -9,7 +9,7 @@
 - Raw evidence dir: `C:\tmp\petnose-v2-performance\20260526_184826`
 - Verdict: `WARN`
 
-`WARN` is only for the expected moca duplicate borderline case: image `6.png` produced `final_score=0.643942`, which is below the calibrated auto threshold `0.65` and therefore returned `REVIEW_REQUIRED`.
+`WARN` is historical evidence from the previous review-band policy: image `6.png` produced `final_score=0.643942`, which was below the calibrated auto threshold `0.65` and returned `REVIEW_REQUIRED` at the time. The active release policy is now binary, so that score is treated as pass/different dog.
 
 ## Runtime
 
@@ -39,8 +39,8 @@ Qdrant collection:
 
 - `final_score=max(max_reference_score, centroid_score)`
 - AUTO / MATCH threshold: `0.65`
-- REVIEW / AMBIGUOUS lower bound: `0.60`
-- Below `0.60`: different dog / pass
+- Active release policy is binary: `final_score >= 0.65` means same dog, `final_score < 0.65` means different dog / pass.
+- The previous REVIEW / AMBIGUOUS lower bound `0.60` is historical evidence only.
 - Qdrant candidate pre-filter: `0.55`
 - Reference consistency threshold: `0.55`
 - Reference subset/outlier filtering was not applied in this run.
@@ -126,7 +126,7 @@ Slowest requests were all registration calls. The slowest was `ddubi` first regi
 |---|---|---:|---:|---|---:|---|---:|
 | ddubi | `REGISTERED` | 6 | 6 | `DUPLICATE_SUSPECTED` | 0.9227281 | `MATCHED` | 0.89904654 |
 | milk | `REGISTERED` | 6 | 6 | `DUPLICATE_SUSPECTED` | 0.7891785 | `MATCHED` | 0.72693276 |
-| moca | `REGISTERED` | 6 | 6 | `REVIEW_REQUIRED` | 0.643942 | `MATCHED` | 0.6918067 |
+| moca | `REGISTERED` | 6 | 6 | `REVIEW_REQUIRED` (historical; active policy would pass) | 0.643942 | `MATCHED` | 0.6918067 |
 | mungchi | `REGISTERED` | 6 | 6 | `DUPLICATE_SUSPECTED` | 0.7734946 | `MATCHED` | 0.6690009 |
 
 Cross-dog handover:
@@ -139,7 +139,7 @@ Privacy/stateless:
 
 - `verification_logs` before handover: `8`
 - `verification_logs` after handover: `8`
-- Final dog status counts: `REGISTERED=4`, `DUPLICATE_SUSPECTED=3`, `REVIEW_REQUIRED=1`
+- Final dog status counts from the historical run: `REGISTERED=4`, `DUPLICATE_SUSPECTED=3`, `REVIEW_REQUIRED=1`
 - Final adoption post status counts: `OPEN=4`
 - No unsafe fields found in handover responses: `nose_image_url`, `author_user_id`, `top_matched_dog_id`
 - Handover did not mutate dog/adoption status as part of this smoke.

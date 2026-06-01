@@ -60,9 +60,9 @@ infra/docker/compose.real-model.yaml
 | Quality warning enabled | `true` |
 | Verdicts | `ACCEPTED`, `WARN_ACCEPTED`, `RETAKE_ONE`, `RETAKE_ALL` |
 | Duplicate threshold | `0.65` |
-| Review lower bound | `0.60` |
+| Review lower bound | `0.65` |
 | Handover match threshold | `0.65` |
-| Handover ambiguous threshold | `0.60` |
+| Handover ambiguous threshold | `0.65` |
 | Qdrant search pre-filter | `0.55` |
 | Final score policy | `max(max_reference_score, centroid_score)` |
 

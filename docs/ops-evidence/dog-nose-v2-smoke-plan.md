@@ -28,13 +28,13 @@ Dog nose v2 multi-reference registration과 expected-dog handover reference-set 
 | Handover embed endpoint | `/embed` |
 | Qdrant candidate search threshold | `0.55` |
 | Duplicate threshold | `0.65` |
-| Review lower bound | `0.60` |
+| Review lower bound | `0.65` |
 | Reference count | exactly `5` |
 | Reference quality threshold | `0.55` |
 | Reference outlier improvement threshold | `0.04` |
 | Final score policy | `max(max_reference_score, centroid_score)` |
 | Handover match threshold | `0.65` |
-| Handover ambiguous threshold | `0.60` |
+| Handover ambiguous threshold | `0.65` |
 | Max batch images | `5` |
 | Max batch total bytes | `83886080` |
 | Max upload file size | `20MB` |
@@ -147,19 +147,18 @@ Expected:
 - `score_breakdown` 포함
 - 새 Qdrant upsert 없음
 
-### 4. REVIEW_REQUIRED 확인
+### 4. Binary registration pass below duplicate threshold
 
-Mock, fixture, 또는 threshold-controlled local data로 final score가 `0.60` 이상 `0.65` 미만인 registration을 확인한다.
+Mock, fixture, 또는 threshold-controlled local data로 final score가 `0.65` 미만인 registration을 확인한다.
 
 Expected:
 
-- HTTP `200`
-- `registration_allowed=false`
-- `status=REVIEW_REQUIRED`
-- `verification_status=REVIEW_REQUIRED`
-- `embedding_status=SKIPPED_REVIEW`
-- `qdrant_point_id=null`
-- Qdrant upsert 없음
+- HTTP `201`
+- `registration_allowed=true`
+- `status=REGISTERED`
+- `verification_status=VERIFIED`
+- `embedding_status=COMPLETED`
+- Qdrant upsert 있음
 
 ### 5. Reference quality failure
 
@@ -196,19 +195,19 @@ Expected:
 - `matched=true`
 - `decision=MATCHED`
 - `threshold=0.65`
-- `ambiguous_threshold=0.60`
+- `ambiguous_threshold=0.65`
 - `score_breakdown` 포함
 - `score_breakdown.max_reference_score`와 `score_breakdown.centroid_score`가 분리 제공됨
 
-### 8. Handover AMBIGUOUS
+### 8. Handover NOT_MATCHED below binary threshold
 
-Mock, fixture, 또는 threshold-controlled local data로 decision score가 `0.60` 이상 `0.65` 미만인 handover를 확인한다.
+Mock, fixture, 또는 threshold-controlled local data로 decision score가 `0.65` 미만인 handover를 확인한다.
 
 Expected:
 
 - HTTP `200`
 - `matched=false`
-- `decision=AMBIGUOUS`
+- `decision=NOT_MATCHED`
 - `score_breakdown` 포함
 
 ### 9. Handover NOT_MATCHED
@@ -220,7 +219,7 @@ Expected:
 - HTTP `200`
 - `matched=false`
 - `decision=NOT_MATCHED`
-- score가 `0.60` 미만이거나 expected reference set과 충분히 다름
+- score가 `0.65` 미만이거나 expected reference set과 충분히 다름
 
 ### 10. Handover NO_MATCH_CANDIDATE
 

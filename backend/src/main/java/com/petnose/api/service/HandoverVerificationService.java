@@ -318,7 +318,7 @@ public class HandoverVerificationService {
         double matchThreshold = properties.getMatchThreshold();
         double ambiguousThreshold = properties.getAmbiguousThreshold();
         if (!Double.isFinite(matchThreshold) || !Double.isFinite(ambiguousThreshold)
-                || ambiguousThreshold >= matchThreshold
+                || ambiguousThreshold > matchThreshold
                 || ambiguousThreshold < 0.0
                 || matchThreshold > 1.0) {
             throw new ApiException(

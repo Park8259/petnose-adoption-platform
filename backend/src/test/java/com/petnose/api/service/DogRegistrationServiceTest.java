@@ -330,32 +330,31 @@ class DogRegistrationServiceTest {
     }
 
     @Test
-    void registerReviewRequiredStoresRowsAndSkipsQdrantUpsert() {
+    void registerBelowDuplicateThresholdRegistersAndUpsertsQdrant() {
         Dog candidate = candidateDog("candidate-dog", "Jindo");
         dogs.put(candidate.getId(), candidate);
         when(embedClient.embedBatch(anyList())).thenReturn(batchResponse(consistentVectors()));
         when(qdrantDogVectorClient.searchReferencePoints(anyList(), anyInt(), anyDouble()))
-                .thenReturn(List.of(vectorResult("candidate-dog", 0.62)));
+                .thenReturn(List.of(vectorResult("candidate-dog", 0.649999)));
 
         DogRegisterResponse response = service.register(request(noseImages(5)));
 
         Dog dog = dogs.get(response.dogId());
         VerificationLog log = onlyVerificationLog();
 
-        assertThat(dog.getStatus()).isEqualTo(DogStatus.REVIEW_REQUIRED);
+        assertThat(dog.getStatus()).isEqualTo(DogStatus.REGISTERED);
         assertThat(dogImages).hasSize(5);
-        assertThat(dogNoseReferences).isEmpty();
-        assertThat(log.getResult()).isEqualTo(VerificationResult.REVIEW_REQUIRED);
-        assertThat(log.getSimilarityScore()).isEqualByComparingTo(new BigDecimal("0.62000"));
-        assertThat(log.getCandidateDogId()).isEqualTo("candidate-dog");
+        assertThat(dogNoseReferences).hasSize(6);
+        assertThat(log.getResult()).isEqualTo(VerificationResult.PASSED);
+        assertThat(log.getSimilarityScore()).isEqualByComparingTo(new BigDecimal("0.65000"));
 
-        assertThat(response.registrationAllowed()).isFalse();
-        assertThat(response.status()).isEqualTo("REVIEW_REQUIRED");
-        assertThat(response.embeddingStatus()).isEqualTo("SKIPPED_REVIEW");
+        assertThat(response.registrationAllowed()).isTrue();
+        assertThat(response.status()).isEqualTo("REGISTERED");
+        assertThat(response.embeddingStatus()).isEqualTo("COMPLETED");
         assertThat(response.topMatch().dogId()).isEqualTo("candidate-dog");
         assertThat(response.topMatch().breed()).isEqualTo("Jindo");
 
-        verify(qdrantDogVectorClient, never()).upsertAll(anyList());
+        verify(qdrantDogVectorClient).upsertAll(anyList());
     }
 
     @Test
@@ -379,7 +378,7 @@ class DogRegistrationServiceTest {
     }
 
     @Test
-    void registerReviewDecisionUsesCentroidWhenCompositeScoreFallsInReviewBand() {
+    void registerPassesWhenCentroidScoreIsBelowDuplicateThreshold() {
         Dog candidate = candidateDog("candidate-dog", "Jindo");
         dogs.put(candidate.getId(), candidate);
         when(embedClient.embedBatch(anyList())).thenReturn(batchResponse(consistentVectors()));
@@ -390,16 +389,19 @@ class DogRegistrationServiceTest {
 
         DogRegisterResponse response = service.register(request(noseImages(5)));
 
-        assertThat(response.status()).isEqualTo("REVIEW_REQUIRED");
+        assertThat(response.status()).isEqualTo("REGISTERED");
+        assertThat(response.registrationAllowed()).isTrue();
+        assertThat(response.embeddingStatus()).isEqualTo("COMPLETED");
         assertThat(response.scoreBreakdown().finalScore()).isEqualTo(0.62);
         assertThat(response.scoreBreakdown().maxReferenceScore()).isEqualTo(0.58);
         assertThat(response.scoreBreakdown().centroidScore()).isEqualTo(0.62);
         assertThat(onlyVerificationLog().getSimilarityScore()).isEqualByComparingTo(new BigDecimal("0.62000"));
-        verify(qdrantDogVectorClient, never()).upsertAll(anyList());
+        assertThat(onlyVerificationLog().getResult()).isEqualTo(VerificationResult.PASSED);
+        verify(qdrantDogVectorClient).upsertAll(anyList());
     }
 
     @Test
-    void registerPassesWhenCompositeScoreIsBelowReviewLowerBound() {
+    void registerPassesWhenCompositeScoreIsWellBelowDuplicateThreshold() {
         Dog candidate = candidateDog("candidate-dog", "Poodle");
         dogs.put(candidate.getId(), candidate);
         when(embedClient.embedBatch(anyList())).thenReturn(batchResponse(consistentVectors()));

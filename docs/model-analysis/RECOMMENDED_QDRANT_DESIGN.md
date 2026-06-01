@@ -210,4 +210,3 @@ Centroid를 별도 row로 저장하거나 `dog_nose_embedding_sets` table을 둬
 5. search 결과를 dog_id로 group-by하는 Spring aggregation layer를 추가한다.
 6. `AUTO_MATCH`, `MANUAL_REVIEW`, `NOT_MATCH` 상태를 응답/DB에 반영한다.
 7. 앱 촬영 데이터로 threshold를 재보정한다.
-
