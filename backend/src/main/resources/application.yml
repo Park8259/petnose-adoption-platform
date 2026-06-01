@@ -74,6 +74,8 @@ nose:
   reference-min-count: ${NOSE_REFERENCE_MIN_COUNT:5}
   reference-max-count: ${NOSE_REFERENCE_MAX_COUNT:5}
   reference-consistency-threshold: ${NOSE_REFERENCE_CONSISTENCY_THRESHOLD:0.55}
+  reference-outlier-improvement-threshold: ${NOSE_REFERENCE_OUTLIER_IMPROVEMENT_THRESHOLD:0.04}
+  reference-quality-warning-enabled: ${NOSE_REFERENCE_QUALITY_WARNING_ENABLED:true}
   preprocess-version: ${NOSE_PREPROCESS_VERSION:rgb_resize224_bicubic_imagenet_l2_v1}
 
 petnose:

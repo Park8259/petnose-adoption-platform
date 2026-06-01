@@ -33,8 +33,12 @@ import com.petnose.api.service.nose.DogNoseCandidateAggregator.DogNoseCandidateS
 import com.petnose.api.service.nose.DogNoseDecisionPolicy;
 import com.petnose.api.service.nose.DogNoseDecisionPolicy.DogNoseDecision;
 import com.petnose.api.service.nose.DogNoseScoreBreakdown;
-import com.petnose.api.service.nose.NoseReferenceConsistencyChecker;
-import com.petnose.api.service.nose.NoseReferenceConsistencyChecker.ReferenceConsistencyResult;
+import com.petnose.api.service.nose.NoseReferenceQualityAnalyzer;
+import com.petnose.api.service.nose.NoseReferenceQualityAnalyzer.LeaveOneOutSubset;
+import com.petnose.api.service.nose.NoseReferenceQualityAnalyzer.PairwiseScore;
+import com.petnose.api.service.nose.NoseReferenceQualityAnalyzer.PerImageQuality;
+import com.petnose.api.service.nose.NoseReferenceQualityAnalyzer.ReferenceQualityReport;
+import com.petnose.api.service.nose.NoseReferenceQualityAnalyzer.ReferenceQualityVerdict;
 import com.petnose.api.service.nose.NoseVectorMath;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -78,7 +82,7 @@ public class DogRegistrationService {
 
     private final DogNoseCandidateAggregator dogNoseCandidateAggregator = new DogNoseCandidateAggregator();
     private final DogNoseDecisionPolicy dogNoseDecisionPolicy = new DogNoseDecisionPolicy();
-    private final NoseReferenceConsistencyChecker noseReferenceConsistencyChecker = new NoseReferenceConsistencyChecker();
+    private final NoseReferenceQualityAnalyzer noseReferenceQualityAnalyzer = new NoseReferenceQualityAnalyzer();
 
     @Value("${qdrant.vector-dimension}")
     private int expectedVectorDimension;
@@ -105,8 +109,11 @@ public class DogRegistrationService {
         List<List<Double>> referenceVectors = embedResponse.items().stream()
                 .map(EmbedClient.BatchEmbedItem::vector)
                 .toList();
+        List<String> referenceFilenames = uploads.stream()
+                .map(NoseImageUpload::filename)
+                .toList();
 
-        ReferenceConsistencyResult consistencyResult = checkReferenceConsistencyOrFail(referenceVectors);
+        ReferenceQualityReport qualityReport = checkReferenceQualityOrFail(referenceVectors, referenceFilenames);
         List<Double> centroidVector = NoseVectorMath.centroid(referenceVectors);
 
         DogNoseAggregationResult aggregationResult = searchExistingDogsOrFail(dogId, referenceVectors, centroidVector);
@@ -115,8 +122,8 @@ public class DogRegistrationService {
                 noseRegistrationProperties.getDuplicateThreshold(),
                 noseRegistrationProperties.getReviewLowerBound()
         );
-        ScoreBreakdownResponse scoreBreakdown = buildScoreBreakdown(decision, consistencyResult);
-        String scoreBreakdownJson = toScoreBreakdownJson(scoreBreakdown);
+        ScoreBreakdownResponse scoreBreakdown = buildScoreBreakdown(decision, qualityReport);
+        String scoreBreakdownJson = toScoreBreakdownJson(scoreBreakdown, qualityReport);
 
         List<FileStorageService.StoredFile> storedFiles = storeNoseImages(dogId, uploads);
         PendingRegistration pending = transactionTemplate.execute(status ->
@@ -218,23 +225,24 @@ public class DogRegistrationService {
         }
     }
 
-    private ReferenceConsistencyResult checkReferenceConsistencyOrFail(List<List<Double>> referenceVectors) {
-        ReferenceConsistencyResult result = noseReferenceConsistencyChecker.check(
+    private ReferenceQualityReport checkReferenceQualityOrFail(List<List<Double>> referenceVectors, List<String> filenames) {
+        ReferenceQualityReport report = noseReferenceQualityAnalyzer.analyze(
                 referenceVectors,
-                noseRegistrationProperties.getReferenceConsistencyThreshold()
+                filenames,
+                noseRegistrationProperties.getReferenceConsistencyThreshold(),
+                noseRegistrationProperties.getReferenceOutlierImprovementThreshold(),
+                noseRegistrationProperties.isReferenceQualityWarningEnabled()
         );
-        if (!result.accepted()) {
+        if (report.verdict() == ReferenceQualityVerdict.RETAKE_ONE
+                || report.verdict() == ReferenceQualityVerdict.RETAKE_ALL) {
             throw new ApiException(
                     HttpStatus.BAD_REQUEST,
                     "NOSE_REFERENCE_INCONSISTENT",
-                    "reference 비문 이미지 간 일관성이 부족합니다.",
-                    Map.of(
-                            "average_pairwise_score", result.averagePairwiseScore(),
-                            "threshold", result.threshold()
-                    )
+                    report.recommendation(),
+                    referenceQualityErrorDetails(report)
             );
         }
-        return result;
+        return report;
     }
 
     private DogNoseAggregationResult searchExistingDogsOrFail(
@@ -552,7 +560,7 @@ public class DogRegistrationService {
 
     private ScoreBreakdownResponse buildScoreBreakdown(
             DogNoseDecision decision,
-            ReferenceConsistencyResult consistencyResult
+            ReferenceQualityReport qualityReport
     ) {
         DogNoseCandidateScore topCandidate = decision.topCandidate();
         return new ScoreBreakdownResponse(
@@ -561,11 +569,11 @@ public class DogRegistrationService {
                 topCandidate == null ? null : topCandidate.top2AverageScore(),
                 topCandidate == null ? null : topCandidate.centroidScore(),
                 topCandidate == null ? 0 : topCandidate.hitCount(),
-                consistencyResult.averagePairwiseScore()
+                qualityReport.averagePairwiseScore()
         );
     }
 
-    private String toScoreBreakdownJson(ScoreBreakdownResponse scoreBreakdown) {
+    private String toScoreBreakdownJson(ScoreBreakdownResponse scoreBreakdown, ReferenceQualityReport qualityReport) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("final_score", scoreBreakdown.finalScore());
         body.put("max_reference_score", scoreBreakdown.maxReferenceScore());
@@ -573,12 +581,83 @@ public class DogRegistrationService {
         body.put("centroid_score", scoreBreakdown.centroidScore());
         body.put("hit_count", scoreBreakdown.hitCount());
         body.put("reference_consistency_score", scoreBreakdown.referenceConsistencyScore());
+        body.put("reference_quality", referenceQualityScoreBreakdown(qualityReport));
         body.put("policy", SCORE_POLICY);
         try {
             return objectMapper.writeValueAsString(body);
         } catch (JsonProcessingException e) {
             throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "SCORE_BREAKDOWN_SERIALIZE_FAILED", "검증 점수 상세 저장에 실패했습니다.");
         }
+    }
+
+    private Map<String, Object> referenceQualityScoreBreakdown(ReferenceQualityReport report) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("verdict", report.verdict().name());
+        body.put("weakest_image_index", report.weakestImageIndex());
+        body.put("weakest_image_average_score", report.weakestImageAverageScore());
+        body.put("best_subset_indexes", report.bestSubsetIndexes());
+        body.put("best_subset_average_score", report.bestSubsetAverageScore());
+        body.put("best_subset_improvement", report.bestSubsetImprovement());
+        body.put("recommendation", report.recommendation());
+        return body;
+    }
+
+    private Map<String, Object> referenceQualityErrorDetails(ReferenceQualityReport report) {
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("quality_verdict", report.verdict().name());
+        details.put("average_pairwise_score", report.averagePairwiseScore());
+        details.put("threshold", report.threshold());
+        details.put("min_pairwise_score", report.minPairwiseScore());
+        details.put("max_pairwise_score", report.maxPairwiseScore());
+        details.put("weakest_image_index", report.weakestImageIndex());
+        details.put("weakest_image_filename", report.weakestImageFilename());
+        details.put("weakest_image_average_score", report.weakestImageAverageScore());
+        details.put("best_subset_indexes", report.bestSubsetIndexes());
+        details.put("best_subset_average_score", report.bestSubsetAverageScore());
+        details.put("best_subset_improvement", report.bestSubsetImprovement());
+        details.put("recommendation", report.recommendation());
+        details.put("pairwise_scores", report.pairwiseScores().stream()
+                .map(this::pairwiseScoreDetails)
+                .toList());
+        details.put("per_image_qualities", report.perImageQualities().stream()
+                .map(this::perImageQualityDetails)
+                .toList());
+        details.put("leave_one_out_subsets", report.leaveOneOutSubsets().stream()
+                .map(this::leaveOneOutSubsetDetails)
+                .toList());
+        return details;
+    }
+
+    private Map<String, Object> pairwiseScoreDetails(PairwiseScore score) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("image_a", score.imageA());
+        body.put("image_b", score.imageB());
+        body.put("score", score.score());
+        return body;
+    }
+
+    private Map<String, Object> perImageQualityDetails(PerImageQuality quality) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("image_index", quality.imageIndex());
+        body.put("filename", quality.filename());
+        body.put("average_score_to_others", quality.averageScoreToOthers());
+        body.put("min_score_to_others", quality.minScoreToOthers());
+        body.put("max_score_to_others", quality.maxScoreToOthers());
+        body.put("below_threshold_pairs_count", quality.belowThresholdPairsCount());
+        return body;
+    }
+
+    private Map<String, Object> leaveOneOutSubsetDetails(LeaveOneOutSubset subset) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("excluded_image_index", subset.excludedImageIndex());
+        body.put("excluded_filename", subset.excludedFilename());
+        body.put("subset_indexes", subset.subsetIndexes());
+        body.put("average_pairwise_score", subset.averagePairwiseScore());
+        body.put("min_pairwise_score", subset.minPairwiseScore());
+        body.put("max_pairwise_score", subset.maxPairwiseScore());
+        body.put("accepted", subset.accepted());
+        body.put("improvement_vs_full_average", subset.improvementVsFullAverage());
+        return body;
     }
 
     private DogRegisterResponse buildResponse(

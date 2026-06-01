@@ -102,7 +102,7 @@ Image file은 MySQL BLOB column에 저장하지 않는다.
 
 service가 생성하는 `dog_images` row는 정상적으로 `mime_type`, `file_size`, `sha256` metadata를 포함해야 한다. 이 metadata column들은 migration/import flexibility를 위해 DB level에서는 nullable로 남길 수 있다.
 
-비문 이미지는 `POST /api/dogs/register` 단계에서 `dog_images.image_type=NOSE` row로 저장한다. Dog nose v2 registration은 `nose_images` 정확히 5장을 required로 받으며, 사용자가 close-up cropped nose image를 제공한다고 가정한다. Backend는 crop/detection/alignment를 수행하지 않는다. `POST /api/adoption-posts`는 이미 등록된 `dog_id`만 참조하고, 분양글 대표 이미지인 `profile_image`만 `dog_images.image_type=PROFILE` row로 저장한다.
+비문 이미지는 `POST /api/dogs/register` 단계에서 `dog_images.image_type=NOSE` row로 저장한다. Dog nose v2 registration은 `nose_images` 정확히 5장을 required로 받으며, 사용자가 close-up cropped nose image를 제공한다고 가정한다. Backend는 crop/detection/alignment를 수행하지 않는다. 등록 전 5장 reference set에 대해 pairwise quality diagnostics를 수행하며, 5장 기준 10개 pairwise comparison만 계산한다. `POST /api/adoption-posts`는 이미 등록된 `dog_id`만 참조하고, 분양글 대표 이미지인 `profile_image`만 `dog_images.image_type=PROFILE` row로 저장한다.
 
 ## Dog Nose References
 
@@ -266,15 +266,18 @@ Dog ownership은 JWT principal-only다. `dogs.owner_user_id`는 Bearer JWT로 re
 Dog nose v2 duplicate/review/pass policy는 Spring score breakdown의 final score 기준이다.
 
 - Qdrant candidate search pre-filter threshold는 `0.55`다.
-- reference consistency threshold는 `0.55`다.
+- reference quality pairwise threshold는 `0.55`다.
+- reference outlier improvement threshold는 `0.04`다.
+- reference quality verdict는 `ACCEPTED`, `WARN_ACCEPTED`, `RETAKE_ONE`, `RETAKE_ALL`이다.
 - `final_score = max(max_reference_score, centroid_score)`이며 `score_breakdown`은 두 점수를 분리 제공한다.
 - `final_score >= 0.65`이면 `DUPLICATE_SUSPECTED`다.
 - `0.60 <= final_score < 0.65`이면 `REVIEW_REQUIRED`다.
 - `final_score < 0.60`이면 `PASSED`다.
-- Reference consistency failure는 HTTP `400`이며 file/DB/Qdrant side effect를 만들지 않는다.
+- `WARN_ACCEPTED`는 등록을 막지 않고 `score_breakdown_json.reference_quality`에 warning summary를 저장한다.
+- `RETAKE_ONE` 또는 `RETAKE_ALL`은 `NOSE_REFERENCE_INCONSISTENT` HTTP `400`이며 details에 `quality_verdict`, `weakest_image_index`, `best_subset_indexes`, `recommendation`, `pairwise_scores`를 포함하고 file/DB/Qdrant side effect를 만들지 않는다.
 - `DUPLICATE_SUSPECTED`와 `REVIEW_REQUIRED`는 file/DB/log evidence를 남길 수 있지만 Qdrant upsert를 수행하지 않는다.
 - `PASSED`만 Qdrant upsert와 `dog_nose_references` 생성을 수행한다.
-- best3/best4 선택, outlier reference 제거, quality rejected image 저장 제외는 이번 정책에 포함하지 않고 후속 개선 후보로 둔다.
+- Leave-one-out subset은 진단용으로만 계산한다. best3/best4 자동 선택, outlier reference 제거, quality rejected image 저장 제외는 이번 정책에 포함하지 않는다.
 
 계산되는 response field:
 

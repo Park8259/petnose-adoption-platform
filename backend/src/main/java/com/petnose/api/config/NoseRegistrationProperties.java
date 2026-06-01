@@ -14,5 +14,7 @@ public class NoseRegistrationProperties {
     private int referenceMinCount = 5;
     private int referenceMaxCount = 5;
     private double referenceConsistencyThreshold = 0.55;
+    private double referenceOutlierImprovementThreshold = 0.04;
+    private boolean referenceQualityWarningEnabled = true;
     private String preprocessVersion = "rgb_resize224_bicubic_imagenet_l2_v1";
 }

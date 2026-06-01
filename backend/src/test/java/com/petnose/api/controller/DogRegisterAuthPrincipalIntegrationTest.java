@@ -339,6 +339,27 @@ class DogRegisterAuthPrincipalIntegrationTest {
     }
 
     @Test
+    void dogRegisterReferenceQualityFailureReturnsDetailsBeforeSideEffects() throws Exception {
+        registerUser("dog-reference-quality@example.com");
+        String accessToken = loginAccessToken("dog-reference-quality@example.com");
+        when(embedClient.embedBatch(anyList()))
+                .thenReturn(new EmbedClient.BatchEmbedResponse(batchItems(vectorsWithAveragePairwiseScore(0.54)), 128, "test-model"));
+
+        mockMvc.perform(validDogMultipart(null)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error_code").value("NOSE_REFERENCE_INCONSISTENT"))
+                .andExpect(jsonPath("$.details.quality_verdict").value("RETAKE_ONE"))
+                .andExpect(jsonPath("$.details.weakest_image_index").value(5))
+                .andExpect(jsonPath("$.details.recommendation").exists())
+                .andExpect(jsonPath("$.details.pairwise_scores").isArray());
+
+        assertPipelineRowsAbsent();
+        verify(qdrantDogVectorClient, never()).searchReferencePoints(anyList(), anyInt(), anyDouble());
+        verify(qdrantDogVectorClient, never()).upsertAll(anyList());
+    }
+
+    @Test
     void dogRegisterDuplicateSuspectedBehaviorUnchangedWithBearerToken() throws Exception {
         registerUser("dog-duplicate@example.com");
         String accessToken = loginAccessToken("dog-duplicate@example.com");
@@ -553,6 +574,18 @@ class DogRegisterAuthPrincipalIntegrationTest {
                 vector(0.85, 0.15),
                 vector(0.95, 0.05),
                 vector(0.88, 0.12)
+        );
+    }
+
+    private List<List<Double>> vectorsWithAveragePairwiseScore(double averagePairwiseScore) {
+        double fifthVectorDot = ((10.0 * averagePairwiseScore) - 6.0) / 4.0;
+        double fifthVectorY = Math.sqrt(1.0 - (fifthVectorDot * fifthVectorDot));
+        return List.of(
+                vector(1.0, 0.0),
+                vector(1.0, 0.0),
+                vector(1.0, 0.0),
+                vector(1.0, 0.0),
+                vector(fifthVectorDot, fifthVectorY)
         );
     }
 

@@ -23,6 +23,7 @@ import org.springframework.test.web.servlet.MvcResult;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.nullValue;
@@ -211,6 +212,29 @@ class DogRegistrationControllerTest {
                 .andExpect(jsonPath("$.error_code").value("USER_NOT_FOUND"))
                 .andExpect(jsonPath("$.message").value("존재하지 않는 user_id 입니다."))
                 .andExpect(jsonPath("$.details").value(nullValue()));
+    }
+
+    @Test
+    void registerDogReturnsReferenceQualityErrorDetails() throws Exception {
+        when(authService.currentActiveUserId("Bearer test-token")).thenReturn(42L);
+        when(dogRegistrationService.register(ArgumentMatchers.any()))
+                .thenThrow(new ApiException(
+                        HttpStatus.BAD_REQUEST,
+                        "NOSE_REFERENCE_INCONSISTENT",
+                        "5번째 비문 이미지가 다른 이미지들과 일관성이 낮습니다. 코 전체가 중앙에 오도록 다시 촬영해주세요.",
+                        Map.of(
+                                "quality_verdict", "RETAKE_ONE",
+                                "weakest_image_index", 5,
+                                "recommendation", "5번째 비문 이미지가 다른 이미지들과 일관성이 낮습니다. 코 전체가 중앙에 오도록 다시 촬영해주세요."
+                        )
+                ));
+
+        mockMvc.perform(validMultipartRequest())
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error_code").value("NOSE_REFERENCE_INCONSISTENT"))
+                .andExpect(jsonPath("$.details.quality_verdict").value("RETAKE_ONE"))
+                .andExpect(jsonPath("$.details.weakest_image_index").value(5))
+                .andExpect(jsonPath("$.details.recommendation").exists());
     }
 
     @Test

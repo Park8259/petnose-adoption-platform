@@ -29,8 +29,9 @@ Dog nose v2 multi-reference registration과 expected-dog handover reference-set 
 | Qdrant candidate search threshold | `0.55` |
 | Duplicate threshold | `0.65` |
 | Review lower bound | `0.60` |
-| Reference count | min `3`, max `5` |
-| Reference consistency threshold | `0.55` |
+| Reference count | exactly `5` |
+| Reference quality threshold | `0.55` |
+| Reference outlier improvement threshold | `0.04` |
 | Final score policy | `max(max_reference_score, centroid_score)` |
 | Handover match threshold | `0.65` |
 | Handover ambiguous threshold | `0.60` |
@@ -40,7 +41,7 @@ Dog nose v2 multi-reference registration과 expected-dog handover reference-set 
 | Max upload request size | `80MB` |
 | Python embed response timeout | `30000ms` |
 
-이번 policy는 제출된 정확히 5장 전체 reference와 centroid를 그대로 사용한다. Python `/embed-batch`는 내부 endpoint로서 1~5장 batch 입력을 허용하지만, dog registration API는 5장 입력만 통과시킨다. best3/best4 자동 선택, outlier reference 제거, quality rejected image 저장 제외는 후속 개선 후보로 분리한다.
+이번 policy는 제출된 정확히 5장 전체 reference와 centroid를 그대로 사용한다. Python `/embed-batch`는 내부 endpoint로서 1~5장 batch 입력을 허용하지만, dog registration API는 5장 입력만 통과시킨다. 5장 reference set은 등록 전 pairwise quality diagnostics를 수행하며 unique pair 10개와 leave-one-out subset을 진단용으로 계산한다. O(n^2) 계산이지만 n=5로 고정되어 고정 비용이다. best3/best4 자동 선택, outlier reference 제거, quality rejected image 저장 제외는 이번 smoke scope에 포함하지 않는다.
 
 ## Clean Reset / No-Backfill Note
 
@@ -160,14 +161,19 @@ Expected:
 - `qdrant_point_id=null`
 - Qdrant upsert 없음
 
-### 5. Reference consistency failure
+### 5. Reference quality failure
 
-서로 다른 개체 이미지가 섞인 `nose_images` fixture로 consistency failure를 확인한다.
+서로 다른 개체 이미지가 섞인 `nose_images` fixture로 `RETAKE_ONE` 또는 `RETAKE_ALL` quality failure를 확인한다.
 
 Expected:
 
 - HTTP `400`
 - `error_code=NOSE_REFERENCE_INCONSISTENT`
+- `details.quality_verdict` 포함
+- `details.weakest_image_index` 포함
+- `details.best_subset_indexes` 포함
+- `details.recommendation` 포함
+- `details.pairwise_scores`는 5장 기준 최대 10개
 - file/DB/Qdrant side effect 없음
 
 ### 6. Adoption post 생성

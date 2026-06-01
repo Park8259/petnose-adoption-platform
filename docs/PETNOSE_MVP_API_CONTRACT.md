@@ -292,6 +292,8 @@ Dog nose v2 active contract:
 - Backend는 crop/detection/alignment를 수행하지 않는다.
 - Registration embedding은 Python Embed `/embed-batch`를 1회 호출한다.
 - Python Embed `/embed-batch`는 내부 endpoint로서 1~5장 batch 입력을 허용하지만, dog registration API는 정확히 5장만 허용한다.
+- Backend는 등록 전에 5장 reference 간 pairwise quality diagnostics를 수행한다. 5장 기준 unique pair는 10개이며, 계산은 O(n^2)이지만 registration 입력이 5장으로 고정되어 고정 비용이다.
+- Quality verdict는 `ACCEPTED`, `WARN_ACCEPTED`, `RETAKE_ONE`, `RETAKE_ALL` 중 하나다. `WARN_ACCEPTED`는 등록을 막지 않고 `verification_logs.score_breakdown_json.reference_quality`에 warning summary를 남긴다.
 - Normal registration은 Qdrant `REFERENCE` point 5개와 `CENTROID` point 1개를 upsert한다.
 - Qdrant point id는 UUID이며 dog id와 같지 않다.
 - API response의 `qdrant_point_id`는 v2에서 `null`이다.
@@ -470,7 +472,8 @@ Duplicate threshold policy:
 - Qdrant candidate search threshold default is `0.55`.
 - Spring duplicate decision threshold default is `0.65`.
 - Spring review lower bound default is `0.60`.
-- reference consistency threshold default is `0.55`.
+- reference quality pairwise threshold default is `0.55`.
+- reference outlier improvement threshold default is `0.04`.
 - `final_score = max(max_reference_score, centroid_score)`.
 - duplicate if final score `>= 0.65`.
 - review required if `0.60 <= final_score < 0.65`.
@@ -490,13 +493,14 @@ Calculation policy:
 - similarity, duplicate candidate, model, dimension, failure metadata는 verification history에 저장한다.
 - `score_breakdown`은 response에 포함하며 persistence에서는 `verification_logs.score_breakdown_json`으로 저장할 수 있다.
 - `score_breakdown`은 `max_reference_score`와 `centroid_score`를 분리 제공하며, `final_score`는 두 값 중 높은 값을 사용한다.
-- Reference subset/outlier filtering은 현재 contract에 포함하지 않고 후속 개선 후보로 둔다.
+- `verification_logs.score_breakdown_json.reference_quality`에는 verdict, weakest image index, best leave-one-out subset, improvement, recommendation summary를 저장한다.
+- Leave-one-out subset은 진단용으로만 계산한다. Reference subset 자동 선택, outlier reference 자동 제외, 5장 중 일부만 저장하는 동작은 현재 contract에 포함하지 않는다.
 - embedding vector는 Qdrant에만 저장한다.
 
 Side-effect policy:
 
-- reference consistency 실패는 HTTP `400`이다.
-- reference consistency 실패 시 file/DB/Qdrant side effect가 없어야 한다.
+- reference quality failure(`RETAKE_ONE`, `RETAKE_ALL`)는 HTTP `400`이다.
+- reference quality failure 시 file/DB/Qdrant side effect가 없어야 한다.
 - `DUPLICATE_SUSPECTED`와 `REVIEW_REQUIRED`는 file/DB/log evidence를 남길 수 있지만 Qdrant upsert는 수행하지 않는다.
 - `PASSED`만 Qdrant upsert와 `dog_nose_references` 생성을 수행한다.
 
@@ -509,7 +513,7 @@ Error codes:
 - `BREED_REQUIRED`: `breed`가 missing 또는 blank
 - `NOSE_IMAGES_REQUIRED`: `nose_images` field가 없거나 비어 있음
 - `NOSE_IMAGES_COUNT_INVALID`: `nose_images` 개수가 정확히 5장이 아님. `details.expected_count=5`, `details.actual_count=<submitted count>`를 포함한다.
-- `NOSE_REFERENCE_INCONSISTENT`: 제출된 reference image 간 consistency가 기준 미만임
+- `NOSE_REFERENCE_INCONSISTENT`: 제출된 reference image quality verdict가 `RETAKE_ONE` 또는 `RETAKE_ALL`임. `details.quality_verdict`, `weakest_image_index`, `best_subset_indexes`, `recommendation`, `pairwise_scores`를 포함한다.
 - `VALIDATION_FAILED`: malformed request field 또는 invalid `gender`
 - `INVALID_BIRTH_DATE`: `birth_date`가 `YYYY-MM-DD` 형식이 아님
 - `INVALID_NOSE_IMAGE`: nose image를 처리할 수 없음

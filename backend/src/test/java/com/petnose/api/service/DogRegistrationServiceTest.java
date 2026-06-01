@@ -181,6 +181,7 @@ class DogRegistrationServiceTest {
         assertThat(log.getResult()).isEqualTo(VerificationResult.PASSED);
         assertThat(log.getSimilarityScore()).isEqualByComparingTo(new BigDecimal("0.00000"));
         assertThat(log.getScoreBreakdownJson()).contains("\"policy\":\"max_reference_or_centroid_v1\"");
+        assertThat(log.getScoreBreakdownJson()).contains("\"reference_quality\":{\"verdict\":\"ACCEPTED\"");
 
         assertThat(response.registrationAllowed()).isTrue();
         assertThat(response.status()).isEqualTo("REGISTERED");
@@ -241,7 +242,7 @@ class DogRegistrationServiceTest {
     }
 
     @Test
-    void registerRejectsInconsistentReferencesBeforeFileDbAndQdrantSideEffects() {
+    void registerRejectsInconsistentReferencesWithRetakeAllBeforeFileDbAndQdrantSideEffects() {
         when(embedClient.embedBatch(anyList())).thenReturn(batchResponse(List.of(
                 List.of(1.0, 0.0, 0.0),
                 List.of(-1.0, 0.0, 0.0),
@@ -251,8 +252,13 @@ class DogRegistrationServiceTest {
         )));
 
         assertThatThrownBy(() -> service.register(request(noseImages(5))))
-                .isInstanceOfSatisfying(ApiException.class, e ->
-                        assertThat(e.getErrorCode()).isEqualTo("NOSE_REFERENCE_INCONSISTENT"));
+                .isInstanceOfSatisfying(ApiException.class, e -> {
+                    assertThat(e.getErrorCode()).isEqualTo("NOSE_REFERENCE_INCONSISTENT");
+                    assertThat(e.getDetails()).containsEntry("quality_verdict", "RETAKE_ALL");
+                    assertThat(e.getDetails()).containsKey("weakest_image_index");
+                    assertThat(e.getDetails()).containsKey("pairwise_scores");
+                    assertThat(e.getMessage()).contains("5장을 같은 거리와 각도로 다시 촬영");
+                });
 
         assertNoPipelineRows();
         verify(fileStorageService, never()).storeNoseImage(anyString(), any());
@@ -261,7 +267,7 @@ class DogRegistrationServiceTest {
     }
 
     @Test
-    void registerAcceptsReferencesAtCalibratedConsistencyThreshold() {
+    void warnAcceptedReferencesDoNotBlockRegistrationAndPersistQualitySummary() {
         when(embedClient.embedBatch(anyList())).thenReturn(batchResponse(vectorsWithAveragePairwiseScore(0.56)));
 
         DogRegisterResponse response = service.register(request(noseImages(5)));
@@ -269,17 +275,27 @@ class DogRegistrationServiceTest {
         assertThat(response.status()).isEqualTo("REGISTERED");
         assertThat(response.scoreBreakdown().referenceConsistencyScore()).isCloseTo(0.56, within(1.0e-12));
         assertThat(onlyVerificationLog().getResult()).isEqualTo(VerificationResult.PASSED);
+        assertThat(onlyVerificationLog().getScoreBreakdownJson()).contains("\"reference_quality\":{\"verdict\":\"WARN_ACCEPTED\"");
     }
 
     @Test
-    void registerRejectsReferencesBelowCalibratedConsistencyThreshold() {
+    void registerRejectsReferencesWithRetakeOneDetailsBelowCalibratedConsistencyThreshold() {
         when(embedClient.embedBatch(anyList())).thenReturn(batchResponse(vectorsWithAveragePairwiseScore(0.54)));
 
         assertThatThrownBy(() -> service.register(request(noseImages(5))))
-                .isInstanceOfSatisfying(ApiException.class, e ->
-                        assertThat(e.getErrorCode()).isEqualTo("NOSE_REFERENCE_INCONSISTENT"));
+                .isInstanceOfSatisfying(ApiException.class, e -> {
+                    assertThat(e.getErrorCode()).isEqualTo("NOSE_REFERENCE_INCONSISTENT");
+                    assertThat(e.getDetails()).containsEntry("quality_verdict", "RETAKE_ONE");
+                    assertThat(e.getDetails()).containsEntry("weakest_image_index", 5);
+                    assertThat(e.getDetails()).containsEntry("best_subset_indexes", List.of(1, 2, 3, 4));
+                    assertThat(e.getDetails()).containsKey("pairwise_scores");
+                    assertThat(e.getMessage()).contains("5번째 비문 이미지");
+                });
 
         assertNoPipelineRows();
+        verify(fileStorageService, never()).storeNoseImage(anyString(), any());
+        verify(dogRepository, never()).save(any(Dog.class));
+        verify(qdrantDogVectorClient, never()).upsertAll(anyList());
         verify(qdrantDogVectorClient, never()).searchReferencePoints(anyList(), anyInt(), anyDouble());
     }
 
