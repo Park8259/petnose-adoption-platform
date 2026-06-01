@@ -168,16 +168,16 @@ class DogRegistrationServiceTest {
     }
 
     @Test
-    void registerWithThreeNoseImagesCreatesReferencesAndUpsertsReferenceAndCentroidPoints() {
+    void registerWithFiveNoseImagesCreatesReferencesAndUpsertsReferenceAndCentroidPoints() {
         when(embedClient.embedBatch(anyList())).thenReturn(batchResponse(consistentVectors()));
 
-        DogRegisterResponse response = service.register(request(noseImages(3)));
+        DogRegisterResponse response = service.register(request(noseImages(5)));
 
         Dog dog = dogs.get(response.dogId());
         VerificationLog log = onlyVerificationLog();
 
         assertThat(dog.getStatus()).isEqualTo(DogStatus.REGISTERED);
-        assertThat(dogImages).hasSize(3);
+        assertThat(dogImages).hasSize(5);
         assertThat(log.getResult()).isEqualTo(VerificationResult.PASSED);
         assertThat(log.getSimilarityScore()).isEqualByComparingTo(new BigDecimal("0.00000"));
         assertThat(log.getScoreBreakdownJson()).contains("\"policy\":\"max_reference_or_centroid_v1\"");
@@ -187,22 +187,24 @@ class DogRegistrationServiceTest {
         assertThat(response.embeddingStatus()).isEqualTo("COMPLETED");
         assertThat(response.qdrantPointId()).isNull();
         assertThat(response.embeddingMode()).isEqualTo("MULTI_REFERENCE");
-        assertThat(response.referenceCount()).isEqualTo(3);
-        assertThat(response.noseImageUrls()).hasSize(3);
+        assertThat(response.referenceCount()).isEqualTo(5);
+        assertThat(response.noseImageUrls()).hasSize(5);
         assertThat(response.noseImageUrl()).isEqualTo(response.noseImageUrls().get(0));
         assertThat(response.scoreBreakdown().referenceConsistencyScore()).isGreaterThanOrEqualTo(0.55);
 
         ArgumentCaptor<List<QdrantDogVectorClient.QdrantPointUpsertRequest>> upsertCaptor = ArgumentCaptor.forClass(List.class);
         verify(qdrantDogVectorClient).upsertAll(upsertCaptor.capture());
-        assertThat(upsertCaptor.getValue()).hasSize(4);
+        assertThat(upsertCaptor.getValue()).hasSize(6);
         assertThat(upsertCaptor.getValue())
                 .extracting(point -> point.payload().get("embedding_kind"))
-                .containsExactly("REFERENCE", "REFERENCE", "REFERENCE", "CENTROID");
+                .containsExactly("REFERENCE", "REFERENCE", "REFERENCE", "REFERENCE", "REFERENCE", "CENTROID");
 
-        assertThat(dogNoseReferences).hasSize(4);
+        assertThat(dogNoseReferences).hasSize(6);
         assertThat(dogNoseReferences)
                 .extracting(DogNoseReference::getEmbeddingKind)
                 .containsExactly(
+                        DogNoseEmbeddingKind.REFERENCE,
+                        DogNoseEmbeddingKind.REFERENCE,
                         DogNoseEmbeddingKind.REFERENCE,
                         DogNoseEmbeddingKind.REFERENCE,
                         DogNoseEmbeddingKind.REFERENCE,
@@ -222,21 +224,16 @@ class DogRegistrationServiceTest {
     }
 
     @Test
-    void registerRejectsTooFewNoseImagesBeforeEmbedAndRows() {
-        assertThatThrownBy(() -> service.register(request(noseImages(2))))
-                .isInstanceOfSatisfying(ApiException.class, e ->
-                        assertThat(e.getErrorCode()).isEqualTo("NOSE_IMAGES_COUNT_INVALID"));
-
-        assertNoPipelineRows();
-        verify(embedClient, never()).embedBatch(anyList());
-        verify(qdrantDogVectorClient, never()).upsertAll(anyList());
-    }
-
-    @Test
-    void registerRejectsTooManyNoseImagesBeforeEmbedAndRows() {
-        assertThatThrownBy(() -> service.register(request(noseImages(6))))
-                .isInstanceOfSatisfying(ApiException.class, e ->
-                        assertThat(e.getErrorCode()).isEqualTo("NOSE_IMAGES_COUNT_INVALID"));
+    void registerRejectsNonFiveNoseImageCountsBeforeEmbedAndRows() {
+        for (int actualCount : List.of(2, 3, 4, 6)) {
+            assertThatThrownBy(() -> service.register(request(noseImages(actualCount))))
+                    .isInstanceOfSatisfying(ApiException.class, e -> {
+                        assertThat(e.getErrorCode()).isEqualTo("NOSE_IMAGES_COUNT_INVALID");
+                        assertThat(e.getMessage()).isEqualTo("비문 기준 이미지는 정확히 5장이 필요합니다.");
+                        assertThat(e.getDetails()).containsEntry("expected_count", 5);
+                        assertThat(e.getDetails()).containsEntry("actual_count", actualCount);
+                    });
+        }
 
         assertNoPipelineRows();
         verify(embedClient, never()).embedBatch(anyList());
@@ -248,10 +245,12 @@ class DogRegistrationServiceTest {
         when(embedClient.embedBatch(anyList())).thenReturn(batchResponse(List.of(
                 List.of(1.0, 0.0, 0.0),
                 List.of(-1.0, 0.0, 0.0),
-                List.of(0.0, -1.0, 0.0)
+                List.of(0.0, -1.0, 0.0),
+                List.of(0.0, 0.0, -1.0),
+                List.of(-0.5, -0.5, 0.0)
         )));
 
-        assertThatThrownBy(() -> service.register(request(noseImages(3))))
+        assertThatThrownBy(() -> service.register(request(noseImages(5))))
                 .isInstanceOfSatisfying(ApiException.class, e ->
                         assertThat(e.getErrorCode()).isEqualTo("NOSE_REFERENCE_INCONSISTENT"));
 
@@ -265,7 +264,7 @@ class DogRegistrationServiceTest {
     void registerAcceptsReferencesAtCalibratedConsistencyThreshold() {
         when(embedClient.embedBatch(anyList())).thenReturn(batchResponse(vectorsWithAveragePairwiseScore(0.56)));
 
-        DogRegisterResponse response = service.register(request(noseImages(3)));
+        DogRegisterResponse response = service.register(request(noseImages(5)));
 
         assertThat(response.status()).isEqualTo("REGISTERED");
         assertThat(response.scoreBreakdown().referenceConsistencyScore()).isCloseTo(0.56, within(1.0e-12));
@@ -276,7 +275,7 @@ class DogRegistrationServiceTest {
     void registerRejectsReferencesBelowCalibratedConsistencyThreshold() {
         when(embedClient.embedBatch(anyList())).thenReturn(batchResponse(vectorsWithAveragePairwiseScore(0.54)));
 
-        assertThatThrownBy(() -> service.register(request(noseImages(3))))
+        assertThatThrownBy(() -> service.register(request(noseImages(5))))
                 .isInstanceOfSatisfying(ApiException.class, e ->
                         assertThat(e.getErrorCode()).isEqualTo("NOSE_REFERENCE_INCONSISTENT"));
 
@@ -292,13 +291,13 @@ class DogRegistrationServiceTest {
         when(qdrantDogVectorClient.searchReferencePoints(anyList(), anyInt(), anyDouble()))
                 .thenReturn(List.of(vectorResult("candidate-dog", 0.80)));
 
-        DogRegisterResponse response = service.register(request(noseImages(3)));
+        DogRegisterResponse response = service.register(request(noseImages(5)));
 
         Dog dog = dogs.get(response.dogId());
         VerificationLog log = onlyVerificationLog();
 
         assertThat(dog.getStatus()).isEqualTo(DogStatus.DUPLICATE_SUSPECTED);
-        assertThat(dogImages).hasSize(3);
+        assertThat(dogImages).hasSize(5);
         assertThat(dogNoseReferences).isEmpty();
         assertThat(log.getResult()).isEqualTo(VerificationResult.DUPLICATE_SUSPECTED);
         assertThat(log.getSimilarityScore()).isEqualByComparingTo(new BigDecimal("0.80000"));
@@ -322,13 +321,13 @@ class DogRegistrationServiceTest {
         when(qdrantDogVectorClient.searchReferencePoints(anyList(), anyInt(), anyDouble()))
                 .thenReturn(List.of(vectorResult("candidate-dog", 0.62)));
 
-        DogRegisterResponse response = service.register(request(noseImages(3)));
+        DogRegisterResponse response = service.register(request(noseImages(5)));
 
         Dog dog = dogs.get(response.dogId());
         VerificationLog log = onlyVerificationLog();
 
         assertThat(dog.getStatus()).isEqualTo(DogStatus.REVIEW_REQUIRED);
-        assertThat(dogImages).hasSize(3);
+        assertThat(dogImages).hasSize(5);
         assertThat(dogNoseReferences).isEmpty();
         assertThat(log.getResult()).isEqualTo(VerificationResult.REVIEW_REQUIRED);
         assertThat(log.getSimilarityScore()).isEqualByComparingTo(new BigDecimal("0.62000"));
@@ -353,7 +352,7 @@ class DogRegistrationServiceTest {
         when(qdrantDogVectorClient.searchCentroidPoints(anyList(), anyInt(), anyDouble()))
                 .thenReturn(List.of(centroidResult("candidate-dog", 0.66)));
 
-        DogRegisterResponse response = service.register(request(noseImages(3)));
+        DogRegisterResponse response = service.register(request(noseImages(5)));
 
         assertThat(response.status()).isEqualTo("DUPLICATE_SUSPECTED");
         assertThat(response.scoreBreakdown().finalScore()).isEqualTo(0.66);
@@ -373,7 +372,7 @@ class DogRegistrationServiceTest {
         when(qdrantDogVectorClient.searchCentroidPoints(anyList(), anyInt(), anyDouble()))
                 .thenReturn(List.of(centroidResult("candidate-dog", 0.62)));
 
-        DogRegisterResponse response = service.register(request(noseImages(3)));
+        DogRegisterResponse response = service.register(request(noseImages(5)));
 
         assertThat(response.status()).isEqualTo("REVIEW_REQUIRED");
         assertThat(response.scoreBreakdown().finalScore()).isEqualTo(0.62);
@@ -393,7 +392,7 @@ class DogRegistrationServiceTest {
         when(qdrantDogVectorClient.searchCentroidPoints(anyList(), anyInt(), anyDouble()))
                 .thenReturn(List.of(centroidResult("candidate-dog", 0.59)));
 
-        DogRegisterResponse response = service.register(request(noseImages(3)));
+        DogRegisterResponse response = service.register(request(noseImages(5)));
 
         assertThat(response.status()).isEqualTo("REGISTERED");
         assertThat(response.scoreBreakdown().finalScore()).isEqualTo(0.59);
@@ -409,14 +408,14 @@ class DogRegistrationServiceTest {
         doThrow(new RuntimeException("db down"))
                 .when(dogNoseReferenceRepository).saveAll(any());
 
-        assertThatThrownBy(() -> service.register(request(noseImages(3))))
+        assertThatThrownBy(() -> service.register(request(noseImages(5))))
                 .isInstanceOfSatisfying(ApiException.class, e ->
                         assertThat(e.getErrorCode()).isEqualTo("QDRANT_UPSERT_FAILED"));
 
         verify(qdrantDogVectorClient).upsertAll(anyList());
         ArgumentCaptor<List<String>> deleteCaptor = ArgumentCaptor.forClass(List.class);
         verify(qdrantDogVectorClient).deletePoints(deleteCaptor.capture());
-        assertThat(deleteCaptor.getValue()).hasSize(4);
+        assertThat(deleteCaptor.getValue()).hasSize(6);
         assertThat(onlyVerificationLog().getResult()).isEqualTo(VerificationResult.QDRANT_UPSERT_FAILED);
     }
 
@@ -469,17 +468,21 @@ class DogRegistrationServiceTest {
         return List.of(
                 List.of(1.0, 0.0, 0.0),
                 List.of(0.9, 0.1, 0.0),
-                List.of(0.85, 0.15, 0.0)
+                List.of(0.85, 0.15, 0.0),
+                List.of(0.95, 0.05, 0.0),
+                List.of(0.88, 0.12, 0.0)
         );
     }
 
     private static List<List<Double>> vectorsWithAveragePairwiseScore(double averagePairwiseScore) {
-        double thirdVectorDot = ((3.0 * averagePairwiseScore) - 1.0) / 2.0;
-        double thirdVectorY = Math.sqrt(1.0 - (thirdVectorDot * thirdVectorDot));
+        double fifthVectorDot = ((10.0 * averagePairwiseScore) - 6.0) / 4.0;
+        double fifthVectorY = Math.sqrt(1.0 - (fifthVectorDot * fifthVectorDot));
         return List.of(
                 List.of(1.0, 0.0, 0.0),
                 List.of(1.0, 0.0, 0.0),
-                List.of(thirdVectorDot, thirdVectorY, 0.0)
+                List.of(1.0, 0.0, 0.0),
+                List.of(1.0, 0.0, 0.0),
+                List.of(fifthVectorDot, fifthVectorY, 0.0)
         );
     }
 

@@ -74,7 +74,7 @@ Columns:
 
 `DUPLICATE_SUSPECTED`와 `REVIEW_REQUIRED`는 adoption post creation을 막아야 하므로 `dogs.status`에 남긴다. similarity, duplicate candidate, model, dimension, score breakdown 같은 detailed verification information은 `verification_logs`에 속한다.
 
-`dogs`는 `qdrant_point_id`를 저장하지 않는다. Dog nose v2에서는 등록된 dog마다 Qdrant `REFERENCE` point 3~5개와 `CENTROID` point 1개를 UUID point id로 만든다. point id와 reference metadata는 `dog_nose_references`가 추적한다.
+`dogs`는 `qdrant_point_id`를 저장하지 않는다. Dog nose v2에서는 등록된 dog마다 Qdrant `REFERENCE` point 5개와 `CENTROID` point 1개를 UUID point id로 만든다. point id와 reference metadata는 `dog_nose_references`가 추적한다.
 
 `breed`와 `gender`는 DB/entity level에서 operational/import flexibility를 위해 nullable로 둘 수 있다. 다만 current MVP dog registration API인 `POST /api/dogs/register`는 `breed` non-blank와 `gender` 제출을 요구한다. `gender`는 `MALE`, `FEMALE`, `UNKNOWN` 중 하나이며, `UNKNOWN`은 client가 명시적으로 제출하는 값이고 DB default로 자동 적용되는 값이 아니다.
 
@@ -102,7 +102,7 @@ Image file은 MySQL BLOB column에 저장하지 않는다.
 
 service가 생성하는 `dog_images` row는 정상적으로 `mime_type`, `file_size`, `sha256` metadata를 포함해야 한다. 이 metadata column들은 migration/import flexibility를 위해 DB level에서는 nullable로 남길 수 있다.
 
-비문 이미지는 `POST /api/dogs/register` 단계에서 `dog_images.image_type=NOSE` row로 저장한다. Dog nose v2 registration은 `nose_images` 3~5장을 required로 받으며, 사용자가 close-up cropped nose image를 제공한다고 가정한다. Backend는 crop/detection/alignment를 수행하지 않는다. `POST /api/adoption-posts`는 이미 등록된 `dog_id`만 참조하고, 분양글 대표 이미지인 `profile_image`만 `dog_images.image_type=PROFILE` row로 저장한다.
+비문 이미지는 `POST /api/dogs/register` 단계에서 `dog_images.image_type=NOSE` row로 저장한다. Dog nose v2 registration은 `nose_images` 정확히 5장을 required로 받으며, 사용자가 close-up cropped nose image를 제공한다고 가정한다. Backend는 crop/detection/alignment를 수행하지 않는다. `POST /api/adoption-posts`는 이미 등록된 `dog_id`만 참조하고, 분양글 대표 이미지인 `profile_image`만 `dog_images.image_type=PROFILE` row로 저장한다.
 
 ## Dog Nose References
 
@@ -135,7 +135,7 @@ Columns:
 - `REJECTED`
 - `NEEDS_REVIEW`
 
-정상 등록(`PASSED`)에서만 `REFERENCE` 3~5개와 `CENTROID` 1개가 Qdrant에 upsert되고 `dog_nose_references` row가 생성된다. `DUPLICATE_SUSPECTED` 또는 `REVIEW_REQUIRED` decision은 file/DB/log evidence를 남길 수 있지만 active Qdrant point와 `dog_nose_references`를 만들지 않는다.
+정상 등록(`PASSED`)에서만 `REFERENCE` 5개와 `CENTROID` 1개가 Qdrant에 upsert되고 `dog_nose_references` row 6개가 생성된다. `DUPLICATE_SUSPECTED` 또는 `REVIEW_REQUIRED` decision은 file/DB/log evidence를 남길 수 있지만 active Qdrant point와 `dog_nose_references`를 만들지 않는다.
 
 ## Verification Logs
 
@@ -257,7 +257,7 @@ Dog nose v2 handover threshold policy는 expected dog reference set에서 나온
 
 ## Dog Registration and Adoption Creation Policy
 
-`POST /api/dogs/register`는 신규 분양글 작성 flow의 identity registration endpoint다. 이 단계에서 dog 기본 정보와 `nose_images` 3~5장을 받고, Python `/embed-batch` 1회 호출로 reference embedding을 생성한 뒤 Qdrant duplicate search, `verification_logs` 기록, 조건부 Qdrant upsert를 수행한다.
+`POST /api/dogs/register`는 신규 분양글 작성 flow의 identity registration endpoint다. 이 단계에서 dog 기본 정보와 `nose_images` 정확히 5장을 받고, Python `/embed-batch` 1회 호출로 reference embedding을 생성한 뒤 Qdrant duplicate search, `verification_logs` 기록, 조건부 Qdrant upsert를 수행한다. Python `/embed-batch` 자체는 내부 endpoint로서 1~5장 batch 입력을 계속 허용하지만, registration API는 5장 입력만 통과시킨다.
 
 `POST /api/adoption-posts`는 `dog_id`와 required `profile_image`를 받아 이미 등록된 dog로 게시글과 대표 이미지만 생성한다. 이 endpoint는 embed service를 호출하지 않고 Qdrant upsert를 수행하지 않는다.
 
@@ -274,7 +274,7 @@ Dog nose v2 duplicate/review/pass policy는 Spring score breakdown의 final scor
 - Reference consistency failure는 HTTP `400`이며 file/DB/Qdrant side effect를 만들지 않는다.
 - `DUPLICATE_SUSPECTED`와 `REVIEW_REQUIRED`는 file/DB/log evidence를 남길 수 있지만 Qdrant upsert를 수행하지 않는다.
 - `PASSED`만 Qdrant upsert와 `dog_nose_references` 생성을 수행한다.
-- 5장 중 best3/best4 선택, outlier reference 제거, quality rejected image 저장 제외는 이번 정책에 포함하지 않고 후속 개선 후보로 둔다.
+- best3/best4 선택, outlier reference 제거, quality rejected image 저장 제외는 이번 정책에 포함하지 않고 후속 개선 후보로 둔다.
 
 계산되는 response field:
 
@@ -293,7 +293,7 @@ Dog registration만 Qdrant에 dog nose reference vectors를 저장한다. 저장
 
 1. `USER`는 `POST /api/auth/register`로 가입하고 `POST /api/auth/login`으로 Bearer access token을 받는다.
 2. Flutter는 `GET /api/users/me`로 profile readiness를 확인하고, 필요하면 `PATCH /api/users/me/profile`로 작성자 표시 정보를 보완한다.
-3. 로그인한 `USER`가 Bearer JWT로 인증한 뒤 `POST /api/dogs/register`로 dog 기본 정보와 `nose_images` 3~5장을 제출한다.
+3. 로그인한 `USER`가 Bearer JWT로 인증한 뒤 `POST /api/dogs/register`로 dog 기본 정보와 `nose_images` 정확히 5장을 제출한다.
 4. `registration_allowed=false`인 duplicate suspicion 또는 review-required decision은 adoption post creation을 막고 Qdrant upsert를 수행하지 않는다.
 5. `registration_allowed=true`이면 Flutter는 반환된 `dog_id`를 분양글 작성 form state에 보관한다.
 6. Flutter는 `POST /api/adoption-posts` multipart request에 `dog_id`, `title`, `content`, optional `status`, required `profile_image`를 보낸다.

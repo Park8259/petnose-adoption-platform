@@ -283,15 +283,16 @@ Form fields:
 - `gender`: required, `MALE`, `FEMALE`, or `UNKNOWN`
 - `birth_date`: `YYYY-MM-DD`, optional
 - `description`: string, optional
-- `nose_images`: file[], required, min `3`, max `5`
+- `nose_images`: file[], required, exactly `5`
 
 Dog nose v2 active contract:
 
 - `nose_image` 단건 field는 v2 active registration contract가 아니다.
-- Client는 close-up cropped dog nose image 3~5장을 제출해야 한다.
+- Client는 close-up cropped dog nose image를 정확히 5장 제출해야 한다.
 - Backend는 crop/detection/alignment를 수행하지 않는다.
 - Registration embedding은 Python Embed `/embed-batch`를 1회 호출한다.
-- Normal registration은 Qdrant `REFERENCE` point 3~5개와 `CENTROID` point 1개를 upsert한다.
+- Python Embed `/embed-batch`는 내부 endpoint로서 1~5장 batch 입력을 허용하지만, dog registration API는 정확히 5장만 허용한다.
+- Normal registration은 Qdrant `REFERENCE` point 5개와 `CENTROID` point 1개를 upsert한다.
 - Qdrant point id는 UUID이며 dog id와 같지 않다.
 - API response의 `qdrant_point_id`는 v2에서 `null`이다.
 
@@ -312,7 +313,7 @@ Response `201`, normal registration:
   "profile_image_url": null,
   "top_match": null,
   "embedding_mode": "MULTI_REFERENCE",
-  "reference_count": 3,
+  "reference_count": 5,
   "score_breakdown": {
     "final_score": 0.41,
     "max_reference_score": 0.43,
@@ -324,7 +325,9 @@ Response `201`, normal registration:
   "nose_image_urls": [
     "/files/dogs/{uuid}/nose/20260508_010203_nose_1.jpg",
     "/files/dogs/{uuid}/nose/20260508_010204_nose_2.jpg",
-    "/files/dogs/{uuid}/nose/20260508_010205_nose_3.jpg"
+    "/files/dogs/{uuid}/nose/20260508_010205_nose_3.jpg",
+    "/files/dogs/{uuid}/nose/20260508_010206_nose_4.jpg",
+    "/files/dogs/{uuid}/nose/20260508_010207_nose_5.jpg"
   ],
   "message": "중복 의심 개체가 없어 등록이 완료되었습니다."
 }
@@ -375,7 +378,7 @@ Response `200`, duplicate suspected:
     "breed": "말티즈"
   },
   "embedding_mode": "MULTI_REFERENCE",
-  "reference_count": 3,
+  "reference_count": 5,
   "score_breakdown": {
     "final_score": 0.99782,
     "max_reference_score": 0.99812,
@@ -387,7 +390,9 @@ Response `200`, duplicate suspected:
   "nose_image_urls": [
     "/files/dogs/new-dog-id/nose/..._1.jpg",
     "/files/dogs/new-dog-id/nose/..._2.jpg",
-    "/files/dogs/new-dog-id/nose/..._3.jpg"
+    "/files/dogs/new-dog-id/nose/..._3.jpg",
+    "/files/dogs/new-dog-id/nose/..._4.jpg",
+    "/files/dogs/new-dog-id/nose/..._5.jpg"
   ],
   "message": "기존 등록견과 동일 개체로 의심되어 등록이 제한됩니다."
 }
@@ -430,7 +435,7 @@ Response `200`, review required:
     "breed": "말티즈"
   },
   "embedding_mode": "MULTI_REFERENCE",
-  "reference_count": 3,
+  "reference_count": 5,
   "score_breakdown": {
     "final_score": 0.64123,
     "max_reference_score": 0.63211,
@@ -442,7 +447,9 @@ Response `200`, review required:
   "nose_image_urls": [
     "/files/dogs/new-dog-id/nose/..._1.jpg",
     "/files/dogs/new-dog-id/nose/..._2.jpg",
-    "/files/dogs/new-dog-id/nose/..._3.jpg"
+    "/files/dogs/new-dog-id/nose/..._3.jpg",
+    "/files/dogs/new-dog-id/nose/..._4.jpg",
+    "/files/dogs/new-dog-id/nose/..._5.jpg"
   ],
   "message": "기존 등록견과 유사도가 애매해 검토가 필요합니다."
 }
@@ -501,7 +508,7 @@ Error codes:
 - `NAME_REQUIRED`: `name`이 missing 또는 blank
 - `BREED_REQUIRED`: `breed`가 missing 또는 blank
 - `NOSE_IMAGES_REQUIRED`: `nose_images` field가 없거나 비어 있음
-- `NOSE_IMAGES_COUNT_INVALID`: `nose_images` 개수가 3~5 범위 밖임
+- `NOSE_IMAGES_COUNT_INVALID`: `nose_images` 개수가 정확히 5장이 아님. `details.expected_count=5`, `details.actual_count=<submitted count>`를 포함한다.
 - `NOSE_REFERENCE_INCONSISTENT`: 제출된 reference image 간 consistency가 기준 미만임
 - `VALIDATION_FAILED`: malformed request field 또는 invalid `gender`
 - `INVALID_BIRTH_DATE`: `birth_date`가 `YYYY-MM-DD` 형식이 아님
@@ -1204,7 +1211,9 @@ curl -X POST "http://localhost/api/dogs/register" \
   -F "gender=MALE" \
   -F "nose_images=@/path/to/nose-1.jpg" \
   -F "nose_images=@/path/to/nose-2.jpg" \
-  -F "nose_images=@/path/to/nose-3.jpg"
+  -F "nose_images=@/path/to/nose-3.jpg" \
+  -F "nose_images=@/path/to/nose-4.jpg" \
+  -F "nose_images=@/path/to/nose-5.jpg"
 
 curl -X POST "http://localhost/api/adoption-posts" \
   -H "Authorization: Bearer <JWT>" \

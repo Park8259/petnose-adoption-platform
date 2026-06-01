@@ -145,14 +145,15 @@ public class DogRegistrationService {
                 .toList();
 
         int count = presentImages.size();
-        if (count < noseRegistrationProperties.getReferenceMinCount()
-                || count > noseRegistrationProperties.getReferenceMaxCount()) {
+        int expectedCount = noseRegistrationProperties.getReferenceMaxCount();
+        if (count != expectedCount) {
             throw new ApiException(
                     HttpStatus.BAD_REQUEST,
                     "NOSE_IMAGES_COUNT_INVALID",
-                    "nose_images는 %d~%d장이어야 합니다.".formatted(
-                            noseRegistrationProperties.getReferenceMinCount(),
-                            noseRegistrationProperties.getReferenceMaxCount()
+                    "비문 기준 이미지는 정확히 %d장이 필요합니다.".formatted(expectedCount),
+                    Map.of(
+                            "expected_count", expectedCount,
+                            "actual_count", count
                     )
             );
         }
