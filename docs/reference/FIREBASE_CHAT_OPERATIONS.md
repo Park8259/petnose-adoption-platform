@@ -26,6 +26,22 @@ The container credential path is:
 /run/secrets/firebase-service-account.json
 ```
 
+## App Team Runtime Guidance
+
+`FIREBASE_DISABLED` is the expected response from authenticated Firebase chat endpoints when the backend is running with Firebase disabled. Treat it as a runtime configuration result, not as evidence that the Spring API route is missing.
+
+Shared dev server guidance:
+
+- Do not send Firebase service account JSON to app developers for shared dev-server testing.
+- App developers can validate Spring authentication and endpoint wiring against the shared backend even when Firebase chat returns `FIREBASE_DISABLED`.
+- MySQL domain data remains authoritative. Firebase is only an optional communication layer.
+
+Local backend guidance:
+
+- Only developers who need to test real Firebase connectivity from their own local backend need `FIREBASE_PROJECT_ID`, `FIREBASE_CREDENTIALS_HOST_PATH`, and `firebase-service-account.json`.
+- Store `firebase-service-account.json` outside the repository and point `FIREBASE_CREDENTIALS_HOST_PATH` to that external file.
+- Never commit service account JSON, Firebase CLI credentials, `.env` files, or generated secret files.
+
 ## Dev Run Command
 
 ```bash

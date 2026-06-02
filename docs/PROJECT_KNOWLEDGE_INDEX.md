@@ -45,6 +45,7 @@ schema count 불일치는 해결되었다. pre-adoption nose verification ticket
 | product/domain scope 판단 | `docs/PETNOSE_MVP_FINAL_PROJECT_SPEC.md` |
 | DB/entity/schema 판단 | `docs/db/petnose_mvp_schema.dbml`, `docs/db/V20260508__mvp_canonical_schema.sql` |
 | Firebase chat/push 판단 | `docs/firebase/chat-firestore-schema.md`, `docs/reference/FIREBASE_CHAT_OPERATIONS.md`, `docs/reference/FIREBASE_CHAT_STABILIZATION_PLAN.md` |
+| 앱 요청 follow-up API 분할/범위 판단 | `docs/PETNOSE_MVP_API_CONTRACT.md`, `docs/PETNOSE_APP_API_HANDOFF.md`, `docs/reference/APP_REQUESTED_API_PR_PLAN.md` |
 | Flyway/runtime migration 작업 | `docs/reference/DB_MIGRATION_STRATEGY.md` |
 | Qdrant/Python Embed/file storage 경계 판단 | `docs/reference/STORAGE_AND_VECTOR_BOUNDARY.md`, `docs/reference/SPRING_PYTHON_EMBED_CONTRACT.md` |
 | ops/deploy evidence 확인 | `docs/ops-evidence/dev-cd-validation-log.md` |
@@ -86,6 +87,26 @@ schema count 불일치는 해결되었다. pre-adoption nose verification ticket
   "details": ...
 }
 ```
+
+## App-Requested Follow-up Scope (Planned)
+
+앱팀 추가 요청사항은 current active MVP 위에 follow-up API를 더하는 계획으로 다룬다. PR 0은 문서/계약 고정만 수행하며 Java 코드, Flyway migration, backend test는 변경하지 않는다.
+
+Included planned scope:
+
+- Firebase chat `FIREBASE_DISABLED` 대응은 runtime 설정/운영 확인으로 처리한다.
+- `POST /api/auth/register`는 기존 JSON signup을 유지하면서 multipart/form-data와 optional `profile_image`를 추가할 예정이다.
+- 사용자 profile image 저장/변경 API, 로그인 사용자 비밀번호 변경 API, reset token 기반 비밀번호 재설정 API를 추가할 예정이다.
+- 좋아요/찜은 `users.liked` JSON/map이 아니라 `adoption_post_likes` 관계 테이블로 구현할 예정이다.
+- 입양 완료 시 입양자는 `dogs.owner_user_id`가 아니라 `adoption_posts.adopter_user_id`로 추적한다.
+- `COMPLETED` 처리 시 `dogs.status = ADOPTED`는 유지한다.
+- 내가 입양한 강아지 목록은 `GET /api/dogs/adopted/me`에서 `adoption_posts.status = COMPLETED AND adoption_posts.adopter_user_id = current_user_id` 기준으로 조회한다.
+
+Excluded planned scope:
+
+- 입양 후 1주/3개월/6개월 비문 인증, `post_adoption_verifications` table, 스케줄/기한/알림, 완료 후 자동 비문 재검증은 제외한다.
+- `dogs.owner_user_id`를 입양자로 변경하지 않는다. 이 field는 기존 등록자/작성자 ownership으로 유지한다.
+- Firebase는 계속 optional communication layer이며 MySQL domain data를 대체하지 않는다.
 
 ## Current Implemented API Flow
 

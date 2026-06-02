@@ -57,6 +57,308 @@ Base URL: `http://<host>/api`
 
 handover verification endpoint는 MVP trust/safety flow의 일부다. 이 contract 밖의 더 넓은 API 확장은 follow-up scope로 남긴다.
 
+## App-Requested API Delta Plan (Planned)
+
+이 섹션은 앱팀 추가 요청사항을 구현하기 전 API/DB/PR 단위를 고정하기 위한 planned contract다. PR 0에서는 문서만 변경하며 Java 코드, Flyway migration, backend test는 변경하지 않는다. 아래 endpoint는 후속 PR에서 구현될 예정이다.
+
+Included planned scope:
+
+- Firebase chat `FIREBASE_DISABLED` 대응은 runtime 설정/운영 확인으로 처리한다.
+- `POST /api/auth/register` multipart/form-data 지원을 추가한다.
+- 회원가입 multipart field에 optional `profile_image`를 추가한다.
+- 사용자 profile image 저장 및 변경 API를 추가한다.
+- 로그인 사용자 비밀번호 변경 API를 추가한다.
+- 비밀번호 찾기는 비밀번호 조회가 아니라 reset token 기반 재설정 API로 제공한다.
+- 좋아요/찜은 `users.liked` JSON/map이 아니라 `adoption_post_likes` 관계 테이블로 구현한다.
+- 입양 완료 시 `adoption_posts.adopter_user_id`를 저장한다.
+- 내가 입양한 강아지 목록 `GET /api/dogs/adopted/me`를 추가한다.
+
+Excluded planned scope:
+
+- 입양 후 1주/3개월/6개월 비문 인증
+- `post_adoption_verifications` table
+- 입양 후 비문 인증 스케줄/기한/알림
+- 완료 후 자동 비문 재검증
+- `dogs.owner_user_id`를 입양자로 변경하는 방식
+- Firebase로 MySQL domain data를 대체하는 구조
+
+Core policies:
+
+- `dogs.owner_user_id`는 기존 등록자/작성자 ownership으로 유지한다.
+- 입양자는 `adoption_posts.adopter_user_id`로 추적한다.
+- `COMPLETED` 처리 시 `dogs.status = ADOPTED`는 유지한다.
+- 내가 입양한 강아지 목록은 `adoption_posts.status = COMPLETED AND adoption_posts.adopter_user_id = current_user_id` 기준으로 조회한다.
+- 사용자 비밀번호는 절대 조회 API를 만들지 않는다.
+- `password_hash`는 절대 response에 노출하지 않는다.
+- `profile_image` multipart field는 사용자 프로필 이미지와 분양글 대표 이미지 양쪽에서 쓰일 수 있으므로 저장 위치와 DB column을 명확히 분리한다.
+- 사용자 프로필 이미지는 planned `users.profile_image_*` fields로 관리한다.
+- 분양글 대표 이미지는 기존 `dog_images.image_type=PROFILE` 정책을 유지한다.
+
+### A. 회원가입 multipart
+
+```http
+POST /api/auth/register
+Content-Type: multipart/form-data
+```
+
+Fields:
+
+- `email`: string, required
+- `password`: string, required
+- `display_name`: string, required
+- `contact_phone`: string, required
+- `region`: string, required
+- `profile_image`: file, optional
+
+Notes:
+
+- 기존 `application/json` 회원가입은 호환을 위해 당장 제거하지 않는다.
+- response에는 `profile_image_url`을 포함할 수 있다.
+- `password_hash`는 response에 노출하지 않는다.
+
+### B. 사용자 프로필 이미지 변경
+
+```http
+PATCH /api/users/me/profile-image
+Authorization: Bearer <JWT>
+Content-Type: multipart/form-data
+```
+
+Fields:
+
+- `profile_image`: file, required
+
+Response `200` draft:
+
+```json
+{
+  "user_id": 101,
+  "profile_image_url": "/files/users/101/profile/profile.jpg"
+}
+```
+
+### C. 로그인 사용자 비밀번호 변경
+
+```http
+PATCH /api/users/me/password
+Authorization: Bearer <JWT>
+Content-Type: application/json
+```
+
+Request:
+
+```json
+{
+  "current_password": "...",
+  "new_password": "..."
+}
+```
+
+Response `200` draft:
+
+```json
+{
+  "changed": true
+}
+```
+
+Policy:
+
+- 현재 비밀번호는 검증용 input일 뿐 response에 포함하지 않는다.
+- `password_hash`는 response에 노출하지 않는다.
+
+### D. 비밀번호 재설정 요청
+
+```http
+POST /api/auth/password-reset/request
+Content-Type: application/json
+```
+
+Request:
+
+```json
+{
+  "email": "user@example.com"
+}
+```
+
+Response `200` draft:
+
+```json
+{
+  "requested": true
+}
+```
+
+Policy:
+
+- email 존재 여부를 노출하지 않는다.
+- 비밀번호 조회 API는 만들지 않는다.
+
+### E. 비밀번호 재설정 확정
+
+```http
+POST /api/auth/password-reset/confirm
+Content-Type: application/json
+```
+
+Request:
+
+```json
+{
+  "reset_token": "...",
+  "new_password": "..."
+}
+```
+
+Response `200` draft:
+
+```json
+{
+  "reset": true
+}
+```
+
+### F. 좋아요 추가
+
+```http
+PUT /api/adoption-posts/{post_id}/like
+Authorization: Bearer <JWT>
+```
+
+Response `200` draft:
+
+```json
+{
+  "post_id": 123,
+  "liked": true
+}
+```
+
+### G. 좋아요 취소
+
+```http
+DELETE /api/adoption-posts/{post_id}/like
+Authorization: Bearer <JWT>
+```
+
+Response `200` draft:
+
+```json
+{
+  "post_id": 123,
+  "liked": false
+}
+```
+
+### H. 내가 좋아요한 게시글 목록
+
+```http
+GET /api/adoption-posts/liked/me?page=0&size=20
+Authorization: Bearer <JWT>
+```
+
+Response `200` draft:
+
+```json
+{
+  "items": [
+    {
+      "post_id": 123,
+      "dog_id": "uuid",
+      "title": "말티즈 가족을 찾습니다",
+      "status": "OPEN",
+      "dog_name": "초코",
+      "breed": "말티즈",
+      "gender": "MALE",
+      "birth_date": "2024-01-01",
+      "profile_image_url": "/files/dogs/{uuid}/profile/profile.jpg",
+      "verification_status": "VERIFIED",
+      "author_display_name": "초코 보호자",
+      "author_region": "서울",
+      "published_at": "2026-05-13T10:00:00",
+      "created_at": "2026-05-13T10:00:00",
+      "liked": true,
+      "liked_at": "2026-06-02T10:00:00"
+    }
+  ],
+  "page": 0,
+  "size": 20,
+  "total_count": 1
+}
+```
+
+Notes:
+
+- Response item은 기존 public adoption post list item과 최대한 맞춘다.
+- `liked=true`와 `liked_at`을 추가한다.
+- `nose_image_url`은 노출하지 않는다.
+
+### I. 입양 완료 status update 확장
+
+```http
+PATCH /api/adoption-posts/{post_id}/status
+Authorization: Bearer <JWT>
+Content-Type: application/json
+```
+
+Request when completing:
+
+```json
+{
+  "status": "COMPLETED",
+  "adopter_user_id": 45
+}
+```
+
+Policy:
+
+- `COMPLETED` 전이에서 `adopter_user_id`는 required다.
+- `adopter_user_id`는 active user여야 한다.
+- `adopter_user_id`는 `author_user_id`와 같으면 안 된다.
+- `dogs.status = ADOPTED`는 유지한다.
+- `dogs.owner_user_id`는 변경하지 않는다.
+- `adoption_posts.adopter_user_id`로 입양자를 저장한다.
+
+### J. 내가 입양한 강아지 목록
+
+```http
+GET /api/dogs/adopted/me?page=0&size=20
+Authorization: Bearer <JWT>
+```
+
+Query criteria:
+
+- `adoption_posts.status = COMPLETED`
+- `adoption_posts.adopter_user_id = current_user_id`
+
+Response item draft:
+
+```json
+{
+  "dog_id": "uuid",
+  "post_id": 123,
+  "post_title": "...",
+  "dog_name": "초코",
+  "breed": "말티즈",
+  "gender": "MALE",
+  "birth_date": "2023-01-01",
+  "description": "...",
+  "status": "ADOPTED",
+  "profile_image_url": "/files/dogs/{dog_id}/profile/profile.jpg",
+  "verification_status": "VERIFIED",
+  "adopted_at": "2026-06-02T10:00:00",
+  "created_at": "2026-05-20T10:00:00",
+  "updated_at": "2026-06-02T10:00:00"
+}
+```
+
+Exposure policy:
+
+- `nose_image_url`은 노출하지 않는다.
+- `author_contact_phone`은 이 목록 API에 포함하지 않는다.
+- 입양 후 1주/3개월/6개월 인증 관련 field는 넣지 않는다.
+
 ## Auth
 
 ### 회원가입
