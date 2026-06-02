@@ -27,7 +27,8 @@ class CanonicalSchemaConsistencyTest {
             "dog_nose_references",
             "password_reset_tokens",
             "verification_logs",
-            "adoption_posts"
+            "adoption_posts",
+            "adoption_post_likes"
     );
     private static final Set<String> USER_COLUMNS = Set.of(
             "id",
@@ -84,6 +85,12 @@ class CanonicalSchemaConsistencyTest {
             "quality_status",
             "quality_score",
             "is_active",
+            "created_at"
+    );
+    private static final Set<String> ADOPTION_POST_LIKE_COLUMNS = Set.of(
+            "id",
+            "user_id",
+            "post_id",
             "created_at"
     );
     private static final List<String> RETIRED_PRECHECK_CONSUMPTION_FIELDS = List.of(
@@ -198,6 +205,26 @@ class CanonicalSchemaConsistencyTest {
     }
 
     @Test
+    void activeCleanSqlAdoptionPostLikesUseRelationTable() throws Exception {
+        String sql = canonicalSql();
+        Map<String, Set<String>> columnsByTable = columnsByTable(sql);
+        String adoptionPostLikes = tableDefinitions(sql).get("adoption_post_likes");
+
+        assertThat(columnsByTable.get("adoption_post_likes"))
+                .containsExactlyInAnyOrderElementsOf(ADOPTION_POST_LIKE_COLUMNS);
+        assertThat(adoptionPostLikes).contains(
+                "user_id BIGINT NOT NULL",
+                "post_id BIGINT NOT NULL",
+                "created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP",
+                "UNIQUE KEY uk_adoption_post_likes_user_post (user_id, post_id)",
+                "KEY idx_adoption_post_likes_user_created_at (user_id, created_at)",
+                "KEY idx_adoption_post_likes_post_id (post_id)",
+                "FOREIGN KEY (user_id) REFERENCES users (id)",
+                "FOREIGN KEY (post_id) REFERENCES adoption_posts (id)"
+        );
+    }
+
+    @Test
     void activeCleanSqlIndexesForeignKeysAndChecksReferenceDeclaredColumns() throws Exception {
         Map<String, String> tableBodies = tableDefinitions(canonicalSql());
         Map<String, Set<String>> columnsByTable = columnsByTable(tableBodies);
@@ -225,7 +252,9 @@ class CanonicalSchemaConsistencyTest {
                 "Table password_reset_tokens",
                 "token_hash char(64)",
                 "expires_at timestamp",
-                "used_at timestamp"
+                "used_at timestamp",
+                "Table adoption_post_likes",
+                "(user_id, post_id) [unique, name: \"uk_adoption_post_likes_user_post\"]"
         );
         assertThat(dbmlEnumValues(dbml, "dog_status"))
                 .containsExactly("PENDING", "REGISTERED", "DUPLICATE_SUSPECTED", "REVIEW_REQUIRED", "REJECTED", "ADOPTED", "INACTIVE");

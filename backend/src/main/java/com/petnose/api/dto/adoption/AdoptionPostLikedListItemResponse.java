@@ -5,7 +5,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 
-public record AdoptionPostListItemResponse(
+public record AdoptionPostLikedListItemResponse(
         @JsonProperty("post_id")
         Long postId,
         @JsonProperty("dog_id")
@@ -30,11 +30,13 @@ public record AdoptionPostListItemResponse(
         String authorDisplayName,
         @JsonProperty("author_region")
         String authorRegion,
-        @JsonProperty("liked")
-        boolean liked,
         @JsonProperty("published_at")
         LocalDateTime publishedAt,
         @JsonProperty("created_at")
-        LocalDateTime createdAt
+        LocalDateTime createdAt,
+        @JsonProperty("liked")
+        boolean liked,
+        @JsonProperty("liked_at")
+        LocalDateTime likedAt
 ) {
 }

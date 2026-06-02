@@ -56,12 +56,15 @@ Base URL: `http://<host>/api`
 | 15 | `POST /api/adoption-posts/{post_id}/handover-verifications` | 구현됨 | `post_id -> adoption_posts.dog_id -> Qdrant point id = dog_id`로 1:1 identity check를 수행한다. |
 | 16 | `PATCH /api/users/me/password` | 구현됨 | current password 검증 후 새 비밀번호를 저장한다. |
 | 17 | `POST /api/auth/password-reset/request`, `POST /api/auth/password-reset/confirm` | 구현됨 | reset token 기반 비밀번호 재설정을 수행한다. |
+| 18 | `PUT /api/adoption-posts/{post_id}/like` | 구현됨 | public visible post에 current user 좋아요를 idempotent하게 추가한다. |
+| 19 | `DELETE /api/adoption-posts/{post_id}/like` | 구현됨 | existing post의 current user 좋아요를 idempotent하게 삭제한다. |
+| 20 | `GET /api/adoption-posts/liked/me` | 구현됨 | current user가 좋아요한 public visible post 목록을 반환한다. |
 
 handover verification endpoint는 MVP trust/safety flow의 일부다. 이 contract 밖의 더 넓은 API 확장은 follow-up scope로 남긴다.
 
 ## App-Requested API Delta Plan
 
-이 섹션은 앱팀 추가 요청사항의 API/DB/PR 단위를 고정한 contract다. PR 3까지 profile image 흐름이 구현되었고, PR 4에서 password change/reset 흐름이 구현된다. 좋아요, 입양 완료 adopter 저장, 내가 입양한 강아지 목록은 후속 PR 범위다.
+이 섹션은 앱팀 추가 요청사항의 API/DB/PR 단위를 고정한 contract다. PR 3까지 profile image 흐름이 구현되었고, PR 4에서 password change/reset 흐름이 구현되었다. PR 5에서 좋아요/찜 흐름이 `adoption_post_likes` 관계 테이블로 구현된다. 입양 완료 adopter 저장, 내가 입양한 강아지 목록은 후속 PR 범위다.
 
 Included planned scope:
 
@@ -71,7 +74,7 @@ Included planned scope:
 - 사용자 profile image 저장 및 변경 API를 추가한다.
 - 로그인 사용자 비밀번호 변경 API는 PR 4에서 구현한다.
 - 비밀번호 찾기는 비밀번호 조회가 아니라 reset token 기반 재설정 API로 PR 4에서 구현한다.
-- 좋아요/찜은 `users.liked` JSON/map이 아니라 `adoption_post_likes` 관계 테이블로 구현한다.
+- 좋아요/찜은 `users.liked` JSON/map이 아니라 `adoption_post_likes` 관계 테이블로 구현한다. MySQL `adoption_post_likes`가 좋아요 상태의 source of truth다.
 - 입양 완료 시 `adoption_posts.adopter_user_id`를 저장한다.
 - 내가 입양한 강아지 목록 `GET /api/dogs/adopted/me`를 추가한다.
 
@@ -213,7 +216,7 @@ Request:
 }
 ```
 
-Response `200` draft:
+Response `200`:
 
 ```json
 {
@@ -237,6 +240,17 @@ Response `200` draft:
 }
 ```
 
+Notes:
+
+- Bearer JWT가 필요하다.
+- current active user만 호출할 수 있다.
+- 같은 user/post에 반복 호출해도 row는 1개만 유지하고 `liked=true`를 반환한다.
+- 좋아요 추가 대상은 `OPEN`, `RESERVED`, `COMPLETED` public visible post다.
+- missing post는 `POST_NOT_FOUND`를 반환한다.
+- `DRAFT` 또는 `CLOSED` post는 `POST_NOT_PUBLIC`를 반환한다.
+- 중복 row는 `UNIQUE(user_id, post_id)`로 DB에서도 방어한다.
+- `users.liked` JSON/map은 사용하지 않는다.
+
 ### G. 좋아요 취소
 
 ```http
@@ -244,7 +258,7 @@ DELETE /api/adoption-posts/{post_id}/like
 Authorization: Bearer <JWT>
 ```
 
-Response `200` draft:
+Response `200`:
 
 ```json
 {
@@ -253,6 +267,13 @@ Response `200` draft:
 }
 ```
 
+Notes:
+
+- Bearer JWT가 필요하다.
+- 같은 user/post에 반복 호출해도 `liked=false`를 반환한다.
+- 취소는 post가 존재하면 허용한다. 기존 좋아요 대상 post가 이후 `DRAFT` 또는 `CLOSED`가 되어도 사용자가 좋아요를 정리할 수 있다.
+- missing post는 `POST_NOT_FOUND`를 반환한다.
+
 ### H. 내가 좋아요한 게시글 목록
 
 ```http
@@ -260,7 +281,7 @@ GET /api/adoption-posts/liked/me?page=0&size=20
 Authorization: Bearer <JWT>
 ```
 
-Response `200` draft:
+Response `200`:
 
 ```json
 {
@@ -294,6 +315,10 @@ Notes:
 
 - Response item은 기존 public adoption post list item과 최대한 맞춘다.
 - `liked=true`와 `liked_at`을 추가한다.
+- `liked_at`은 `adoption_post_likes.created_at`이다.
+- 정렬은 `adoption_post_likes.created_at DESC, adoption_post_likes.id DESC`다.
+- 목록과 `total_count`는 public visible status인 `OPEN`, `RESERVED`, `COMPLETED` post 기준이다.
+- 좋아요한 post가 `DRAFT` 또는 `CLOSED`가 되면 목록에서 숨긴다.
 - `nose_image_url`은 노출하지 않는다.
 
 ### I. 입양 완료 status update 확장
@@ -1242,6 +1267,7 @@ Contract notes:
 
 ```http
 GET /api/adoption-posts?status=OPEN&page=0&size=20
+Authorization: Bearer <JWT> # optional
 ```
 
 Query parameters:
@@ -1274,6 +1300,7 @@ Response `200`:
       "verification_status": "VERIFIED",
       "author_display_name": "초코 보호자",
       "author_region": "서울",
+      "liked": false,
       "published_at": "2026-05-13T10:00:00",
       "created_at": "2026-05-13T10:00:00"
     }
@@ -1292,6 +1319,10 @@ Contract notes:
 - `verification_status`는 Flutter display를 위해 포함한다.
 - `profile_image_url`은 노출할 수 있다.
 - `nose_image_url`은 노출하지 않는다.
+- Authorization header가 없으면 `liked=false`다.
+- Authorization header가 있으면 current user 기준 `liked`를 계산한다.
+- Authorization header가 malformed/invalid이면 `UNAUTHORIZED`를 반환한다.
+- inactive user token이면 `USER_INACTIVE`를 반환한다.
 - invalid `status`는 `INVALID_POST_STATUS`를 반환한다.
 - invalid `page` 또는 `size`는 `INVALID_PAGE_REQUEST`를 반환한다.
 
@@ -1299,6 +1330,7 @@ Contract notes:
 
 ```http
 GET /api/adoption-posts/{post_id}
+Authorization: Bearer <JWT> # optional
 ```
 
 Response `200`:
@@ -1320,6 +1352,7 @@ Response `200`:
   "author_display_name": "초코 보호자",
   "author_contact_phone": "01012341234",
   "author_region": "서울",
+  "liked": false,
   "published_at": "2026-05-13T10:00:00",
   "created_at": "2026-05-13T10:00:00",
   "updated_at": "2026-05-13T10:00:00"
@@ -1332,6 +1365,10 @@ Contract notes:
 - `verification_status`는 Flutter display를 위해 포함한다.
 - `profile_image_url`은 노출할 수 있다.
 - `nose_image_url`은 노출하지 않는다.
+- Authorization header가 없으면 `liked=false`다.
+- Authorization header가 있으면 current user 기준 `liked`를 계산한다.
+- Authorization header가 malformed/invalid이면 `UNAUTHORIZED`를 반환한다.
+- inactive user token이면 `USER_INACTIVE`를 반환한다.
 - missing post는 `POST_NOT_FOUND`를 반환한다.
 - non-public post는 `POST_NOT_PUBLIC`을 반환한다.
 
@@ -1756,6 +1793,18 @@ curl -H "Authorization: Bearer <JWT>" \
 curl "http://localhost/api/adoption-posts?status=OPEN&page=0&size=20"
 curl "http://localhost/api/adoption-posts?status=RESERVED&page=0&size=20"
 curl "http://localhost/api/adoption-posts?status=COMPLETED&page=0&size=20"
+
+curl -H "Authorization: Bearer <JWT>" \
+  "http://localhost/api/adoption-posts?status=OPEN&page=0&size=20"
+
+curl -X PUT "http://localhost/api/adoption-posts/<post_id>/like" \
+  -H "Authorization: Bearer <JWT>"
+
+curl -X DELETE "http://localhost/api/adoption-posts/<post_id>/like" \
+  -H "Authorization: Bearer <JWT>"
+
+curl -H "Authorization: Bearer <JWT>" \
+  "http://localhost/api/adoption-posts/liked/me?page=0&size=20"
 
 curl -H "Authorization: Bearer <JWT>" \
   "http://localhost/api/adoption-posts/me?page=0&size=20"

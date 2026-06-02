@@ -178,6 +178,10 @@ Acceptance criteria:
 
 ## PR 5 feat/adoption-post-likes
 
+Status:
+
+- Implemented in this PR.
+
 Purpose:
 
 - Follow PR 4 by adding like/unlike and my-liked adoption post list.
@@ -186,18 +190,29 @@ Included files:
 
 - `adoption_post_likes` migration/entity/repository.
 - Adoption post like APIs and tests.
-- List response mapping for `liked` and `liked_at`.
+- Public adoption post list/detail response mapping for current-user `liked`.
+- My-liked list response mapping for `liked=true` and `liked_at`.
+- API contract, app handoff, active DBML, and canonical SQL updates.
 
 Excluded scope:
 
 - No `users.liked` JSON/map implementation.
 - No recommendation/ranking system.
+- No `adoption_posts.adopter_user_id` or `adopted_at`.
+- No my-adopted-dogs API.
 
 Acceptance criteria:
 
-- `PUT /api/adoption-posts/{post_id}/like` is idempotent and returns `liked=true`.
-- `DELETE /api/adoption-posts/{post_id}/like` is idempotent and returns `liked=false`.
-- `GET /api/adoption-posts/liked/me` returns list items aligned with public adoption post list plus `liked=true` and `liked_at`.
+- [x] `PUT /api/adoption-posts/{post_id}/like` is idempotent and returns `liked=true`.
+- [x] `DELETE /api/adoption-posts/{post_id}/like` is idempotent and returns `liked=false`.
+- [x] `GET /api/adoption-posts/liked/me` returns list items aligned with public adoption post list plus `liked=true` and `liked_at`.
+- [x] `GET /api/adoption-posts` and `GET /api/adoption-posts/{post_id}` include `liked=false` for anonymous users.
+- [x] Public list/detail with valid Authorization computes `liked` for the current user.
+- [x] Liked list excludes `DRAFT` and `CLOSED` posts from both items and `total_count`.
+
+Follow-up:
+
+- PR 6 remains adoption completion adopter storage.
 
 ## PR 6 feat/adoption-completion-adopter
 

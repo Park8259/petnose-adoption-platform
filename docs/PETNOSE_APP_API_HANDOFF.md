@@ -31,10 +31,11 @@
 8. 실제 email/SMS provider는 아직 연결되지 않았다. shared dev에서는 `AUTH_PASSWORD_RESET_EXPOSE_TOKEN_IN_RESPONSE=true`일 때 active user email에 한해 임시 `reset_token`을 받아 confirm flow를 테스트할 수 있다.
 9. 새 비밀번호 설정 화면은 `POST /api/auth/password-reset/confirm`에 `reset_token`과 `new_password`를 보내고 `reset=true`를 받으면 로그인 화면으로 보낸다.
 10. 앱은 비밀번호나 `password_hash`를 조회하려고 하지 않는다.
-11. 분양글 카드와 상세 화면은 좋아요 추가 `PUT /api/adoption-posts/{post_id}/like`, 좋아요 취소 `DELETE /api/adoption-posts/{post_id}/like`, 내 좋아요 목록 `GET /api/adoption-posts/liked/me`를 사용한다.
-12. 분양 완료 처리 시 앱은 `PATCH /api/adoption-posts/{post_id}/status` request에 `status=COMPLETED`와 `adopter_user_id`를 함께 넘겨야 한다.
-13. 내가 입양한 강아지 목록은 `GET /api/dogs/adopted/me`로 조회한다.
-14. 입양 후 1주/3개월/6개월 비문 인증, 사후 인증 스케줄/알림, 완료 후 자동 비문 재검증은 이번 follow-up 범위가 아니다.
+11. 분양글 카드와 상세 화면은 response의 `liked` field를 사용하고, 좋아요 추가 `PUT /api/adoption-posts/{post_id}/like`, 좋아요 취소 `DELETE /api/adoption-posts/{post_id}/like`, 내 좋아요 목록 `GET /api/adoption-posts/liked/me`를 사용한다.
+12. 앱은 `users.liked` map을 기대하지 않는다. 서버는 `adoption_post_likes` 관계 테이블 기준으로 좋아요 상태를 계산한다.
+13. 분양 완료 adopter 저장은 후속 PR 6 범위다. 현재 PR 5에서는 `adopter_user_id`를 보내지 않는다.
+14. 내가 입양한 강아지 목록은 후속 PR 7에서 `GET /api/dogs/adopted/me`로 조회한다.
+15. 입양 후 1주/3개월/6개월 비문 인증, 사후 인증 스케줄/알림, 완료 후 자동 비문 재검증은 이번 follow-up 범위가 아니다.
 
 Storage distinction:
 
@@ -42,6 +43,30 @@ Storage distinction:
 - `PATCH /api/users/me/profile-image`는 이전 이미지 파일을 즉시 삭제하지 않는다. orphan cleanup은 운영 hardening scope다.
 - 분양글 대표 `profile_image`는 기존처럼 `dog_images.image_type=PROFILE`로 저장한다.
 - `dogs.owner_user_id`는 등록자/작성자 ownership으로 유지하고, 입양자는 `adoption_posts.adopter_user_id`로 추적한다.
+
+## Adoption Post Likes
+
+분양글 목록/상세 화면:
+
+- `GET /api/adoption-posts`와 `GET /api/adoption-posts/{post_id}`는 Authorization header가 없으면 `liked=false`를 반환한다.
+- Authorization header가 있으면 서버가 current user 기준 `liked`를 계산한다.
+- Authorization header가 invalid/malformed이면 `UNAUTHORIZED`를 반환한다.
+- public list/detail은 계속 `nose_image_url`을 노출하지 않는다.
+
+좋아요 액션:
+
+- 추가: `PUT /api/adoption-posts/{post_id}/like`
+- 취소: `DELETE /api/adoption-posts/{post_id}/like`
+- 둘 다 Authorization이 필요하고 같은 요청을 반복해도 같은 최종 상태를 반환한다.
+- 좋아요 추가 대상은 `OPEN`, `RESERVED`, `COMPLETED` public visible post다.
+- 좋아요 취소는 post가 존재하면 `DRAFT`/`CLOSED`가 되었더라도 허용한다.
+
+마이페이지 좋아요 목록:
+
+- `GET /api/adoption-posts/liked/me?page=0&size=20`
+- `items[].liked`는 항상 `true`이며 `liked_at`은 좋아요한 시각이다.
+- 목록은 `OPEN`, `RESERVED`, `COMPLETED` post만 반환하고 `DRAFT`/`CLOSED`는 숨긴다.
+- 앱은 이 목록에서도 `nose_image_url`을 기대하지 않는다.
 
 ## Firebase Chat Connection Note
 

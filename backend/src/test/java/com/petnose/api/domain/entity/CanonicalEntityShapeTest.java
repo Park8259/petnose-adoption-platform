@@ -9,6 +9,7 @@ import com.petnose.api.domain.enums.VerificationResult;
 import jakarta.persistence.Column;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
+import jakarta.persistence.Table;
 import org.junit.jupiter.api.Test;
 
 import java.io.InputStream;
@@ -138,6 +139,39 @@ class CanonicalEntityShapeTest {
                 "FOREIGN KEY (user_id) REFERENCES users(id)"
         );
         assertThat(migration).doesNotContain("reset_token VARCHAR", "reset_token TEXT", "raw_token", "plain_token");
+    }
+
+    @Test
+    void adoptionPostLikeEntityAndMigrationUseRelationTable() throws Exception {
+        Set<String> fields = declaredFieldNames(AdoptionPostLike.class);
+        Table table = AdoptionPostLike.class.getAnnotation(Table.class);
+        Column userId = AdoptionPostLike.class.getDeclaredField("userId").getAnnotation(Column.class);
+        Column postId = AdoptionPostLike.class.getDeclaredField("postId").getAnnotation(Column.class);
+        Column createdAt = AdoptionPostLike.class.getDeclaredField("createdAt").getAnnotation(Column.class);
+
+        assertThat(fields).containsExactlyInAnyOrder("id", "userId", "postId", "createdAt");
+        assertThat(fields).doesNotContain("liked", "likedAt");
+        assertThat(table.name()).isEqualTo("adoption_post_likes");
+        assertThat(userId.name()).isEqualTo("user_id");
+        assertThat(userId.nullable()).isFalse();
+        assertThat(postId.name()).isEqualTo("post_id");
+        assertThat(postId.nullable()).isFalse();
+        assertThat(createdAt.name()).isEqualTo("created_at");
+        assertThat(createdAt.nullable()).isFalse();
+        assertThat(createdAt.updatable()).isFalse();
+
+        String migration = resourceText("db/migration/V8__add_adoption_post_likes.sql");
+        assertThat(migration).contains(
+                "CREATE TABLE adoption_post_likes",
+                "user_id BIGINT NOT NULL",
+                "post_id BIGINT NOT NULL",
+                "created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP",
+                "UNIQUE KEY uk_adoption_post_likes_user_post (user_id, post_id)",
+                "KEY idx_adoption_post_likes_user_created_at (user_id, created_at)",
+                "KEY idx_adoption_post_likes_post_id (post_id)",
+                "FOREIGN KEY (user_id) REFERENCES users(id)",
+                "FOREIGN KEY (post_id) REFERENCES adoption_posts(id)"
+        );
     }
 
     @Test

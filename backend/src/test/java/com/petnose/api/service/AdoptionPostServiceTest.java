@@ -12,6 +12,7 @@ import com.petnose.api.domain.enums.VerificationResult;
 import com.petnose.api.dto.adoption.AdoptionPostCreateRequest;
 import com.petnose.api.exception.ApiException;
 import com.petnose.api.repository.AdoptionPostRepository;
+import com.petnose.api.repository.AdoptionPostLikeRepository;
 import com.petnose.api.repository.DogImageRepository;
 import com.petnose.api.repository.DogRepository;
 import com.petnose.api.repository.UserRepository;
@@ -53,6 +54,9 @@ class AdoptionPostServiceTest {
 
     @Mock
     private AdoptionPostRepository adoptionPostRepository;
+
+    @Mock
+    private AdoptionPostLikeRepository adoptionPostLikeRepository;
 
     @Mock
     private FileStorageService fileStorageService;
