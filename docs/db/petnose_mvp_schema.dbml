@@ -153,3 +153,38 @@ Table adoption_posts {
   created_at timestamp [not null, default: `CURRENT_TIMESTAMP`]
   updated_at timestamp [not null, default: `CURRENT_TIMESTAMP`]
 }
+
+// Planned schema changes for app-requested API delta.
+// Documentation only: do not treat this block as the active DBML schema until
+// the corresponding backend/entity/Flyway PRs implement and verify it.
+//
+// Planned users fields for profile image storage:
+// - profile_image_file_path varchar(500)
+// - profile_image_mime_type varchar(100)
+// - profile_image_file_size bigint
+// - profile_image_sha256 char(64)
+// - profile_image_uploaded_at timestamp
+//
+// Planned adoption_posts fields for completion/adopter tracking:
+// - adopter_user_id bigint [ref: > users.id]
+// - adopted_at timestamp
+// Policy: dogs.owner_user_id remains the original registrant/author owner.
+//
+// Planned adoption_post_likes relation:
+// - id bigint [pk, increment]
+// - post_id bigint [not null, ref: > adoption_posts.id]
+// - user_id bigint [not null, ref: > users.id]
+// - liked_at timestamp [not null]
+// - unique(post_id, user_id)
+//
+// Planned password reset token storage:
+// - user_id bigint [not null, ref: > users.id]
+// - reset_token_hash varchar(255) [not null, unique]
+// - expires_at timestamp [not null]
+// - consumed_at timestamp
+// - created_at timestamp [not null]
+//
+// Explicitly excluded from this follow-up:
+// - post_adoption_verifications table
+// - 1-week/3-month/6-month post-adoption nose verification schedule
+// - reassigning dogs.owner_user_id to the adopter

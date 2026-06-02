@@ -174,3 +174,38 @@ CREATE TABLE adoption_posts (
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
   COLLATE = utf8mb4_unicode_ci;
+
+-- =============================================================================
+-- Planned schema changes for app-requested API delta
+-- =============================================================================
+-- Documentation only. Do not copy this block into a Flyway migration as-is.
+-- Later implementation PRs should introduce reviewed, tested migrations.
+--
+-- Planned users fields for user profile image storage:
+--   profile_image_file_path VARCHAR(500) NULL
+--   profile_image_mime_type VARCHAR(100) NULL
+--   profile_image_file_size BIGINT NULL
+--   profile_image_sha256 CHAR(64) NULL
+--   profile_image_uploaded_at TIMESTAMP NULL
+--
+-- Planned adoption_posts fields for completion/adopter tracking:
+--   adopter_user_id BIGINT NULL REFERENCES users(id)
+--   adopted_at TIMESTAMP NULL
+-- Policy: dogs.owner_user_id remains the original registrant/author owner.
+-- COMPLETED transitions still set dogs.status = 'ADOPTED'.
+--
+-- Planned adoption_post_likes relation:
+--   adoption_post_likes(id, post_id, user_id, liked_at)
+--   UNIQUE(post_id, user_id)
+--   FOREIGN KEY(post_id) REFERENCES adoption_posts(id)
+--   FOREIGN KEY(user_id) REFERENCES users(id)
+--
+-- Planned password reset token storage:
+--   password_reset_tokens(user_id, reset_token_hash, expires_at, consumed_at, created_at)
+-- Password lookup APIs must not be created, and password_hash must never be
+-- exposed in responses.
+--
+-- Explicitly excluded from this follow-up:
+--   post_adoption_verifications table
+--   1-week/3-month/6-month post-adoption nose verification schedule
+--   reassigning dogs.owner_user_id to the adopter
