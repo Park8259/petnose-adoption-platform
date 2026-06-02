@@ -1,10 +1,13 @@
 package com.petnose.api.controller;
 
 import com.petnose.api.dto.user.UserMeResponse;
+import com.petnose.api.dto.user.UserPasswordChangeRequest;
+import com.petnose.api.dto.user.UserPasswordChangeResponse;
 import com.petnose.api.dto.user.UserProfileImageUpdateResponse;
 import com.petnose.api.dto.user.UserProfileResponse;
 import com.petnose.api.dto.user.UserProfileUpdateRequest;
 import com.petnose.api.service.AuthService;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -37,5 +40,13 @@ public class UserController {
             @RequestParam(value = "profile_image", required = false) MultipartFile profileImage
     ) {
         return authService.updateProfileImage(authorization, profileImage);
+    }
+
+    @PatchMapping("/me/password")
+    public UserPasswordChangeResponse changePassword(
+            @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization,
+            @Valid @RequestBody UserPasswordChangeRequest request
+    ) {
+        return authService.changePassword(authorization, request);
     }
 }

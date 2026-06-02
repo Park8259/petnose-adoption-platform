@@ -35,7 +35,7 @@
 
 ## Pre-Share Schema Count Note
 
-schema count 불일치는 해결되었다. pre-adoption nose verification ticket은 `verification_logs`로 통합되었고 dog nose v2 reference metadata는 `dog_nose_references`가 추적한다. current MVP app table은 6개다. 상세 refactor 기록은 `docs/reference/MVP_SCHEMA_TABLE_COUNT_REVIEW.md`를 확인한다.
+schema count 불일치는 해결되었다. pre-adoption nose verification ticket은 `verification_logs`로 통합되었고 dog nose v2 reference metadata는 `dog_nose_references`가 추적한다. current MVP domain table은 6개이며, auth support table로 `password_reset_tokens`가 추가되었다. 상세 refactor 기록은 `docs/reference/MVP_SCHEMA_TABLE_COUNT_REVIEW.md`를 확인한다.
 
 ## Task-Specific Routing
 
@@ -66,6 +66,7 @@ schema count 불일치는 해결되었다. pre-adoption nose verification ticket
   - `dog_nose_references`
   - `verification_logs`
   - `adoption_posts`
+- 활성 auth support table은 `password_reset_tokens`다. reset token 원문은 저장하지 않고 SHA-256 hash만 저장한다.
 - `users`가 `display_name`, `contact_phone`, `region`, optional `profile_image_*`, `is_active`를 직접 가진다.
 - 사용자 payload의 `profile_image_url`은 nullable이며 `users.profile_image_path`에서 `/files/{relative_path}`로 계산한다.
 - MySQL이 source of truth다.
@@ -89,15 +90,15 @@ schema count 불일치는 해결되었다. pre-adoption nose verification ticket
 }
 ```
 
-## App-Requested Follow-up Scope (Planned)
+## App-Requested Follow-up Scope
 
-앱팀 추가 요청사항은 current active MVP 위에 follow-up API를 더하는 계획으로 다룬다. PR 0은 문서/계약 고정만 수행하며 Java 코드, Flyway migration, backend test는 변경하지 않는다.
+앱팀 추가 요청사항은 current active MVP 위에 follow-up API를 더하는 계획으로 다룬다. Profile image 흐름은 PR 3까지 구현되었고, password change/reset 흐름은 PR 4에서 구현되었다. 좋아요, adopter 저장, 내가 입양한 강아지 목록은 후속 PR 범위다.
 
 Included planned scope:
 
 - Firebase chat `FIREBASE_DISABLED` 대응은 runtime 설정/운영 확인으로 처리한다.
 - `POST /api/auth/register`는 기존 JSON signup을 유지하면서 multipart/form-data와 optional `profile_image`를 추가할 예정이다.
-- 사용자 profile image 저장/변경 API, 로그인 사용자 비밀번호 변경 API, reset token 기반 비밀번호 재설정 API를 추가할 예정이다.
+- 사용자 profile image 저장/변경 API와 로그인 사용자 비밀번호 변경 API, reset token 기반 비밀번호 재설정 API를 추가한다.
 - 좋아요/찜은 `users.liked` JSON/map이 아니라 `adoption_post_likes` 관계 테이블로 구현할 예정이다.
 - 입양 완료 시 입양자는 `dogs.owner_user_id`가 아니라 `adoption_posts.adopter_user_id`로 추적한다.
 - `COMPLETED` 처리 시 `dogs.status = ADOPTED`는 유지한다.
@@ -115,8 +116,12 @@ Excluded planned scope:
 
 - `POST /api/auth/register`
 - `POST /api/auth/login`
+- `POST /api/auth/password-reset/request`
+- `POST /api/auth/password-reset/confirm`
 - `GET /api/users/me`
 - `PATCH /api/users/me/profile`
+- `PATCH /api/users/me/profile-image`
+- `PATCH /api/users/me/password`
 - `POST /api/dogs/register`
 - `GET /api/dogs/me`
 - `GET /api/dogs/{dog_id}`

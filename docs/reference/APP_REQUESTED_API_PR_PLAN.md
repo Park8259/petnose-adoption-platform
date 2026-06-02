@@ -148,6 +148,10 @@ Acceptance criteria:
 
 ## PR 4 feat/user-password-apis
 
+Status:
+
+- Implemented in this PR.
+
 Purpose:
 
 - Add logged-in password change and reset-token-based password reset APIs.
@@ -162,19 +166,21 @@ Excluded scope:
 
 - No password lookup endpoint.
 - No password hash exposure.
+- No real email/SMS provider integration. Delivery provider wiring is a follow-up operating hardening scope.
 
 Acceptance criteria:
 
-- `PATCH /api/users/me/password` validates `current_password` and updates to `new_password`.
-- `POST /api/auth/password-reset/request` does not expose whether email exists.
-- `POST /api/auth/password-reset/confirm` resets via valid token.
-- `password_hash` is never serialized.
+- [x] `PATCH /api/users/me/password` validates `current_password` and updates to `new_password`.
+- [x] `POST /api/auth/password-reset/request` does not expose whether email exists in the default response.
+- [x] `POST /api/auth/password-reset/confirm` resets via valid token.
+- [x] reset token 원문은 DB에 저장하지 않고 SHA-256 hash만 저장한다.
+- [x] `password_hash` is never serialized.
 
 ## PR 5 feat/adoption-post-likes
 
 Purpose:
 
-- Add like/unlike and my-liked adoption post list.
+- Follow PR 4 by adding like/unlike and my-liked adoption post list.
 
 Included files:
 

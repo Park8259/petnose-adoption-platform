@@ -54,12 +54,14 @@ Base URL: `http://<host>/api`
 | 13 | `GET /api/adoption-posts/me` | 구현됨 | current user의 post만 나열한다. |
 | 14 | `PATCH /api/adoption-posts/{post_id}/status` | 구현됨 | owner-only post status management를 수행한다. |
 | 15 | `POST /api/adoption-posts/{post_id}/handover-verifications` | 구현됨 | `post_id -> adoption_posts.dog_id -> Qdrant point id = dog_id`로 1:1 identity check를 수행한다. |
+| 16 | `PATCH /api/users/me/password` | 구현됨 | current password 검증 후 새 비밀번호를 저장한다. |
+| 17 | `POST /api/auth/password-reset/request`, `POST /api/auth/password-reset/confirm` | 구현됨 | reset token 기반 비밀번호 재설정을 수행한다. |
 
 handover verification endpoint는 MVP trust/safety flow의 일부다. 이 contract 밖의 더 넓은 API 확장은 follow-up scope로 남긴다.
 
-## App-Requested API Delta Plan (Planned)
+## App-Requested API Delta Plan
 
-이 섹션은 앱팀 추가 요청사항을 구현하기 전 API/DB/PR 단위를 고정하기 위한 planned contract다. PR 0에서는 문서만 변경하며 Java 코드, Flyway migration, backend test는 변경하지 않는다. 아래 endpoint는 후속 PR에서 구현될 예정이다.
+이 섹션은 앱팀 추가 요청사항의 API/DB/PR 단위를 고정한 contract다. PR 3까지 profile image 흐름이 구현되었고, PR 4에서 password change/reset 흐름이 구현된다. 좋아요, 입양 완료 adopter 저장, 내가 입양한 강아지 목록은 후속 PR 범위다.
 
 Included planned scope:
 
@@ -67,8 +69,8 @@ Included planned scope:
 - `POST /api/auth/register` multipart/form-data 지원을 추가한다.
 - 회원가입 multipart field에 optional `profile_image`를 추가한다.
 - 사용자 profile image 저장 및 변경 API를 추가한다.
-- 로그인 사용자 비밀번호 변경 API를 추가한다.
-- 비밀번호 찾기는 비밀번호 조회가 아니라 reset token 기반 재설정 API로 제공한다.
+- 로그인 사용자 비밀번호 변경 API는 PR 4에서 구현한다.
+- 비밀번호 찾기는 비밀번호 조회가 아니라 reset token 기반 재설정 API로 PR 4에서 구현한다.
 - 좋아요/찜은 `users.liked` JSON/map이 아니라 `adoption_post_likes` 관계 테이블로 구현한다.
 - 입양 완료 시 `adoption_posts.adopter_user_id`를 저장한다.
 - 내가 입양한 강아지 목록 `GET /api/dogs/adopted/me`를 추가한다.
@@ -128,7 +130,7 @@ Fields:
 
 - `profile_image`: file, required
 
-Response `200` draft:
+Response `200`:
 
 ```json
 {
@@ -154,7 +156,7 @@ Request:
 }
 ```
 
-Response `200` draft:
+Response `200`:
 
 ```json
 {
@@ -182,7 +184,7 @@ Request:
 }
 ```
 
-Response `200` draft:
+Response `200`:
 
 ```json
 {
@@ -489,6 +491,97 @@ Error codes:
 - `INVALID_CREDENTIALS`
 - `USER_INACTIVE`
 
+### 비밀번호 재설정 요청
+
+```http
+POST /api/auth/password-reset/request
+Content-Type: application/json
+```
+
+Request body:
+
+```json
+{
+  "email": "user@example.com"
+}
+```
+
+Default response `200`:
+
+```json
+{
+  "requested": true
+}
+```
+
+Dev/test expose response `200` when `AUTH_PASSWORD_RESET_EXPOSE_TOKEN_IN_RESPONSE=true` and the email maps to an active user:
+
+```json
+{
+  "requested": true,
+  "reset_token": "raw-dev-reset-token",
+  "expires_in": 1800
+}
+```
+
+Contract notes:
+
+- email은 signup/login과 동일하게 trim 후 lowercase로 normalize한다.
+- 존재하지 않는 email 또는 inactive user여도 `requested=true`를 반환한다.
+- email 존재 여부를 status code, error code, message, default response field로 구분해 노출하지 않는다.
+- reset token 원문은 DB에 저장하지 않고 `password_reset_tokens.token_hash`에 SHA-256 hex hash만 저장한다.
+- 기본 설정은 `AUTH_PASSWORD_RESET_EXPOSE_TOKEN_IN_RESPONSE=false`이며, 이때 response에는 `reset_token`과 `expires_in`을 포함하지 않는다.
+- `AUTH_PASSWORD_RESET_EXPOSE_TOKEN_IN_RESPONSE=true`는 shared dev/test 편의용이다. 이 값이 true이고 active user email인 경우에만 raw reset token을 응답에 임시 포함할 수 있다.
+- 실제 email/SMS provider 연동은 이번 PR 범위가 아니다.
+- reset token은 service account/token/secret과 동일하게 로그, PR 본문, 스크린샷에 남기지 않는다.
+- 비밀번호 조회 API는 없다.
+
+Error codes:
+
+- `VALIDATION_FAILED`
+
+### 비밀번호 재설정 확정
+
+```http
+POST /api/auth/password-reset/confirm
+Content-Type: application/json
+```
+
+Request body:
+
+```json
+{
+  "reset_token": "raw-reset-token",
+  "new_password": "new-password123"
+}
+```
+
+Response `200`:
+
+```json
+{
+  "reset": true
+}
+```
+
+Contract notes:
+
+- `reset_token`은 required다.
+- `new_password`는 trim 후 8자 이상, 255자 이하이어야 한다.
+- raw reset token을 SHA-256 hex hash로 바꾼 뒤 DB lookup을 수행한다.
+- token이 없거나 이미 사용되었거나 만료되었으면 비밀번호를 변경하지 않는다.
+- 성공 시 `users.password_hash`를 새 BCrypt hash로 갱신하고 reset token `used_at`을 기록한다.
+- 성공 시 같은 user의 다른 unused reset token도 사용 처리한다.
+- response에는 `reset=true`만 반환하고 `password` 또는 `password_hash`를 노출하지 않는다.
+
+Error codes:
+
+- `VALIDATION_FAILED`
+- `INVALID_RESET_TOKEN`
+- `RESET_TOKEN_EXPIRED`
+- `RESET_TOKEN_ALREADY_USED`
+- `USER_INACTIVE`
+
 ## Users
 
 ### 내 정보 조회
@@ -634,6 +727,52 @@ Error codes:
 - `INVALID_CONTENT_TYPE`
 - `INVALID_IMAGE_TYPE`
 - `FILE_STORE_FAILED`
+
+### 비밀번호 변경
+
+```http
+PATCH /api/users/me/password
+Authorization: Bearer <JWT>
+Content-Type: application/json
+```
+
+Request body:
+
+```json
+{
+  "current_password": "old-password",
+  "new_password": "new-password123"
+}
+```
+
+Response `200`:
+
+```json
+{
+  "changed": true
+}
+```
+
+Contract notes:
+
+- Bearer JWT authorization이 필요하다.
+- current active user의 비밀번호만 변경할 수 있다.
+- `current_password`와 `new_password`는 required다.
+- `new_password`는 trim 후 8자 이상, 255자 이하이어야 한다.
+- `current_password`가 현재 `password_hash`와 match되지 않으면 `INVALID_CURRENT_PASSWORD`를 반환한다.
+- `new_password`가 현재 비밀번호와 동일하면 `PASSWORD_REUSE_NOT_ALLOWED`를 반환한다.
+- 성공 시 `users.password_hash`를 새 BCrypt hash로 갱신한다.
+- response에는 `changed=true`만 반환하고 `password` 또는 `password_hash`를 노출하지 않는다.
+- 비밀번호 조회 API는 없다.
+
+Error codes:
+
+- `UNAUTHORIZED`
+- `USER_NOT_FOUND`
+- `USER_INACTIVE`
+- `VALIDATION_FAILED`
+- `INVALID_CURRENT_PASSWORD`
+- `PASSWORD_REUSE_NOT_ALLOWED`
 
 ## Dog Registration
 
@@ -1560,6 +1699,11 @@ Failure behavior:
 - `UNAUTHORIZED`: JWT authorization이 missing, malformed, invalid, or expired 상태다.
 - `USER_NOT_FOUND`: JWT subject가 existing user로 매핑되지 않는다.
 - `USER_INACTIVE`: JWT subject가 inactive user로 매핑된다.
+- `INVALID_CURRENT_PASSWORD`: 비밀번호 변경 요청의 `current_password`가 현재 비밀번호와 일치하지 않는다.
+- `PASSWORD_REUSE_NOT_ALLOWED`: 새 비밀번호가 현재 비밀번호와 동일하다.
+- `INVALID_RESET_TOKEN`: reset token이 없거나 유효하지 않다.
+- `RESET_TOKEN_EXPIRED`: reset token이 만료되었다.
+- `RESET_TOKEN_ALREADY_USED`: reset token이 이미 사용되었다.
 
 ### Local Verification Examples
 

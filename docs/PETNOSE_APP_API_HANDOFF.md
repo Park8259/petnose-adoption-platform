@@ -19,18 +19,22 @@
 
 ## App-Requested Follow-up Flow
 
-이 섹션은 앱팀 추가 요청사항을 후속 PR에서 연결할 순서다. 상세 endpoint draft와 정책은 `PETNOSE_MVP_API_CONTRACT.md`의 `App-Requested API Delta Plan (Planned)`를 기준으로 한다.
+이 섹션은 앱팀 추가 요청사항을 연결할 순서다. 상세 endpoint와 정책은 `PETNOSE_MVP_API_CONTRACT.md`를 기준으로 한다.
 
 1. 회원가입 화면에서 profile image를 함께 보내려면 `POST /api/auth/register`를 `multipart/form-data`로 호출하고 `profile_image` file part를 포함한다. 기존 JSON signup도 계속 지원한다.
 2. 회원가입/로그인/`GET /api/users/me`의 user payload에는 nullable `profile_image_url`이 포함될 수 있다. 앱은 이 값을 null-safe로 렌더링한다.
 3. 마이페이지 profile image 변경은 `PATCH /api/users/me/profile-image`를 `multipart/form-data`로 호출한다.
 4. 기존 `display_name`/`contact_phone`/`region` 변경은 `PATCH /api/users/me/profile`을 계속 사용한다.
-5. 비밀번호 변경은 다음 password API PR 범위다.
+5. 마이페이지 비밀번호 변경은 `PATCH /api/users/me/password`를 호출한다. request에는 `current_password`와 `new_password`를 보낸다.
 6. 비밀번호 찾기는 비밀번호 조회가 아니라 reset token 기반 요청/확정 흐름으로 연결한다.
-7. 분양글 카드와 상세 화면은 좋아요 추가 `PUT /api/adoption-posts/{post_id}/like`, 좋아요 취소 `DELETE /api/adoption-posts/{post_id}/like`, 내 좋아요 목록 `GET /api/adoption-posts/liked/me`를 사용한다.
-8. 분양 완료 처리 시 앱은 `PATCH /api/adoption-posts/{post_id}/status` request에 `status=COMPLETED`와 `adopter_user_id`를 함께 넘겨야 한다.
-9. 내가 입양한 강아지 목록은 `GET /api/dogs/adopted/me`로 조회한다.
-10. 입양 후 1주/3개월/6개월 비문 인증, 사후 인증 스케줄/알림, 완료 후 자동 비문 재검증은 이번 follow-up 범위가 아니다.
+7. 비밀번호 재설정 요청 화면은 `POST /api/auth/password-reset/request`를 호출하고 `requested=true`를 받으면 "재설정 안내가 전송되었습니다" 계열의 동일 메시지를 표시한다. 앱은 email 존재 여부를 구분하지 않는다.
+8. 실제 email/SMS provider는 아직 연결되지 않았다. shared dev에서는 `AUTH_PASSWORD_RESET_EXPOSE_TOKEN_IN_RESPONSE=true`일 때 active user email에 한해 임시 `reset_token`을 받아 confirm flow를 테스트할 수 있다.
+9. 새 비밀번호 설정 화면은 `POST /api/auth/password-reset/confirm`에 `reset_token`과 `new_password`를 보내고 `reset=true`를 받으면 로그인 화면으로 보낸다.
+10. 앱은 비밀번호나 `password_hash`를 조회하려고 하지 않는다.
+11. 분양글 카드와 상세 화면은 좋아요 추가 `PUT /api/adoption-posts/{post_id}/like`, 좋아요 취소 `DELETE /api/adoption-posts/{post_id}/like`, 내 좋아요 목록 `GET /api/adoption-posts/liked/me`를 사용한다.
+12. 분양 완료 처리 시 앱은 `PATCH /api/adoption-posts/{post_id}/status` request에 `status=COMPLETED`와 `adopter_user_id`를 함께 넘겨야 한다.
+13. 내가 입양한 강아지 목록은 `GET /api/dogs/adopted/me`로 조회한다.
+14. 입양 후 1주/3개월/6개월 비문 인증, 사후 인증 스케줄/알림, 완료 후 자동 비문 재검증은 이번 follow-up 범위가 아니다.
 
 Storage distinction:
 

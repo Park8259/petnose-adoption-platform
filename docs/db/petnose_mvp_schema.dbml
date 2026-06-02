@@ -79,6 +79,21 @@ Table users {
   created_at timestamp [not null, default: `CURRENT_TIMESTAMP`]
 }
 
+Table password_reset_tokens {
+  id bigint [pk, increment]
+  user_id bigint [not null, ref: > users.id]
+  token_hash char(64) [not null, unique, note: "SHA-256 hex hash of the reset token. The raw token is never stored."]
+  expires_at timestamp [not null]
+  used_at timestamp
+  created_at timestamp [not null, default: `CURRENT_TIMESTAMP`]
+
+  Indexes {
+    user_id [name: "idx_password_reset_tokens_user_id"]
+    expires_at [name: "idx_password_reset_tokens_expires_at"]
+    (user_id, used_at) [name: "idx_password_reset_tokens_user_used"]
+  }
+}
+
 Table dogs {
   id char(36) [pk, note: "UUID string. Qdrant point ids are tracked separately in dog_nose_references."]
   owner_user_id bigint [not null, ref: > users.id]

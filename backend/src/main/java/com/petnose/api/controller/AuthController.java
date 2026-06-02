@@ -2,6 +2,10 @@ package com.petnose.api.controller;
 
 import com.petnose.api.dto.auth.LoginRequest;
 import com.petnose.api.dto.auth.LoginResponse;
+import com.petnose.api.dto.auth.PasswordResetConfirmRequest;
+import com.petnose.api.dto.auth.PasswordResetConfirmResponse;
+import com.petnose.api.dto.auth.PasswordResetRequest;
+import com.petnose.api.dto.auth.PasswordResetRequestResponse;
 import com.petnose.api.dto.auth.RegisterRequest;
 import com.petnose.api.dto.user.UserMeResponse;
 import com.petnose.api.service.AuthService;
@@ -41,5 +45,15 @@ public class AuthController {
     @PostMapping("/login")
     public LoginResponse login(@Valid @RequestBody LoginRequest request) {
         return authService.login(request);
+    }
+
+    @PostMapping("/password-reset/request")
+    public PasswordResetRequestResponse requestPasswordReset(@Valid @RequestBody PasswordResetRequest request) {
+        return authService.requestPasswordReset(request);
+    }
+
+    @PostMapping("/password-reset/confirm")
+    public PasswordResetConfirmResponse confirmPasswordReset(@Valid @RequestBody PasswordResetConfirmRequest request) {
+        return authService.confirmPasswordReset(request);
     }
 }

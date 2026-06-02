@@ -101,6 +101,46 @@ class CanonicalEntityShapeTest {
     }
 
     @Test
+    void passwordResetTokenEntityAndMigrationStoreOnlyTokenHash() throws Exception {
+        Set<String> fields = declaredFieldNames(PasswordResetToken.class);
+        Column userId = PasswordResetToken.class.getDeclaredField("userId").getAnnotation(Column.class);
+        Column tokenHash = PasswordResetToken.class.getDeclaredField("tokenHash").getAnnotation(Column.class);
+        Column expiresAt = PasswordResetToken.class.getDeclaredField("expiresAt").getAnnotation(Column.class);
+        Column usedAt = PasswordResetToken.class.getDeclaredField("usedAt").getAnnotation(Column.class);
+
+        assertThat(fields).contains(
+                "id",
+                "userId",
+                "tokenHash",
+                "expiresAt",
+                "usedAt",
+                "createdAt"
+        );
+        assertThat(fields).doesNotContain("resetToken", "rawToken", "plainToken");
+        assertThat(userId.name()).isEqualTo("user_id");
+        assertThat(userId.nullable()).isFalse();
+        assertThat(tokenHash.name()).isEqualTo("token_hash");
+        assertThat(tokenHash.length()).isEqualTo(64);
+        assertThat(tokenHash.nullable()).isFalse();
+        assertThat(tokenHash.unique()).isTrue();
+        assertThat(expiresAt.name()).isEqualTo("expires_at");
+        assertThat(expiresAt.nullable()).isFalse();
+        assertThat(usedAt.name()).isEqualTo("used_at");
+        assertThat(usedAt.nullable()).isTrue();
+
+        String migration = resourceText("db/migration/V7__add_password_reset_tokens.sql");
+        assertThat(migration).contains(
+                "CREATE TABLE password_reset_tokens",
+                "token_hash CHAR(64) NOT NULL",
+                "UNIQUE KEY uk_password_reset_tokens_hash (token_hash)",
+                "KEY idx_password_reset_tokens_expires_at (expires_at)",
+                "KEY idx_password_reset_tokens_user_used (user_id, used_at)",
+                "FOREIGN KEY (user_id) REFERENCES users(id)"
+        );
+        assertThat(migration).doesNotContain("reset_token VARCHAR", "reset_token TEXT", "raw_token", "plain_token");
+    }
+
+    @Test
     void verificationLogEntityDoesNotExposeUpdatedAtOrEmbeddingVector() {
         Set<String> fields = declaredFieldNames(VerificationLog.class);
 

@@ -88,6 +88,9 @@ auth:
   jwt:
     secret: ${AUTH_JWT_SECRET:petnose-local-dev-jwt-secret-change-me-32bytes}
     access-token-ttl-seconds: ${AUTH_JWT_ACCESS_TOKEN_TTL_SECONDS:3600}
+  password-reset:
+    token-ttl-seconds: ${AUTH_PASSWORD_RESET_TOKEN_TTL_SECONDS:1800}
+    expose-token-in-response: ${AUTH_PASSWORD_RESET_EXPOSE_TOKEN_IN_RESPONSE:false}
 
 firebase:
   enabled: ${FIREBASE_ENABLED:false}

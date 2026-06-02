@@ -25,6 +25,7 @@ class CanonicalSchemaConsistencyTest {
             "dogs",
             "dog_images",
             "dog_nose_references",
+            "password_reset_tokens",
             "verification_logs",
             "adoption_posts"
     );
@@ -41,6 +42,14 @@ class CanonicalSchemaConsistencyTest {
             "profile_image_file_size",
             "profile_image_sha256",
             "is_active",
+            "created_at"
+    );
+    private static final Set<String> PASSWORD_RESET_TOKEN_COLUMNS = Set.of(
+            "id",
+            "user_id",
+            "token_hash",
+            "expires_at",
+            "used_at",
             "created_at"
     );
     private static final Set<String> VERIFICATION_LOG_COLUMNS = Set.of(
@@ -77,8 +86,7 @@ class CanonicalSchemaConsistencyTest {
             "is_active",
             "created_at"
     );
-    private static final List<String> RETIRED_PRECHECK_FIELDS = List.of(
-            "expires_at",
+    private static final List<String> RETIRED_PRECHECK_CONSUMPTION_FIELDS = List.of(
             "consumed_at",
             "consumed_by_post_id"
     );
@@ -136,13 +144,35 @@ class CanonicalSchemaConsistencyTest {
 
         assertThat(columnsByTable.get("verification_logs"))
                 .containsExactlyInAnyOrderElementsOf(VERIFICATION_LOG_COLUMNS)
-                .doesNotContain(RETIRED_PRECHECK_FIELDS.toArray(String[]::new));
+                .doesNotContain("expires_at")
+                .doesNotContain(RETIRED_PRECHECK_CONSUMPTION_FIELDS.toArray(String[]::new));
         assertThat(verificationLogs).contains(
                 "dog_image_id BIGINT NULL",
                 "purpose VARCHAR(40) NOT NULL DEFAULT 'DOG_REGISTRATION'",
                 "similarity_score DECIMAL(6, 5) NULL",
                 "score_breakdown_json TEXT NULL"
         );
+    }
+
+    @Test
+    void activeCleanSqlPasswordResetTokensStoreOnlyHashes() throws Exception {
+        String sql = canonicalSql();
+        Map<String, Set<String>> columnsByTable = columnsByTable(sql);
+        String passwordResetTokens = tableDefinitions(sql).get("password_reset_tokens");
+
+        assertThat(columnsByTable.get("password_reset_tokens"))
+                .containsExactlyInAnyOrderElementsOf(PASSWORD_RESET_TOKEN_COLUMNS);
+        assertThat(passwordResetTokens).contains(
+                "token_hash CHAR(64) NOT NULL",
+                "expires_at TIMESTAMP NOT NULL",
+                "used_at TIMESTAMP NULL",
+                "UNIQUE KEY uk_password_reset_tokens_hash (token_hash)",
+                "KEY idx_password_reset_tokens_user_id (user_id)",
+                "KEY idx_password_reset_tokens_expires_at (expires_at)",
+                "KEY idx_password_reset_tokens_user_used (user_id, used_at)",
+                "FOREIGN KEY (user_id) REFERENCES users (id)"
+        );
+        assertThat(passwordResetTokens).doesNotContain("reset_token VARCHAR", "reset_token TEXT", "raw_token", "plain_token");
     }
 
     @Test
@@ -186,12 +216,16 @@ class CanonicalSchemaConsistencyTest {
 
         assertThat(dbmlTableNames(dbml)).containsExactlyInAnyOrderElementsOf(ACTIVE_TABLES);
         assertThat(dbml).doesNotContain(removedAttemptTableName());
-        assertThat(dbml).doesNotContain(RETIRED_PRECHECK_FIELDS.toArray(String[]::new));
+        assertThat(dbml).doesNotContain(RETIRED_PRECHECK_CONSUMPTION_FIELDS.toArray(String[]::new));
         assertThat(dbml).contains(
                 "profile_image_path varchar(500)",
                 "profile_image_mime_type varchar(100)",
                 "profile_image_file_size bigint",
-                "profile_image_sha256 char(64)"
+                "profile_image_sha256 char(64)",
+                "Table password_reset_tokens",
+                "token_hash char(64)",
+                "expires_at timestamp",
+                "used_at timestamp"
         );
         assertThat(dbmlEnumValues(dbml, "dog_status"))
                 .containsExactly("PENDING", "REGISTERED", "DUPLICATE_SUSPECTED", "REVIEW_REQUIRED", "REJECTED", "ADOPTED", "INACTIVE");

@@ -1,25 +1,41 @@
 package com.petnose.api.service;
 
+import com.petnose.api.domain.entity.PasswordResetToken;
 import com.petnose.api.domain.entity.User;
 import com.petnose.api.domain.enums.UserRole;
 import com.petnose.api.dto.auth.LoginRequest;
 import com.petnose.api.dto.auth.LoginResponse;
+import com.petnose.api.dto.auth.PasswordResetConfirmRequest;
+import com.petnose.api.dto.auth.PasswordResetConfirmResponse;
+import com.petnose.api.dto.auth.PasswordResetRequest;
+import com.petnose.api.dto.auth.PasswordResetRequestResponse;
 import com.petnose.api.dto.auth.RegisterRequest;
 import com.petnose.api.dto.user.UserMeResponse;
+import com.petnose.api.dto.user.UserPasswordChangeRequest;
+import com.petnose.api.dto.user.UserPasswordChangeResponse;
 import com.petnose.api.dto.user.UserProfileImageUpdateResponse;
 import com.petnose.api.dto.user.UserProfileResponse;
 import com.petnose.api.dto.user.UserProfileUpdateRequest;
 import com.petnose.api.exception.ApiException;
+import com.petnose.api.repository.PasswordResetTokenRepository;
 import com.petnose.api.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
+import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Base64;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -34,13 +50,25 @@ public class AuthService {
     private static final int MAX_CONTACT_PHONE_LENGTH = 30;
     private static final int MAX_REGION_LENGTH = 100;
     private static final int MAX_PROFILE_REGION_LENGTH = 100;
+    private static final int MIN_PASSWORD_LENGTH = 8;
+    private static final int MAX_PASSWORD_LENGTH = 255;
+    private static final int PASSWORD_RESET_TOKEN_BYTES = 32;
+    private static final String SHA_256 = "SHA-256";
     private static final Pattern PROFILE_DISPLAY_NAME_PATTERN = Pattern.compile("^[가-힣A-Za-z0-9]{2,10}$");
     private static final Pattern PROFILE_CONTACT_PHONE_PATTERN = Pattern.compile("^010[0-9]{8}$");
 
     private final UserRepository userRepository;
+    private final PasswordResetTokenRepository passwordResetTokenRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenService jwtTokenService;
     private final FileStorageService fileStorageService;
+    private final SecureRandom secureRandom = new SecureRandom();
+
+    @Value("${auth.password-reset.token-ttl-seconds:1800}")
+    private long passwordResetTokenTtlSeconds;
+
+    @Value("${auth.password-reset.expose-token-in-response:false}")
+    private boolean exposePasswordResetTokenInResponse;
 
     @Transactional
     public UserMeResponse register(RegisterRequest request) {
@@ -135,6 +163,83 @@ public class AuthService {
         storeUserProfileImage(user, profileImage);
         userRepository.flush();
         return UserProfileImageUpdateResponse.from(user);
+    }
+
+    @Transactional
+    public UserPasswordChangeResponse changePassword(String authorizationHeader, UserPasswordChangeRequest request) {
+        if (request == null) {
+            throw badRequest("입력값 검증에 실패했습니다.");
+        }
+        User user = currentActiveUser(authorizationHeader);
+        String currentPassword = required(request.currentPassword(), "current_password");
+        String newPassword = validateNewPassword(request.newPassword());
+
+        if (!passwordEncoder.matches(currentPassword, user.getPasswordHash())) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_CURRENT_PASSWORD", "현재 비밀번호가 올바르지 않습니다.");
+        }
+        if (passwordEncoder.matches(newPassword, user.getPasswordHash())) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "PASSWORD_REUSE_NOT_ALLOWED", "현재 비밀번호와 동일한 새 비밀번호는 사용할 수 없습니다.");
+        }
+
+        user.setPasswordHash(passwordEncoder.encode(newPassword));
+        return new UserPasswordChangeResponse(true);
+    }
+
+    @Transactional
+    public PasswordResetRequestResponse requestPasswordReset(PasswordResetRequest request) {
+        if (request == null) {
+            throw badRequest("입력값 검증에 실패했습니다.");
+        }
+        String email = normalizeEmail(request.email());
+        User user = userRepository.findByEmail(email).orElse(null);
+        String resetToken = null;
+        Instant now = Instant.now();
+
+        if (user != null && user.isActive()) {
+            passwordResetTokenRepository.markUnusedTokensUsedByUserId(user.getId(), now);
+            resetToken = generatePasswordResetToken();
+
+            PasswordResetToken token = new PasswordResetToken();
+            token.setUserId(user.getId());
+            token.setTokenHash(sha256Hex(resetToken));
+            token.setExpiresAt(now.plusSeconds(passwordResetTokenTtlSeconds));
+            passwordResetTokenRepository.save(token);
+        }
+
+        if (exposePasswordResetTokenInResponse) {
+            return PasswordResetRequestResponse.exposed(resetToken, passwordResetTokenTtlSeconds);
+        }
+        return PasswordResetRequestResponse.hidden();
+    }
+
+    @Transactional
+    public PasswordResetConfirmResponse confirmPasswordReset(PasswordResetConfirmRequest request) {
+        if (request == null) {
+            throw badRequest("입력값 검증에 실패했습니다.");
+        }
+        String resetToken = required(request.resetToken(), "reset_token");
+        String newPassword = validateNewPassword(request.newPassword());
+        PasswordResetToken storedToken = passwordResetTokenRepository.findByTokenHash(sha256Hex(resetToken))
+                .orElseThrow(this::invalidResetToken);
+
+        Instant now = Instant.now();
+        if (storedToken.getUsedAt() != null) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "RESET_TOKEN_ALREADY_USED", "이미 사용된 비밀번호 재설정 token입니다.");
+        }
+        if (!storedToken.getExpiresAt().isAfter(now)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "RESET_TOKEN_EXPIRED", "만료된 비밀번호 재설정 token입니다.");
+        }
+
+        User user = userRepository.findById(storedToken.getUserId())
+                .orElseThrow(this::invalidResetToken);
+        if (!user.isActive()) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "USER_INACTIVE", "비활성화된 사용자입니다.");
+        }
+
+        user.setPasswordHash(passwordEncoder.encode(newPassword));
+        storedToken.setUsedAt(now);
+        passwordResetTokenRepository.markOtherUnusedTokensUsed(user.getId(), storedToken.getId(), now);
+        return new PasswordResetConfirmResponse(true);
     }
 
     @Transactional(readOnly = true)
@@ -265,6 +370,17 @@ public class AuthService {
         return email;
     }
 
+    private String validateNewPassword(String rawPassword) {
+        String password = required(rawPassword, "new_password");
+        if (password.length() < MIN_PASSWORD_LENGTH) {
+            throw badRequest("new_password는 " + MIN_PASSWORD_LENGTH + "자 이상이어야 합니다.");
+        }
+        if (password.length() > MAX_PASSWORD_LENGTH) {
+            throw badRequest("new_password는 " + MAX_PASSWORD_LENGTH + "자 이하여야 합니다.");
+        }
+        return password;
+    }
+
     private String required(String value, String fieldName) {
         if (value == null || value.trim().isEmpty()) {
             throw badRequest(fieldName + "은 필수입니다.");
@@ -306,6 +422,25 @@ public class AuthService {
 
     private ApiException invalidCredentials() {
         return new ApiException(HttpStatus.UNAUTHORIZED, "INVALID_CREDENTIALS", "email 또는 password가 올바르지 않습니다.");
+    }
+
+    private ApiException invalidResetToken() {
+        return new ApiException(HttpStatus.BAD_REQUEST, "INVALID_RESET_TOKEN", "유효하지 않은 비밀번호 재설정 token입니다.");
+    }
+
+    private String generatePasswordResetToken() {
+        byte[] bytes = new byte[PASSWORD_RESET_TOKEN_BYTES];
+        secureRandom.nextBytes(bytes);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+    }
+
+    private String sha256Hex(String value) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance(SHA_256);
+            return HexFormat.of().formatHex(digest.digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 hash 생성에 실패했습니다.", e);
+        }
     }
 
     private ApiException badRequest(String message) {

@@ -874,6 +874,118 @@ class AuthUserApiIntegrationTest {
                 .andExpect(jsonPath("$.details").value(nullValue()));
     }
 
+    @Test
+    void passwordChangeSucceedsAndOldPasswordNoLongerLogsIn() throws Exception {
+        register("password-change@example.com", "password123", "Password User", "01012341234", "Seoul");
+        String accessToken = loginAccessToken("password-change@example.com", "password123");
+
+        mockMvc.perform(patch("/api/users/me/password")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of(
+                                "current_password", "password123",
+                                "new_password", "new-password123"
+                        ))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.changed").value(true))
+                .andExpect(jsonPath("$.password").doesNotExist())
+                .andExpect(jsonPath("$.password_hash").doesNotExist());
+
+        mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of(
+                                "email", "password-change@example.com",
+                                "password", "password123"
+                        ))))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.error_code").value("INVALID_CREDENTIALS"));
+
+        mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of(
+                                "email", "password-change@example.com",
+                                "password", "new-password123"
+                        ))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.access_token").value(not(isEmptyOrNullString())));
+
+        User saved = userRepository.findByEmail("password-change@example.com").orElseThrow();
+        assertThat(passwordEncoder.matches("password123", saved.getPasswordHash())).isFalse();
+        assertThat(passwordEncoder.matches("new-password123", saved.getPasswordHash())).isTrue();
+    }
+
+    @Test
+    void passwordChangeWrongCurrentPasswordReturnsInvalidCurrentPassword() throws Exception {
+        register("password-change-wrong@example.com", "password123", "Password User", "01012341234", "Seoul");
+        String accessToken = loginAccessToken("password-change-wrong@example.com", "password123");
+
+        mockMvc.perform(patch("/api/users/me/password")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of(
+                                "current_password", "wrong-password",
+                                "new_password", "new-password123"
+                        ))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error_code").value("INVALID_CURRENT_PASSWORD"))
+                .andExpect(jsonPath("$.details").value(nullValue()));
+    }
+
+    @Test
+    void passwordChangeRejectsShortNewPassword() throws Exception {
+        register("password-change-short@example.com", "password123", "Password User", "01012341234", "Seoul");
+        String accessToken = loginAccessToken("password-change-short@example.com", "password123");
+
+        mockMvc.perform(patch("/api/users/me/password")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of(
+                                "current_password", "password123",
+                                "new_password", "short"
+                        ))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error_code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.details").value(nullValue()));
+    }
+
+    @Test
+    void passwordChangeRequiresAuthorization() throws Exception {
+        mockMvc.perform(patch("/api/users/me/password")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of(
+                                "current_password", "password123",
+                                "new_password", "new-password123"
+                        ))))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.error_code").value("UNAUTHORIZED"))
+                .andExpect(jsonPath("$.details").value(nullValue()));
+    }
+
+    @Test
+    void passwordResetRequestDoesNotExposeTokenByDefault() throws Exception {
+        register("password-reset-hidden@example.com", "password123", "Password User", "01012341234", "Seoul");
+
+        MvcResult existingEmail = mockMvc.perform(post("/api/auth/password-reset/request")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of("email", "password-reset-hidden@example.com"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.requested").value(true))
+                .andExpect(jsonPath("$.reset_token").doesNotExist())
+                .andExpect(jsonPath("$.expires_in").doesNotExist())
+                .andReturn();
+
+        MvcResult unknownEmail = mockMvc.perform(post("/api/auth/password-reset/request")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json(Map.of("email", "unknown-password-reset@example.com"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.requested").value(true))
+                .andExpect(jsonPath("$.reset_token").doesNotExist())
+                .andExpect(jsonPath("$.expires_in").doesNotExist())
+                .andReturn();
+
+        assertThat(responseBody(unknownEmail)).isEqualTo(responseBody(existingEmail));
+    }
+
     private void register(String email, String password, String displayName, String contactPhone, String region) throws Exception {
         Map<String, String> body = new LinkedHashMap<>();
         body.put("email", email);
