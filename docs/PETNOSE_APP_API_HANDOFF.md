@@ -34,7 +34,7 @@
 11. 분양글 카드와 상세 화면은 response의 `liked` field를 사용하고, 좋아요 추가 `PUT /api/adoption-posts/{post_id}/like`, 좋아요 취소 `DELETE /api/adoption-posts/{post_id}/like`, 내 좋아요 목록 `GET /api/adoption-posts/liked/me`를 사용한다.
 12. 앱은 `users.liked` map을 기대하지 않는다. 서버는 `adoption_post_likes` 관계 테이블 기준으로 좋아요 상태를 계산한다.
 13. 분양 완료 버튼을 누를 때 앱은 `adopter_user_id`를 함께 보낸다.
-14. 내가 입양한 강아지 목록은 후속 PR 7에서 `GET /api/dogs/adopted/me`로 조회한다.
+14. 마이페이지 "내가 입양한 강아지" 목록은 `GET /api/dogs/adopted/me`로 조회한다.
 15. 입양 후 1주/3개월/6개월 비문 인증, 사후 인증 스케줄/알림, 완료 후 자동 비문 재검증은 이번 follow-up 범위가 아니다.
 
 Storage distinction:
@@ -53,8 +53,21 @@ Storage distinction:
 - 서버는 이번 PR에서 chat room participant 여부까지 검증하지 않는다.
 - 완료 성공 후 `dogs.status`는 `ADOPTED`가 된다.
 - `dogs.owner_user_id`는 작성자/등록자 기준으로 유지된다.
-- 내가 입양한 강아지 목록은 다음 PR의 `GET /api/dogs/adopted/me`에서 제공한다.
+- 내가 입양한 강아지 목록은 `GET /api/dogs/adopted/me`에서 제공한다.
 - 입양 후 1주/3개월/6개월 인증은 이번 범위가 아니다.
+
+## My Adopted Dogs
+
+마이페이지 "내가 입양한 강아지" 화면:
+
+- `GET /api/dogs/adopted/me?page=0&size=20`를 호출한다.
+- Authorization Bearer token이 필요하다.
+- 분양 완료 후 작성자(author)가 아닌 입양자(adopter) 계정으로 조회할 수 있다.
+- 서버는 `adoption_posts.status=COMPLETED` 및 `adoption_posts.adopter_user_id=current_user_id` 기준으로 조회한다.
+- 앱은 `dogs.owner_user_id` 기준 adopted list를 기대하지 않는다.
+- 앱은 response의 `post_id`, `dog_id`, `profile_image_url`, `adopted_at`, `status`를 사용한다.
+- response에는 `nose_image_url`, `author_contact_phone`, `author_user_id`, `adopter_user_id`, `embedding_status`가 포함되지 않는다.
+- 입양 후 1주/3개월/6개월 비문 인증 UI/API는 이번 범위가 아니다.
 
 ## Adoption Post Likes
 

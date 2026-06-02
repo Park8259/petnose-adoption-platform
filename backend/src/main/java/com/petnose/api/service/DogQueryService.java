@@ -6,6 +6,8 @@ import com.petnose.api.domain.enums.AdoptionPostStatus;
 import com.petnose.api.domain.enums.DogImageType;
 import com.petnose.api.domain.enums.DogStatus;
 import com.petnose.api.domain.enums.VerificationResult;
+import com.petnose.api.dto.dog.DogAdoptedListItemResponse;
+import com.petnose.api.dto.dog.DogAdoptedListResponse;
 import com.petnose.api.dto.dog.DogListItemResponse;
 import com.petnose.api.dto.dog.DogListResponse;
 import com.petnose.api.dto.dog.DogOwnerDetailResponse;
@@ -69,6 +71,29 @@ public class DogQueryService {
     }
 
     @Transactional(readOnly = true)
+    public DogAdoptedListResponse findMyAdoptedDogs(Long currentUserId, int page, int size) {
+        validatePageRequest(page, size);
+
+        Page<AdoptionPost> posts = adoptionPostRepository.findAdoptedPageByAdopterUserIdAndStatus(
+                currentUserId,
+                AdoptionPostStatus.COMPLETED,
+                PageRequest.of(page, size)
+        );
+        List<String> dogIds = posts.getContent().stream()
+                .map(AdoptionPost::getDogId)
+                .toList();
+        Map<String, Dog> dogsById = dogRepository.findAllById(dogIds).stream()
+                .collect(Collectors.toMap(Dog::getId, dog -> dog));
+        DogAdoptedQueryContext context = loadAdoptedContext(dogsById.values());
+
+        List<DogAdoptedListItemResponse> items = posts.getContent().stream()
+                .map(post -> toAdoptedListItemResponse(post, dogsById, context))
+                .toList();
+
+        return new DogAdoptedListResponse(items, page, size, posts.getTotalElements());
+    }
+
+    @Transactional(readOnly = true)
     public Object findDogDetail(String dogId, Long currentUserId) {
         Dog dog = dogRepository.findById(dogId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "DOG_NOT_FOUND", "강아지를 찾을 수 없습니다."));
@@ -104,6 +129,17 @@ public class DogQueryService {
                 loadImageUrlsByDogId(dogIds, DogImageType.PROFILE),
                 loadImageUrlsByDogId(dogIds, DogImageType.NOSE),
                 loadActivePostsByDogId(dogIds)
+        );
+    }
+
+    private DogAdoptedQueryContext loadAdoptedContext(Collection<Dog> dogs) {
+        Set<String> dogIds = dogs.stream()
+                .map(Dog::getId)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+
+        return new DogAdoptedQueryContext(
+                loadLatestVerificationResultsByDogId(dogIds),
+                loadImageUrlsByDogId(dogIds, DogImageType.PROFILE)
         );
     }
 
@@ -208,6 +244,38 @@ public class DogQueryService {
         );
     }
 
+    private DogAdoptedListItemResponse toAdoptedListItemResponse(
+            AdoptionPost post,
+            Map<String, Dog> dogsById,
+            DogAdoptedQueryContext context
+    ) {
+        Dog dog = dogsById.get(post.getDogId());
+        if (dog == null) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "DOG_NOT_FOUND", "강아지를 찾을 수 없습니다.");
+        }
+
+        VerificationProjection verification = VerificationProjection.from(
+                context.latestVerificationResultsByDogId().get(dog.getId())
+        );
+
+        return new DogAdoptedListItemResponse(
+                dog.getId(),
+                post.getId(),
+                post.getTitle(),
+                dog.getName(),
+                dog.getBreed(),
+                dog.getGender() == null ? null : dog.getGender().name(),
+                dog.getBirthDate(),
+                dog.getDescription(),
+                dog.getStatus().name(),
+                context.profileImageUrlsByDogId().get(dog.getId()),
+                verification.verificationStatus(),
+                post.getAdoptedAt(),
+                dog.getCreatedAt(),
+                dog.getUpdatedAt()
+        );
+    }
+
     private VerificationProjection verificationOf(Dog dog, DogQueryContext context) {
         return VerificationProjection.from(context.latestVerificationResultsByDogId().get(dog.getId()));
     }
@@ -241,6 +309,12 @@ public class DogQueryService {
             Map<String, String> profileImageUrlsByDogId,
             Map<String, String> noseImageUrlsByDogId,
             Map<String, AdoptionPost> activePostsByDogId
+    ) {
+    }
+
+    private record DogAdoptedQueryContext(
+            Map<String, VerificationResult> latestVerificationResultsByDogId,
+            Map<String, String> profileImageUrlsByDogId
     ) {
     }
 

@@ -249,6 +249,10 @@ Follow-up:
 
 ## PR 7 feat/my-adopted-dogs-api
 
+Status:
+
+- Implemented in this PR.
+
 Purpose:
 
 - Add current user's adopted dogs list.
@@ -257,19 +261,26 @@ Included files:
 
 - Dog/adoption query repository or service.
 - `GET /api/dogs/adopted/me` controller and tests.
+- Adopted dog list response DTOs.
 - Response mapping docs/tests.
 
 Excluded scope:
 
 - No `nose_image_url` exposure.
 - No `author_contact_phone` in this list response.
+- No `author_user_id`, `adopter_user_id`, or `embedding_status` in this list response.
 - No post-adoption periodic verification fields.
 
 Acceptance criteria:
 
-- Query uses `adoption_posts.status = COMPLETED AND adoption_posts.adopter_user_id = current_user_id`.
-- Response includes dog/post summary and `adopted_at`.
-- Response excludes nose image and author contact phone.
+- [x] Query uses `adoption_posts.status = COMPLETED AND adoption_posts.adopter_user_id = current_user_id`.
+- [x] Response includes dog/post summary and `adopted_at`.
+- [x] Response excludes nose image, author contact phone, author id, adopter id, and embedding status.
+- [x] `dogs.owner_user_id` remains original registrant/author ownership and is not used as the adopted-list criterion.
+
+Follow-up:
+
+- PR 8 is final regression and app handoff cleanup.
 
 ## PR 8 test/app-api-regression-and-handoff
 

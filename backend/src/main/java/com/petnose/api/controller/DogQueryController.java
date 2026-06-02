@@ -1,5 +1,6 @@
 package com.petnose.api.controller;
 
+import com.petnose.api.dto.dog.DogAdoptedListResponse;
 import com.petnose.api.dto.dog.DogListResponse;
 import com.petnose.api.service.AuthService;
 import com.petnose.api.service.DogQueryService;
@@ -23,6 +24,16 @@ public class DogQueryController {
     ) {
         Long currentUserId = authService.currentActiveUserId(authorization);
         return dogQueryService.findMyDogs(currentUserId, page, size);
+    }
+
+    @GetMapping("/adopted/me")
+    public DogAdoptedListResponse myAdoptedDogs(
+            @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization,
+            @RequestParam(value = "page", defaultValue = "0") int page,
+            @RequestParam(value = "size", defaultValue = "20") int size
+    ) {
+        Long currentUserId = authService.currentActiveUserId(authorization);
+        return dogQueryService.findMyAdoptedDogs(currentUserId, page, size);
     }
 
     @GetMapping("/{dog_id}")

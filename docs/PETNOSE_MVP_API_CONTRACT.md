@@ -59,12 +59,13 @@ Base URL: `http://<host>/api`
 | 18 | `PUT /api/adoption-posts/{post_id}/like` | 구현됨 | public visible post에 current user 좋아요를 idempotent하게 추가한다. |
 | 19 | `DELETE /api/adoption-posts/{post_id}/like` | 구현됨 | existing post의 current user 좋아요를 idempotent하게 삭제한다. |
 | 20 | `GET /api/adoption-posts/liked/me` | 구현됨 | current user가 좋아요한 public visible post 목록을 반환한다. |
+| 21 | `GET /api/dogs/adopted/me` | 구현됨 | current user가 입양 완료한 dog 목록을 `adoption_posts.adopter_user_id` 기준으로 반환한다. |
 
 handover verification endpoint는 MVP trust/safety flow의 일부다. 이 contract 밖의 더 넓은 API 확장은 follow-up scope로 남긴다.
 
 ## App-Requested API Delta Plan
 
-이 섹션은 앱팀 추가 요청사항의 API/DB/PR 단위를 고정한 contract다. PR 3까지 profile image 흐름이 구현되었고, PR 4에서 password change/reset 흐름이 구현되었다. PR 5에서 좋아요/찜 흐름이 `adoption_post_likes` 관계 테이블로 구현되었다. PR 6에서는 입양 완료 시 adopter 저장을 구현한다. 내가 입양한 강아지 목록은 후속 PR 7 범위다.
+이 섹션은 앱팀 추가 요청사항의 API/DB/PR 단위를 고정한 contract다. PR 3까지 profile image 흐름이 구현되었고, PR 4에서 password change/reset 흐름이 구현되었다. PR 5에서 좋아요/찜 흐름이 `adoption_post_likes` 관계 테이블로 구현되었다. PR 6에서는 입양 완료 시 adopter 저장을 구현했다. PR 7에서는 내가 입양한 강아지 목록 API를 구현했다.
 
 Included planned scope:
 
@@ -76,7 +77,7 @@ Included planned scope:
 - 비밀번호 찾기는 비밀번호 조회가 아니라 reset token 기반 재설정 API로 PR 4에서 구현한다.
 - 좋아요/찜은 `users.liked` JSON/map이 아니라 `adoption_post_likes` 관계 테이블로 구현한다. MySQL `adoption_post_likes`가 좋아요 상태의 source of truth다.
 - 입양 완료 시 `adoption_posts.adopter_user_id`와 `adopted_at`을 저장한다.
-- 내가 입양한 강아지 목록 `GET /api/dogs/adopted/me`는 후속 PR 7에서 추가한다.
+- 내가 입양한 강아지 목록 `GET /api/dogs/adopted/me`는 PR 7에서 추가한다.
 
 Excluded planned scope:
 
@@ -361,44 +362,73 @@ Errors:
 
 ### J. 내가 입양한 강아지 목록
 
-이 endpoint는 후속 PR 7 범위다. PR 6에서는 조회 API를 구현하지 않고, 조회 기준이 되는 `adoption_posts.adopter_user_id`와 `adopted_at`만 저장한다.
+이 endpoint는 PR 7에서 구현된 adopter-scoped private list API다. PR 6에서 저장한 `adoption_posts.adopter_user_id`와 `adopted_at`을 조회 기준으로 사용한다.
 
 ```http
 GET /api/dogs/adopted/me?page=0&size=20
 Authorization: Bearer <JWT>
 ```
 
+Query parameters:
+
+- `page`: optional, zero-based page number, 기본값은 `0`.
+- `size`: optional page size, 기본값은 `20`, 허용 범위는 `1..100`.
+
 Query criteria:
 
 - `adoption_posts.status = COMPLETED`
 - `adoption_posts.adopter_user_id = current_user_id`
+- 정렬은 `adoption_posts.adopted_at DESC, adoption_posts.id DESC`다.
 
-Response item draft:
+Response `200`:
 
 ```json
 {
-  "dog_id": "uuid",
-  "post_id": 123,
-  "post_title": "...",
-  "dog_name": "초코",
-  "breed": "말티즈",
-  "gender": "MALE",
-  "birth_date": "2023-01-01",
-  "description": "...",
-  "status": "ADOPTED",
-  "profile_image_url": "/files/dogs/{dog_id}/profile/profile.jpg",
-  "verification_status": "VERIFIED",
-  "adopted_at": "2026-06-02T10:00:00",
-  "created_at": "2026-05-20T10:00:00",
-  "updated_at": "2026-06-02T10:00:00"
+  "items": [
+    {
+      "dog_id": "uuid",
+      "post_id": 123,
+      "post_title": "말티즈 가족을 찾습니다",
+      "dog_name": "초코",
+      "breed": "말티즈",
+      "gender": "MALE",
+      "birth_date": "2023-01-01",
+      "description": "사람을 좋아합니다.",
+      "status": "ADOPTED",
+      "profile_image_url": "/files/dogs/{dog_id}/profile/profile.jpg",
+      "verification_status": "VERIFIED",
+      "adopted_at": "2026-06-02T10:00:00",
+      "created_at": "2026-05-20T10:00:00Z",
+      "updated_at": "2026-06-02T10:00:00Z"
+    }
+  ],
+  "page": 0,
+  "size": 20,
+  "total_count": 1
 }
 ```
 
-Exposure policy:
+Contract notes:
 
+- Bearer JWT authorization이 필요하다.
+- current active user만 조회 가능하다.
+- 조회 기준은 dog ownership이 아니라 `adoption_posts.adopter_user_id`다.
+- `dogs.owner_user_id`는 입양 후에도 기존 등록자/작성자 ownership으로 유지된다.
+- response `status`는 `dogs.status`를 반환한다. 정상 completed flow에서는 `ADOPTED`다.
+- `profile_image_url`은 최신 `dog_images.image_type=PROFILE` row에서 계산한다.
+- `verification_status`는 latest `verification_logs.result` 정책을 재사용한다.
 - `nose_image_url`은 노출하지 않는다.
 - `author_contact_phone`은 이 목록 API에 포함하지 않는다.
+- `author_user_id`와 `adopter_user_id`는 이 목록 API에 포함하지 않는다.
+- `embedding_status`는 이 목록 API에 포함하지 않는다.
 - 입양 후 1주/3개월/6개월 인증 관련 field는 넣지 않는다.
+
+Error codes:
+
+- `UNAUTHORIZED`
+- `USER_NOT_FOUND`
+- `USER_INACTIVE`
+- `INVALID_PAGE_REQUEST`
 
 ## Auth
 
@@ -1135,6 +1165,66 @@ Contract notes:
   - `dogs.status == REGISTERED`
   - latest verification result가 `PASSED`
   - active post가 없음
+
+Error codes:
+
+- `UNAUTHORIZED`
+- `USER_NOT_FOUND`
+- `USER_INACTIVE`
+- `INVALID_PAGE_REQUEST`
+
+### 내가 입양한 강아지 목록
+
+```http
+GET /api/dogs/adopted/me?page=0&size=20
+Authorization: Bearer <JWT>
+```
+
+Query parameters:
+
+- `page`: optional, zero-based page number, 기본값은 `0`.
+- `size`: optional page size, 기본값은 `20`, 허용 범위는 `1..100`.
+
+Response `200`:
+
+```json
+{
+  "items": [
+    {
+      "dog_id": "uuid",
+      "post_id": 123,
+      "post_title": "말티즈 가족을 찾습니다",
+      "dog_name": "초코",
+      "breed": "말티즈",
+      "gender": "MALE",
+      "birth_date": "2023-01-01",
+      "description": "사람을 좋아합니다.",
+      "status": "ADOPTED",
+      "profile_image_url": "/files/dogs/{dog_id}/profile/profile.jpg",
+      "verification_status": "VERIFIED",
+      "adopted_at": "2026-06-02T10:00:00",
+      "created_at": "2026-05-20T10:00:00Z",
+      "updated_at": "2026-06-02T10:00:00Z"
+    }
+  ],
+  "page": 0,
+  "size": 20,
+  "total_count": 1
+}
+```
+
+Contract notes:
+
+- Bearer JWT authorization이 필요하다.
+- current active user가 입양 완료한 dog만 반환한다.
+- 조회 기준은 `adoption_posts.status = COMPLETED AND adoption_posts.adopter_user_id = current_user_id`다.
+- 정렬은 `adoption_posts.adopted_at DESC, adoption_posts.id DESC`다.
+- `dogs.owner_user_id`는 조회 기준으로 사용하지 않는다.
+- `status`는 `dogs.status`를 반환한다.
+- `profile_image_url`은 최신 `dog_images.image_type=PROFILE` row에서 계산한다.
+- `verification_status`는 latest `verification_logs.result`에서 계산한다.
+- `nose_image_url`, `author_contact_phone`, `author_user_id`, `adopter_user_id`, `embedding_status`는 노출하지 않는다.
+- 입양 후 1주/3개월/6개월 비문 인증 UI/API는 이 endpoint 범위가 아니다.
 
 Error codes:
 

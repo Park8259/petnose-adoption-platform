@@ -93,7 +93,7 @@ schema count 불일치는 해결되었다. pre-adoption nose verification ticket
 
 ## App-Requested Follow-up Scope
 
-앱팀 추가 요청사항은 current active MVP 위에 follow-up API를 더하는 계획으로 다룬다. Profile image 흐름은 PR 3까지 구현되었고, password change/reset 흐름은 PR 4에서 구현되었다. 좋아요/찜 흐름은 PR 5에서 `adoption_post_likes` 관계 테이블로 구현되었다. PR 6에서는 입양 완료 시 `adoption_posts.adopter_user_id`와 `adopted_at`을 저장한다. 내가 입양한 강아지 목록은 후속 PR 7 범위다.
+앱팀 추가 요청사항은 current active MVP 위에 follow-up API를 더하는 계획으로 다룬다. Profile image 흐름은 PR 3까지 구현되었고, password change/reset 흐름은 PR 4에서 구현되었다. 좋아요/찜 흐름은 PR 5에서 `adoption_post_likes` 관계 테이블로 구현되었다. PR 6에서는 입양 완료 시 `adoption_posts.adopter_user_id`와 `adopted_at`을 저장했다. PR 7에서는 내가 입양한 강아지 목록 API를 구현했다.
 
 Included planned scope:
 
@@ -126,6 +126,7 @@ Excluded planned scope:
 - `PATCH /api/users/me/password`
 - `POST /api/dogs/register`
 - `GET /api/dogs/me`
+- `GET /api/dogs/adopted/me`
 - `GET /api/dogs/{dog_id}`
 - `POST /api/adoption-posts`
 - `GET /api/adoption-posts`
