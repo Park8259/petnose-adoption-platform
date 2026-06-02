@@ -8,8 +8,10 @@ import com.petnose.api.service.AuthService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 @RestController
 @RequestMapping("/api/auth")
@@ -18,9 +20,22 @@ public class AuthController {
 
     private final AuthService authService;
 
-    @PostMapping("/register")
+    @PostMapping(value = "/register", consumes = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<UserMeResponse> register(@Valid @RequestBody RegisterRequest request) {
         return ResponseEntity.status(HttpStatus.CREATED).body(authService.register(request));
+    }
+
+    @PostMapping(value = "/register", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<UserMeResponse> registerMultipart(
+            @RequestParam(value = "email", required = false) String email,
+            @RequestParam(value = "password", required = false) String password,
+            @RequestParam(value = "display_name", required = false) String displayName,
+            @RequestParam(value = "contact_phone", required = false) String contactPhone,
+            @RequestParam(value = "region", required = false) String region,
+            @RequestParam(value = "profile_image", required = false) MultipartFile profileImage
+    ) {
+        RegisterRequest request = new RegisterRequest(email, password, displayName, contactPhone, region);
+        return ResponseEntity.status(HttpStatus.CREATED).body(authService.register(request, profileImage));
     }
 
     @PostMapping("/login")

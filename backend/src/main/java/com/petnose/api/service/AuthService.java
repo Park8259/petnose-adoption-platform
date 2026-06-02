@@ -6,6 +6,7 @@ import com.petnose.api.dto.auth.LoginRequest;
 import com.petnose.api.dto.auth.LoginResponse;
 import com.petnose.api.dto.auth.RegisterRequest;
 import com.petnose.api.dto.user.UserMeResponse;
+import com.petnose.api.dto.user.UserProfileImageUpdateResponse;
 import com.petnose.api.dto.user.UserProfileResponse;
 import com.petnose.api.dto.user.UserProfileUpdateRequest;
 import com.petnose.api.exception.ApiException;
@@ -16,6 +17,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -38,9 +40,15 @@ public class AuthService {
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenService jwtTokenService;
+    private final FileStorageService fileStorageService;
 
     @Transactional
     public UserMeResponse register(RegisterRequest request) {
+        return register(request, null);
+    }
+
+    @Transactional
+    public UserMeResponse register(RegisterRequest request, MultipartFile profileImage) {
         String email = normalizeEmail(request.email());
         String password = required(request.password(), "password");
         if (password.length() < 8) {
@@ -67,7 +75,10 @@ public class AuthService {
         user.setActive(true);
 
         try {
-            return UserMeResponse.from(userRepository.save(user));
+            User saved = userRepository.saveAndFlush(user);
+            storeUserProfileImageIfPresent(saved, profileImage);
+            userRepository.flush();
+            return UserMeResponse.from(saved);
         } catch (DataIntegrityViolationException e) {
             throw new ApiException(HttpStatus.CONFLICT, "EMAIL_ALREADY_EXISTS", "이미 가입된 email 입니다.");
         }
@@ -118,6 +129,14 @@ public class AuthService {
         return UserProfileResponse.from(user);
     }
 
+    @Transactional
+    public UserProfileImageUpdateResponse updateProfileImage(String authorizationHeader, MultipartFile profileImage) {
+        User user = currentActiveUser(authorizationHeader);
+        storeUserProfileImage(user, profileImage);
+        userRepository.flush();
+        return UserProfileImageUpdateResponse.from(user);
+    }
+
     @Transactional(readOnly = true)
     public Long currentActiveUserId(String authorizationHeader) {
         return currentActiveUser(authorizationHeader).getId();
@@ -132,6 +151,21 @@ public class AuthService {
             throw new ApiException(HttpStatus.FORBIDDEN, "USER_INACTIVE", "비활성화된 사용자입니다.");
         }
         return user;
+    }
+
+    private void storeUserProfileImageIfPresent(User user, MultipartFile profileImage) {
+        if (profileImage == null) {
+            return;
+        }
+        storeUserProfileImage(user, profileImage);
+    }
+
+    private void storeUserProfileImage(User user, MultipartFile profileImage) {
+        FileStorageService.StoredFile stored = fileStorageService.storeUserProfileImage(user.getId(), profileImage);
+        user.setProfileImagePath(stored.relativePath());
+        user.setProfileImageMimeType(stored.mimeType());
+        user.setProfileImageFileSize(stored.fileSize());
+        user.setProfileImageSha256(stored.sha256());
     }
 
     private NormalizedProfileUpdate validateAndNormalizeProfileUpdate(UserProfileUpdateRequest request) {

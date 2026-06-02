@@ -119,6 +119,10 @@ Acceptance criteria:
 
 ## PR 3 feat/auth-register-multipart-profile-image
 
+Status:
+
+- Implemented in this PR.
+
 Purpose:
 
 - Add multipart signup and user profile image update wiring while preserving existing JSON signup compatibility.
@@ -137,10 +141,10 @@ Excluded scope:
 
 Acceptance criteria:
 
-- `POST /api/auth/register` accepts multipart fields `email`, `password`, `display_name`, `contact_phone`, `region`, optional `profile_image`.
-- Existing JSON signup still works.
-- Response can include `profile_image_url`.
-- `PATCH /api/users/me/profile-image` stores and replaces the current user's image.
+- [x] `POST /api/auth/register` accepts multipart fields `email`, `password`, `display_name`, `contact_phone`, `region`, optional `profile_image`.
+- [x] Existing JSON signup still works.
+- [x] Response can include `profile_image_url`.
+- [x] `PATCH /api/users/me/profile-image` stores and replaces the current user's image.
 
 ## PR 4 feat/user-password-apis
 

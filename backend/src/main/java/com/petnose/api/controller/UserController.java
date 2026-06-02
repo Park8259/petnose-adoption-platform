@@ -1,12 +1,15 @@
 package com.petnose.api.controller;
 
 import com.petnose.api.dto.user.UserMeResponse;
+import com.petnose.api.dto.user.UserProfileImageUpdateResponse;
 import com.petnose.api.dto.user.UserProfileResponse;
 import com.petnose.api.dto.user.UserProfileUpdateRequest;
 import com.petnose.api.service.AuthService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 @RestController
 @RequestMapping("/api/users")
@@ -26,5 +29,13 @@ public class UserController {
             @RequestBody UserProfileUpdateRequest request
     ) {
         return authService.updateProfile(authorization, request);
+    }
+
+    @PatchMapping(value = "/me/profile-image", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public UserProfileImageUpdateResponse updateProfileImage(
+            @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization,
+            @RequestParam(value = "profile_image", required = false) MultipartFile profileImage
+    ) {
+        return authService.updateProfileImage(authorization, profileImage);
     }
 }
