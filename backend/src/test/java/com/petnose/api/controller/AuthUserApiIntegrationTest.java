@@ -5,21 +5,26 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.petnose.api.domain.entity.User;
 import com.petnose.api.domain.enums.UserRole;
 import com.petnose.api.repository.UserRepository;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.test.web.servlet.request.MockMultipartHttpServletRequestBuilder;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.FileSystemUtils;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.LinkedHashMap;
@@ -31,6 +36,7 @@ import static org.hamcrest.Matchers.isEmptyOrNullString;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.nullValue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -43,6 +49,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class AuthUserApiIntegrationTest {
 
     private static final String TEST_JWT_SECRET = "test-petnose-jwt-secret-change-me-32bytes";
+    private static final Path TEST_UPLOAD_ROOT = Path.of("/tmp/uploads-test");
 
     @Autowired
     private MockMvc mockMvc;
@@ -55,6 +62,11 @@ class AuthUserApiIntegrationTest {
 
     @Autowired
     private PasswordEncoder passwordEncoder;
+
+    @AfterEach
+    void cleanUploadedFiles() throws Exception {
+        FileSystemUtils.deleteRecursively(TEST_UPLOAD_ROOT);
+    }
 
     @Test
     void registerReturnsUserRoleAndStoresPasswordHash() throws Exception {
@@ -82,6 +94,70 @@ class AuthUserApiIntegrationTest {
         assertThat(saved.getPasswordHash()).isNotEqualTo("password123");
         assertThat(saved.getPasswordHash()).startsWith("$2");
         assertThat(passwordEncoder.matches("password123", saved.getPasswordHash())).isTrue();
+    }
+
+    @Test
+    void registerMultipartWithoutProfileImageReturnsNullProfileImageUrl() throws Exception {
+        MvcResult result = mockMvc.perform(multipart("/api/auth/register")
+                        .param("email", "MultipartNoImage@Example.COM")
+                        .param("password", "password123")
+                        .param("display_name", "Multipart User")
+                        .param("contact_phone", "01012341234")
+                        .param("region", "Seoul"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.user_id").exists())
+                .andExpect(jsonPath("$.email").value("multipartnoimage@example.com"))
+                .andExpect(jsonPath("$.role").value("USER"))
+                .andExpect(jsonPath("$.display_name").value("Multipart User"))
+                .andExpect(jsonPath("$.contact_phone").value("01012341234"))
+                .andExpect(jsonPath("$.region").value("Seoul"))
+                .andExpect(jsonPath("$.profile_image_url").value(nullValue()))
+                .andExpect(jsonPath("$.is_active").value(true))
+                .andReturn();
+
+        JsonNode body = objectMapper.readTree(responseBody(result));
+        User saved = userRepository.findByEmail("multipartnoimage@example.com").orElseThrow();
+        assertThat(saved.getId()).isEqualTo(body.get("user_id").asLong());
+        assertThat(saved.getProfileImagePath()).isNull();
+        assertThat(saved.getPasswordHash()).startsWith("$2");
+    }
+
+    @Test
+    void registerMultipartWithProfileImageStoresMetadataAndMeReturnsSameUrl() throws Exception {
+        MvcResult result = mockMvc.perform(multipart("/api/auth/register")
+                        .file(profileImage("avatar.png", "image/png"))
+                        .param("email", "MultipartImage@Example.COM")
+                        .param("password", "password123")
+                        .param("display_name", "Image User")
+                        .param("contact_phone", "01012341234")
+                        .param("region", "Seoul"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.user_id").exists())
+                .andExpect(jsonPath("$.email").value("multipartimage@example.com"))
+                .andExpect(jsonPath("$.role").value("USER"))
+                .andExpect(jsonPath("$.profile_image_url").exists())
+                .andExpect(jsonPath("$.is_active").value(true))
+                .andReturn();
+
+        JsonNode body = objectMapper.readTree(responseBody(result));
+        Long userId = body.get("user_id").asLong();
+        String profileImageUrl = body.get("profile_image_url").asText();
+        assertThat(profileImageUrl).startsWith("/files/users/%d/profile/".formatted(userId));
+        assertThat(profileImageUrl).endsWith("_avatar.png");
+
+        User saved = userRepository.findByEmail("multipartimage@example.com").orElseThrow();
+        assertThat(saved.getProfileImagePath()).startsWith("users/%d/profile/".formatted(userId));
+        assertThat(saved.getProfileImageMimeType()).isEqualTo("image/png");
+        assertThat(saved.getProfileImageFileSize()).isEqualTo(3L);
+        assertThat(saved.getProfileImageSha256()).hasSize(64);
+
+        String accessToken = loginAccessToken("multipartimage@example.com", "password123");
+        mockMvc.perform(get("/api/users/me")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.user_id").value(userId))
+                .andExpect(jsonPath("$.profile_image_url").value(profileImageUrl))
+                .andExpect(jsonPath("$.password_hash").doesNotExist());
     }
 
     @Test
@@ -731,6 +807,73 @@ class AuthUserApiIntegrationTest {
         assertThat(userRepository.findByEmail("attacker@example.com")).isEmpty();
     }
 
+    @Test
+    void profileImagePatchStoresMetadataAndMeReturnsUpdatedUrl() throws Exception {
+        register("profile-image-update@example.com", "password123", "Profile Image", "01012341234", "Seoul");
+        String accessToken = loginAccessToken("profile-image-update@example.com", "password123");
+        Long userId = userRepository.findByEmail("profile-image-update@example.com").orElseThrow().getId();
+
+        MvcResult patchResult = mockMvc.perform(profileImagePatch()
+                        .file(profileImage("updated.jpg", "image/jpeg"))
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.user_id").value(userId))
+                .andExpect(jsonPath("$.profile_image_url").exists())
+                .andExpect(jsonPath("$.password_hash").doesNotExist())
+                .andReturn();
+
+        String profileImageUrl = objectMapper.readTree(responseBody(patchResult))
+                .get("profile_image_url")
+                .asText();
+        assertThat(profileImageUrl).startsWith("/files/users/%d/profile/".formatted(userId));
+        assertThat(profileImageUrl).endsWith("_updated.jpg");
+
+        User saved = userRepository.findByEmail("profile-image-update@example.com").orElseThrow();
+        assertThat(saved.getProfileImagePath()).startsWith("users/%d/profile/".formatted(userId));
+        assertThat(saved.getProfileImageMimeType()).isEqualTo("image/jpeg");
+        assertThat(saved.getProfileImageFileSize()).isEqualTo(3L);
+        assertThat(saved.getProfileImageSha256()).hasSize(64);
+
+        mockMvc.perform(get("/api/users/me")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.profile_image_url").value(profileImageUrl));
+    }
+
+    @Test
+    void profileImagePatchMissingFileReturnsInvalidImage() throws Exception {
+        register("profile-image-missing@example.com", "password123", "Missing Image", "01012341234", "Seoul");
+        String accessToken = loginAccessToken("profile-image-missing@example.com", "password123");
+
+        mockMvc.perform(profileImagePatch()
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error_code").value("INVALID_IMAGE"))
+                .andExpect(jsonPath("$.details").value(nullValue()));
+    }
+
+    @Test
+    void profileImagePatchInvalidContentTypeReturnsInvalidContentType() throws Exception {
+        register("profile-image-invalid-content@example.com", "password123", "Invalid Image", "01012341234", "Seoul");
+        String accessToken = loginAccessToken("profile-image-invalid-content@example.com", "password123");
+
+        mockMvc.perform(profileImagePatch()
+                        .file(new MockMultipartFile("profile_image", "avatar.jpg", "text/plain", new byte[]{1, 2, 3}))
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error_code").value("INVALID_CONTENT_TYPE"))
+                .andExpect(jsonPath("$.details").value(nullValue()));
+    }
+
+    @Test
+    void profileImagePatchRequiresAuthentication() throws Exception {
+        mockMvc.perform(profileImagePatch()
+                        .file(profileImage("avatar.png", "image/png")))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.error_code").value("UNAUTHORIZED"))
+                .andExpect(jsonPath("$.details").value(nullValue()));
+    }
+
     private void register(String email, String password, String displayName, String contactPhone, String region) throws Exception {
         Map<String, String> body = new LinkedHashMap<>();
         body.put("email", email);
@@ -743,6 +886,19 @@ class AuthUserApiIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json(body)))
                 .andExpect(status().isCreated());
+    }
+
+    private MockMultipartFile profileImage(String filename, String contentType) {
+        return new MockMultipartFile("profile_image", filename, contentType, new byte[]{1, 2, 3});
+    }
+
+    private MockMultipartHttpServletRequestBuilder profileImagePatch() {
+        MockMultipartHttpServletRequestBuilder builder = multipart("/api/users/me/profile-image");
+        builder.with(request -> {
+            request.setMethod("PATCH");
+            return request;
+        });
+        return builder;
     }
 
     private String loginAccessToken(String email, String password) throws Exception {

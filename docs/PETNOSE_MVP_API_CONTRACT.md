@@ -395,13 +395,33 @@ Response `201`:
 }
 ```
 
+Multipart request:
+
+```http
+POST /api/auth/register
+Content-Type: multipart/form-data
+```
+
+Fields:
+
+- `email`: string, required
+- `password`: string, required
+- `display_name`: string, required
+- `contact_phone`: string, required
+- `region`: string, required
+- `profile_image`: file, optional
+
+Multipart response `201` uses the same `UserMeResponse` shape. If `profile_image` is omitted, `profile_image_url` is `null`; if present, the file is stored under `users/{user_id}/profile` and `profile_image_url` is returned as `/files/{relative_path}`.
+
 Contract notes:
 
 - public signup은 항상 `role=USER`를 생성한다.
 - public signup으로 `ADMIN`을 생성하지 않는다. request body에 `role`이 포함되어도 current implementation은 무시하고 `USER`를 저장한다.
 - `password_hash`는 DB에 저장하지만 API response에는 노출하지 않는다.
 - `profile_image_url`은 nullable이며 `users.profile_image_path`가 있으면 `/files/{relative_path}`로 반환한다.
-- 현재 JSON 회원가입은 profile image file part를 받지 않으므로, multipart 회원가입이 추가되기 전까지 신규 JSON signup 응답은 일반적으로 `profile_image_url: null`이다.
+- `application/json` 회원가입은 profile image file part를 받지 않으므로 신규 JSON signup 응답은 일반적으로 `profile_image_url: null`이다.
+- `multipart/form-data` 회원가입은 JSON 회원가입과 동일한 validation, email normalize, password policy, public `USER` role policy를 사용한다.
+- multipart `profile_image`는 optional이다. 포함하면 `users.profile_image_path`, `users.profile_image_mime_type`, `users.profile_image_file_size`, `users.profile_image_sha256`에 저장 결과를 기록한다.
 - email은 trim 후 lowercase로 normalize한다.
 - password는 trim 후 8자 이상이어야 한다.
 - `display_name`, `contact_phone`, `region`은 signup에서 필수값이다.
@@ -413,6 +433,11 @@ Error codes:
 
 - `VALIDATION_FAILED`
 - `EMAIL_ALREADY_EXISTS`
+- `INVALID_IMAGE`
+- `INVALID_IMAGE_EXTENSION`
+- `INVALID_CONTENT_TYPE`
+- `INVALID_IMAGE_TYPE`
+- `FILE_STORE_FAILED`
 
 ### 로그인
 
@@ -566,6 +591,49 @@ Error codes:
 - `USER_NOT_FOUND`
 - `USER_INACTIVE`
 - `VALIDATION_FAILED`
+
+### 프로필 이미지 변경
+
+```http
+PATCH /api/users/me/profile-image
+Authorization: Bearer <JWT>
+Content-Type: multipart/form-data
+```
+
+Fields:
+
+- `profile_image`: file, required
+
+Response `200`:
+
+```json
+{
+  "user_id": 101,
+  "profile_image_url": "/files/users/101/profile/20260602_profile.jpg"
+}
+```
+
+Contract notes:
+
+- Bearer JWT authorization이 필요하다.
+- current active user의 profile image만 변경할 수 있다.
+- `profile_image`가 missing 또는 empty이면 `INVALID_IMAGE`를 반환한다.
+- 허용 확장자는 `jpg`, `jpeg`, `png`다.
+- 허용 Content-Type은 `image/jpeg`, `image/jpg`, `image/png`다.
+- 저장 후 `users.profile_image_path`, `users.profile_image_mime_type`, `users.profile_image_file_size`, `users.profile_image_sha256`를 갱신한다.
+- response는 새 `profile_image_url`만 반환하며 `password_hash`는 노출하지 않는다.
+- 이전 이미지 파일은 이 API에서 삭제하지 않는다. 앱은 최신 `profile_image_url`만 사용하고, 이전 파일 orphan cleanup은 운영 hardening scope로 둔다.
+
+Error codes:
+
+- `UNAUTHORIZED`
+- `USER_NOT_FOUND`
+- `USER_INACTIVE`
+- `INVALID_IMAGE`
+- `INVALID_IMAGE_EXTENSION`
+- `INVALID_CONTENT_TYPE`
+- `INVALID_IMAGE_TYPE`
+- `FILE_STORE_FAILED`
 
 ## Dog Registration
 
