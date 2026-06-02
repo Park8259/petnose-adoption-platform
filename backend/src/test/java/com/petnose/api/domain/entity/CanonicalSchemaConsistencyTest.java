@@ -28,6 +28,21 @@ class CanonicalSchemaConsistencyTest {
             "verification_logs",
             "adoption_posts"
     );
+    private static final Set<String> USER_COLUMNS = Set.of(
+            "id",
+            "email",
+            "password_hash",
+            "role",
+            "display_name",
+            "contact_phone",
+            "region",
+            "profile_image_path",
+            "profile_image_mime_type",
+            "profile_image_file_size",
+            "profile_image_sha256",
+            "is_active",
+            "created_at"
+    );
     private static final Set<String> VERIFICATION_LOG_COLUMNS = Set.of(
             "id",
             "dog_id",
@@ -98,6 +113,22 @@ class CanonicalSchemaConsistencyTest {
     }
 
     @Test
+    void activeCleanSqlUsersIncludeProfileImageMetadata() throws Exception {
+        String sql = canonicalSql();
+        Map<String, Set<String>> columnsByTable = columnsByTable(sql);
+        String users = tableDefinitions(sql).get("users");
+
+        assertThat(columnsByTable.get("users"))
+                .containsExactlyInAnyOrderElementsOf(USER_COLUMNS);
+        assertThat(users).contains(
+                "profile_image_path VARCHAR(500) NULL",
+                "profile_image_mime_type VARCHAR(100) NULL",
+                "profile_image_file_size BIGINT NULL",
+                "profile_image_sha256 CHAR(64) NULL"
+        );
+    }
+
+    @Test
     void activeCleanSqlVerificationLogsUseDogIdCenteredRuntimeColumns() throws Exception {
         String sql = canonicalSql();
         Map<String, Set<String>> columnsByTable = columnsByTable(sql);
@@ -156,6 +187,12 @@ class CanonicalSchemaConsistencyTest {
         assertThat(dbmlTableNames(dbml)).containsExactlyInAnyOrderElementsOf(ACTIVE_TABLES);
         assertThat(dbml).doesNotContain(removedAttemptTableName());
         assertThat(dbml).doesNotContain(RETIRED_PRECHECK_FIELDS.toArray(String[]::new));
+        assertThat(dbml).contains(
+                "profile_image_path varchar(500)",
+                "profile_image_mime_type varchar(100)",
+                "profile_image_file_size bigint",
+                "profile_image_sha256 char(64)"
+        );
         assertThat(dbmlEnumValues(dbml, "dog_status"))
                 .containsExactly("PENDING", "REGISTERED", "DUPLICATE_SUSPECTED", "REVIEW_REQUIRED", "REJECTED", "ADOPTED", "INACTIVE");
         assertThat(dbmlEnumValues(dbml, "dog_image_type")).containsExactly("NOSE", "PROFILE");

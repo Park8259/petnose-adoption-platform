@@ -22,16 +22,17 @@
 이 섹션은 앱팀 추가 요청사항을 후속 PR에서 연결할 순서다. 상세 endpoint draft와 정책은 `PETNOSE_MVP_API_CONTRACT.md`의 `App-Requested API Delta Plan (Planned)`를 기준으로 한다.
 
 1. 회원가입 화면은 기존 JSON signup을 유지하되, multipart 지원 PR 이후 `POST /api/auth/register`에 `profile_image` file part를 함께 보낼 수 있다.
-2. 마이페이지는 사용자 profile field 수정, profile image 변경, password 변경을 각각 별도 API로 호출한다.
-3. 비밀번호 찾기는 비밀번호 조회가 아니라 reset token 기반 요청/확정 흐름으로 연결한다.
-4. 분양글 카드와 상세 화면은 좋아요 추가 `PUT /api/adoption-posts/{post_id}/like`, 좋아요 취소 `DELETE /api/adoption-posts/{post_id}/like`, 내 좋아요 목록 `GET /api/adoption-posts/liked/me`를 사용한다.
-5. 분양 완료 처리 시 앱은 `PATCH /api/adoption-posts/{post_id}/status` request에 `status=COMPLETED`와 `adopter_user_id`를 함께 넘겨야 한다.
-6. 내가 입양한 강아지 목록은 `GET /api/dogs/adopted/me`로 조회한다.
-7. 입양 후 1주/3개월/6개월 비문 인증, 사후 인증 스케줄/알림, 완료 후 자동 비문 재검증은 이번 follow-up 범위가 아니다.
+2. 회원가입/로그인/`GET /api/users/me`의 user payload에는 nullable `profile_image_url`이 포함될 수 있다. 앱은 이 값을 null-safe로 렌더링한다.
+3. 마이페이지는 사용자 profile field 수정, profile image 변경, password 변경을 각각 별도 API로 호출한다.
+4. 비밀번호 찾기는 비밀번호 조회가 아니라 reset token 기반 요청/확정 흐름으로 연결한다.
+5. 분양글 카드와 상세 화면은 좋아요 추가 `PUT /api/adoption-posts/{post_id}/like`, 좋아요 취소 `DELETE /api/adoption-posts/{post_id}/like`, 내 좋아요 목록 `GET /api/adoption-posts/liked/me`를 사용한다.
+6. 분양 완료 처리 시 앱은 `PATCH /api/adoption-posts/{post_id}/status` request에 `status=COMPLETED`와 `adopter_user_id`를 함께 넘겨야 한다.
+7. 내가 입양한 강아지 목록은 `GET /api/dogs/adopted/me`로 조회한다.
+8. 입양 후 1주/3개월/6개월 비문 인증, 사후 인증 스케줄/알림, 완료 후 자동 비문 재검증은 이번 follow-up 범위가 아니다.
 
 Storage distinction:
 
-- 사용자 `profile_image`는 planned `users.profile_image_*` fields와 user profile file storage에 저장한다.
+- 사용자 `profile_image`는 `users.profile_image_*` fields와 user profile file storage에 저장한다. 실제 multipart 회원가입과 `PATCH /api/users/me/profile-image` 연결은 다음 구현 PR에서 추가한다.
 - 분양글 대표 `profile_image`는 기존처럼 `dog_images.image_type=PROFILE`로 저장한다.
 - `dogs.owner_user_id`는 등록자/작성자 ownership으로 유지하고, 입양자는 `adoption_posts.adopter_user_id`로 추적한다.
 

@@ -16,6 +16,8 @@ public record UserMeResponse(
         String contactPhone,
         @JsonProperty("region")
         String region,
+        @JsonProperty("profile_image_url")
+        String profileImageUrl,
         @JsonProperty("is_active")
         boolean active
 ) {
@@ -27,7 +29,26 @@ public record UserMeResponse(
                 user.getDisplayName(),
                 user.getContactPhone(),
                 user.getRegion(),
+                profileImageUrl(user),
                 user.isActive()
         );
+    }
+
+    static String profileImageUrl(User user) {
+        return toFileUrl(user.getProfileImagePath());
+    }
+
+    private static String toFileUrl(String relativePath) {
+        if (relativePath == null || relativePath.isBlank()) {
+            return null;
+        }
+        String normalized = relativePath.trim().replace('\\', '/');
+        if (normalized.startsWith("/files/")) {
+            return normalized;
+        }
+        if (normalized.startsWith("files/")) {
+            return "/" + normalized;
+        }
+        return "/files/" + normalized;
     }
 }

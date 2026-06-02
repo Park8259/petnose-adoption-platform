@@ -11,14 +11,17 @@ public record UserProfileResponse(
         @JsonProperty("contact_phone")
         String contactPhone,
         @JsonProperty("region")
-        String region
+        String region,
+        @JsonProperty("profile_image_url")
+        String profileImageUrl
 ) {
     public static UserProfileResponse from(User user) {
         return new UserProfileResponse(
                 user.getId(),
                 user.getDisplayName(),
                 user.getContactPhone(),
-                user.getRegion()
+                user.getRegion(),
+                UserMeResponse.profileImageUrl(user)
         );
     }
 }

@@ -91,7 +91,7 @@ Core policies:
 - 사용자 비밀번호는 절대 조회 API를 만들지 않는다.
 - `password_hash`는 절대 response에 노출하지 않는다.
 - `profile_image` multipart field는 사용자 프로필 이미지와 분양글 대표 이미지 양쪽에서 쓰일 수 있으므로 저장 위치와 DB column을 명확히 분리한다.
-- 사용자 프로필 이미지는 planned `users.profile_image_*` fields로 관리한다.
+- 사용자 프로필 이미지는 `users.profile_image_*` fields로 관리하고 `/files/{relative_path}` URL로 계산한다.
 - 분양글 대표 이미지는 기존 `dog_images.image_type=PROFILE` 정책을 유지한다.
 
 ### A. 회원가입 multipart
@@ -390,6 +390,7 @@ Response `201`:
   "display_name": "초코 보호자",
   "contact_phone": "01012341234",
   "region": "서울",
+  "profile_image_url": null,
   "is_active": true
 }
 ```
@@ -399,6 +400,8 @@ Contract notes:
 - public signup은 항상 `role=USER`를 생성한다.
 - public signup으로 `ADMIN`을 생성하지 않는다. request body에 `role`이 포함되어도 current implementation은 무시하고 `USER`를 저장한다.
 - `password_hash`는 DB에 저장하지만 API response에는 노출하지 않는다.
+- `profile_image_url`은 nullable이며 `users.profile_image_path`가 있으면 `/files/{relative_path}`로 반환한다.
+- 현재 JSON 회원가입은 profile image file part를 받지 않으므로, multipart 회원가입이 추가되기 전까지 신규 JSON signup 응답은 일반적으로 `profile_image_url: null`이다.
 - email은 trim 후 lowercase로 normalize한다.
 - password는 trim 후 8자 이상이어야 한다.
 - `display_name`, `contact_phone`, `region`은 signup에서 필수값이다.
@@ -441,6 +444,7 @@ Response `200`:
     "display_name": "초코 보호자",
     "contact_phone": "01012341234",
     "region": "서울",
+    "profile_image_url": null,
     "is_active": true
   }
 }
@@ -451,6 +455,7 @@ Contract notes:
 - email은 signup과 동일하게 trim 후 lowercase로 normalize한다.
 - `expires_in`은 current default configuration 기준 `3600`초다.
 - response `user`는 `UserMeResponse`와 같은 shape다.
+- `user.profile_image_url`은 nullable이며 저장된 `users.profile_image_path`에서 계산한다.
 - inactive user는 token을 발급하지 않고 HTTP `403`과 `USER_INACTIVE`를 반환한다.
 
 Error codes:
@@ -478,6 +483,7 @@ Response `200`:
   "display_name": "초코 보호자",
   "contact_phone": "01012341234",
   "region": "서울",
+  "profile_image_url": "/files/users/101/profile/20260602_profile.jpg",
   "is_active": true
 }
 ```
@@ -490,14 +496,16 @@ Flutter-required fields:
 - `display_name`
 - `contact_phone`
 - `region`
+- `profile_image_url`
 - `is_active`
 
-`display_name`, `contact_phone`, `region`은 `null`일 수 있지만 field name 자체는 response contract에 포함된다. `created_at`은 current `GET /api/users/me` response에 포함하지 않는다.
+`display_name`, `contact_phone`, `region`, `profile_image_url`은 `null`일 수 있지만 field name 자체는 response contract에 포함된다. `created_at`은 current `GET /api/users/me` response에 포함하지 않는다.
 
 Contract notes:
 
 - Bearer JWT authorization이 필요하다.
 - `password_hash`는 API response에 노출하지 않는다.
+- `profile_image_url`은 `users.profile_image_path`가 null/blank이면 `null`, 값이 있으면 slash-normalized `/files/{relative_path}`로 반환한다.
 - valid token의 subject가 inactive user로 resolve되면 HTTP `403`과 `USER_INACTIVE`를 반환한다.
 - token subject가 existing user로 resolve되지 않으면 `USER_NOT_FOUND`를 반환한다.
 
@@ -532,7 +540,8 @@ Response `200`:
   "user_id": 101,
   "display_name": "초코보호자",
   "contact_phone": "01012345678",
-  "region": "대구시 달서구"
+  "region": "대구시 달서구",
+  "profile_image_url": "/files/users/101/profile/20260602_profile.jpg"
 }
 ```
 
@@ -540,6 +549,7 @@ Contract notes:
 
 - Bearer JWT authorization이 필요하다.
 - 이 endpoint는 `display_name`, `contact_phone`, `region`만 수정한다.
+- 이 endpoint는 profile image를 변경하지 않지만, 앱이 profile state를 갱신하기 쉽도록 현재 `profile_image_url`을 함께 반환한다.
 - `email`, `role`, `is_active`, `password_hash`는 이 endpoint로 변경하지 않는다.
 - `password_hash`는 API response에 노출하지 않는다.
 - `display_name`, `contact_phone`, `region` 중 하나 이상은 있어야 한다.

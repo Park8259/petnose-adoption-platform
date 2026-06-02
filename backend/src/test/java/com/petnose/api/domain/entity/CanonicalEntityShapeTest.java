@@ -42,7 +42,16 @@ class CanonicalEntityShapeTest {
     void userEntityMatchesSimplifiedProfileShape() {
         Set<String> fields = declaredFieldNames(User.class);
 
-        assertThat(fields).contains("displayName", "contactPhone", "region", "createdAt");
+        assertThat(fields).contains(
+                "displayName",
+                "contactPhone",
+                "region",
+                "profileImagePath",
+                "profileImageMimeType",
+                "profileImageFileSize",
+                "profileImageSha256",
+                "createdAt"
+        );
         assertThat(fields).doesNotContain(join("updated", "At"), join("last", "LoginAt"));
     }
 
@@ -51,6 +60,9 @@ class CanonicalEntityShapeTest {
         assertThat(columnLength("displayName")).isEqualTo(150);
         assertThat(columnLength("contactPhone")).isEqualTo(30);
         assertThat(columnLength("region")).isEqualTo(100);
+        assertThat(columnLength("profileImagePath")).isEqualTo(500);
+        assertThat(columnLength("profileImageMimeType")).isEqualTo(100);
+        assertThat(columnLength("profileImageSha256")).isEqualTo(64);
     }
 
     @Test
@@ -61,6 +73,30 @@ class CanonicalEntityShapeTest {
                 "display_name VARCHAR(150) NULL",
                 "contact_phone VARCHAR(30) NULL",
                 "region VARCHAR(100) NULL"
+        );
+    }
+
+    @Test
+    void userProfileImageEntityAndMigrationTrackStorageMetadata() throws Exception {
+        Column path = User.class.getDeclaredField("profileImagePath").getAnnotation(Column.class);
+        Column mimeType = User.class.getDeclaredField("profileImageMimeType").getAnnotation(Column.class);
+        Column fileSize = User.class.getDeclaredField("profileImageFileSize").getAnnotation(Column.class);
+        Column sha256 = User.class.getDeclaredField("profileImageSha256").getAnnotation(Column.class);
+
+        assertThat(path.name()).isEqualTo("profile_image_path");
+        assertThat(path.length()).isEqualTo(500);
+        assertThat(mimeType.name()).isEqualTo("profile_image_mime_type");
+        assertThat(mimeType.length()).isEqualTo(100);
+        assertThat(fileSize.name()).isEqualTo("profile_image_file_size");
+        assertThat(sha256.name()).isEqualTo("profile_image_sha256");
+        assertThat(sha256.length()).isEqualTo(64);
+
+        String migration = resourceText("db/migration/V6__add_user_profile_image_fields.sql");
+        assertThat(migration).contains(
+                "ADD COLUMN profile_image_path VARCHAR(500) NULL AFTER region",
+                "ADD COLUMN profile_image_mime_type VARCHAR(100) NULL AFTER profile_image_path",
+                "ADD COLUMN profile_image_file_size BIGINT NULL AFTER profile_image_mime_type",
+                "ADD COLUMN profile_image_sha256 CHAR(64) NULL AFTER profile_image_file_size"
         );
     }
 

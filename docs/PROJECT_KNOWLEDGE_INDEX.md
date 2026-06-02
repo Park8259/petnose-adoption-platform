@@ -66,7 +66,8 @@ schema count 불일치는 해결되었다. pre-adoption nose verification ticket
   - `dog_nose_references`
   - `verification_logs`
   - `adoption_posts`
-- `users`가 `display_name`, `contact_phone`, `region`, `is_active`를 직접 가진다.
+- `users`가 `display_name`, `contact_phone`, `region`, optional `profile_image_*`, `is_active`를 직접 가진다.
+- 사용자 payload의 `profile_image_url`은 nullable이며 `users.profile_image_path`에서 `/files/{relative_path}`로 계산한다.
 - MySQL이 source of truth다.
 - Qdrant는 dog nose vector index일 뿐이다.
 - Firebase chat/push는 optional communication layer로 구현될 수 있으며 MySQL 대체물이 아니다.

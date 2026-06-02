@@ -74,6 +74,7 @@ class AuthUserApiIntegrationTest {
                 .andExpect(jsonPath("$.display_name").value("Bori Owner"))
                 .andExpect(jsonPath("$.contact_phone").value("01012341234"))
                 .andExpect(jsonPath("$.region").value("Seoul"))
+                .andExpect(jsonPath("$.profile_image_url").value(nullValue()))
                 .andExpect(jsonPath("$.is_active").value(true));
 
         User saved = userRepository.findByEmail("owner@example.com").orElseThrow();
@@ -102,6 +103,7 @@ class AuthUserApiIntegrationTest {
                 .andExpect(jsonPath("$.user.role").value("USER"))
                 .andExpect(jsonPath("$.user.display_name").value("Me User"))
                 .andExpect(jsonPath("$.user.contact_phone").value("01011112222"))
+                .andExpect(jsonPath("$.user.profile_image_url").value(nullValue()))
                 .andExpect(jsonPath("$.user.is_active").value(true))
                 .andReturn();
 
@@ -117,6 +119,7 @@ class AuthUserApiIntegrationTest {
                 .andExpect(jsonPath("$.display_name").value("Me User"))
                 .andExpect(jsonPath("$.contact_phone").value("01011112222"))
                 .andExpect(jsonPath("$.region").value("Busan"))
+                .andExpect(jsonPath("$.profile_image_url").value(nullValue()))
                 .andExpect(jsonPath("$.is_active").value(true));
     }
 
@@ -134,6 +137,7 @@ class AuthUserApiIntegrationTest {
                 .andExpect(jsonPath("$.display_name").value("Profile User"))
                 .andExpect(jsonPath("$.contact_phone").value("01012341234"))
                 .andExpect(jsonPath("$.region").value("Seoul"))
+                .andExpect(jsonPath("$.profile_image_url").value(nullValue()))
                 .andExpect(jsonPath("$.is_active").value(true))
                 .andExpect(jsonPath("$.created_at").doesNotExist())
                 .andReturn();
@@ -141,7 +145,21 @@ class AuthUserApiIntegrationTest {
         JsonNode body = objectMapper.readTree(responseBody(result));
         assertThat(body.fieldNames())
                 .toIterable()
-                .containsExactly("user_id", "email", "role", "display_name", "contact_phone", "region", "is_active");
+                .containsExactly("user_id", "email", "role", "display_name", "contact_phone", "region", "profile_image_url", "is_active");
+    }
+
+    @Test
+    void meReturnsProfileImageUrlWhenStoredPathExists() throws Exception {
+        User user = saveUser("profile-image-me@example.com", "password123", true);
+        user.setProfileImagePath("users\\%d\\profile\\avatar.jpg".formatted(user.getId()));
+        userRepository.saveAndFlush(user);
+        String accessToken = signedToken(user.getId(), Instant.now().plusSeconds(3600).getEpochSecond());
+
+        mockMvc.perform(get("/api/users/me")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.profile_image_url").value("/files/users/%d/profile/avatar.jpg".formatted(user.getId())))
+                .andExpect(jsonPath("$.password_hash").doesNotExist());
     }
 
     @Test
@@ -409,6 +427,7 @@ class AuthUserApiIntegrationTest {
                 .andExpect(jsonPath("$.display_name").value("행복임보자"))
                 .andExpect(jsonPath("$.contact_phone").value("01012345678"))
                 .andExpect(jsonPath("$.region").value("대구시 달서구"))
+                .andExpect(jsonPath("$.profile_image_url").value(nullValue()))
                 .andExpect(jsonPath("$.email").doesNotExist())
                 .andExpect(jsonPath("$.role").doesNotExist())
                 .andExpect(jsonPath("$.is_active").doesNotExist())
@@ -417,7 +436,7 @@ class AuthUserApiIntegrationTest {
         JsonNode patchBody = objectMapper.readTree(responseBody(patchResult));
         assertThat(patchBody.fieldNames())
                 .toIterable()
-                .containsExactly("user_id", "display_name", "contact_phone", "region");
+                .containsExactly("user_id", "display_name", "contact_phone", "region", "profile_image_url");
 
         User saved = userRepository.findByEmail("profile@example.com").orElseThrow();
         assertThat(saved.getDisplayName()).isEqualTo("행복임보자");

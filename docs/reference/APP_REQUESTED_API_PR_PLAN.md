@@ -36,7 +36,7 @@ Core policy:
 - `COMPLETED` still sets `dogs.status = ADOPTED`.
 - User password lookup APIs must not exist.
 - `password_hash` must never be exposed in responses.
-- User profile images use planned `users.profile_image_*` fields.
+- User profile images use `users.profile_image_*` fields once PR 2 lands.
 - Adoption post representative images continue to use `dog_images.image_type=PROFILE`.
 
 ## PR 0 docs/app-api-delta-plan
@@ -95,35 +95,39 @@ Acceptance criteria:
 
 Purpose:
 
-- Add backend storage and response support for user profile images.
+- Add the backend users profile image storage foundation.
 
 Included files:
 
-- User entity/schema migration for planned `users.profile_image_*` fields.
-- User profile image storage service/API response mapping.
+- User entity/schema migration for `users.profile_image_*` fields.
+- User profile image storage service method and user payload `profile_image_url` response mapping.
+- Active `docs/db` schema docs updated with the implemented columns in the same PR.
 - File-storage policy docs, if needed.
 
 Excluded scope:
 
 - No signup multipart handling yet.
+- No `PATCH /api/users/me/profile-image` endpoint yet.
 - No adoption post representative image policy changes.
 
 Acceptance criteria:
 
-- `PATCH /api/users/me/profile-image` stores and replaces the current user's image.
-- `GET /api/users/me` and login/current-user payloads can expose `profile_image_url` without exposing internal file paths.
+- `users.profile_image_*` columns exist in Flyway runtime migration, entity, DBML, and canonical SQL.
+- `FileStorageService` can store user profile images under `users/{user_id}/profile`.
+- `GET /api/users/me`, login/current-user payloads, and profile update responses can expose nullable `profile_image_url` without exposing internal file paths.
 - `password_hash` remains hidden.
 
 ## PR 3 feat/auth-register-multipart-profile-image
 
 Purpose:
 
-- Add multipart signup while preserving existing JSON signup compatibility.
+- Add multipart signup and user profile image update wiring while preserving existing JSON signup compatibility.
 
 Included files:
 
 - Auth controller/service request handling.
-- Optional multipart storage reuse from PR 2.
+- Optional multipart signup storage reuse from PR 2.
+- `PATCH /api/users/me/profile-image` endpoint/service wiring that stores and replaces the current user's profile image.
 - Auth API tests.
 
 Excluded scope:
@@ -136,6 +140,7 @@ Acceptance criteria:
 - `POST /api/auth/register` accepts multipart fields `email`, `password`, `display_name`, `contact_phone`, `region`, optional `profile_image`.
 - Existing JSON signup still works.
 - Response can include `profile_image_url`.
+- `PATCH /api/users/me/profile-image` stores and replaces the current user's image.
 
 ## PR 4 feat/user-password-apis
 

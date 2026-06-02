@@ -38,6 +38,18 @@ public class User {
     @Column(length = 100)
     private String region;
 
+    @Column(name = "profile_image_path", length = 500)
+    private String profileImagePath;
+
+    @Column(name = "profile_image_mime_type", length = 100)
+    private String profileImageMimeType;
+
+    @Column(name = "profile_image_file_size")
+    private Long profileImageFileSize;
+
+    @Column(name = "profile_image_sha256", length = 64)
+    private String profileImageSha256;
+
     @Column(name = "is_active", nullable = false)
     private boolean active = true;
 

@@ -71,6 +71,10 @@ Table users {
   display_name varchar(150) [note: "Nullable. Required before adoption post creation."]
   contact_phone varchar(30)
   region varchar(100)
+  profile_image_path varchar(500) [note: "Nullable relative path under the upload root for the user profile image."]
+  profile_image_mime_type varchar(100)
+  profile_image_file_size bigint
+  profile_image_sha256 char(64)
   is_active boolean [not null, default: true]
   created_at timestamp [not null, default: `CURRENT_TIMESTAMP`]
 }
