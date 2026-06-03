@@ -119,6 +119,29 @@ docker compose ... logs -f mysql
 
 ---
 
+## Qdrant/MySQL 정합성 점검
+
+dog nose v2 real-model smoke 이후에는 MySQL `dog_nose_references`와 Qdrant active points가 일치하는지 확인합니다.
+
+```powershell
+pwsh ./scripts/check-qdrant-reference-consistency.ps1 `
+  -EnvFile infra/docker/.env `
+  -QdrantUrl http://localhost:6333 `
+  -Collection dog_nose_embeddings_real_v2 `
+  -OutputPath docs/ops-evidence/local-qdrant-reconciliation-dry-run.json `
+  -FailOnDrift
+```
+
+drift가 발견되면 [QDRANT_RECONCILIATION_RUNBOOK.md](QDRANT_RECONCILIATION_RUNBOOK.md)를 먼저 확인합니다.
+
+주의:
+
+- 기본 실행은 dry-run이며 Qdrant point를 삭제하지 않습니다.
+- orphan delete는 명시적 승인/evidence를 남긴 뒤 `-DeleteOrphans`와 `-ConfirmDelete`를 모두 사용할 때만 허용합니다.
+- `missing_in_qdrant` 자동 복구와 Qdrant payload 자동 patch는 금지합니다.
+
+---
+
 ## 장애 시 1차 확인 포인트
 
 ```bash
