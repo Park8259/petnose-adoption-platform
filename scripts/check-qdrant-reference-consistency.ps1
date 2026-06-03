@@ -218,6 +218,7 @@ try {
             [string[]]$Keys,
 
             [Parameter(Mandatory = $true)]
+            [AllowEmptyString()]
             [string]$Fallback
         )
 
@@ -349,7 +350,7 @@ try {
     function Add-MismatchIfDifferent {
         param(
             [Parameter(Mandatory = $true)]
-            [System.Collections.Generic.List[object]]$Mismatches,
+            [object]$Mismatches,
 
             [Parameter(Mandatory = $true)]
             [string]$PointId,
@@ -365,6 +366,9 @@ try {
         )
 
         if ((Convert-ForCompare $MysqlValue) -ne (Convert-ForCompare $QdrantValue)) {
+            if ($null -eq $Mismatches -or -not ($Mismatches.PSObject.Methods.Name -contains "Add")) {
+                throw "Mismatches must be a mutable collection."
+            }
             $Mismatches.Add([pscustomobject]@{
                 qdrant_point_id = $PointId
                 field = $Field
@@ -451,7 +455,7 @@ ORDER BY qdrant_point_id;
             if ([string]::IsNullOrWhiteSpace($line)) {
                 continue
             }
-            $columns = $line -split "`t", -1
+            $columns = $line.Split([char]"`t")
             if ($columns.Count -lt 10) {
                 throw "Could not parse MySQL row. Expected 10 TSV columns."
             }
@@ -673,14 +677,14 @@ ORDER BY qdrant_point_id;
         }
 
         $point = $qdrantByPointId[$reference.qdrant_point_id]
-        Add-MismatchIfDifferent $payloadMismatches $reference.qdrant_point_id "dog_id" $reference.dog_id $point.dog_id
-        Add-MismatchIfDifferent $payloadMismatches $reference.qdrant_point_id "embedding_kind" $reference.embedding_kind $point.embedding_kind
-        Add-MismatchIfDifferent $payloadMismatches $reference.qdrant_point_id "dog_image_id" $reference.dog_image_id $point.dog_image_id
-        Add-MismatchIfDifferent $payloadMismatches $reference.qdrant_point_id "reference_index" $reference.reference_index $point.reference_index
-        Add-MismatchIfDifferent $payloadMismatches $reference.qdrant_point_id "model" $reference.model $point.model
-        Add-MismatchIfDifferent $payloadMismatches $reference.qdrant_point_id "dimension" $reference.dimension $point.dimension
-        Add-MismatchIfDifferent $payloadMismatches $reference.qdrant_point_id "preprocess_version" $reference.preprocess_version $point.preprocess_version
-        Add-MismatchIfDifferent $payloadMismatches $reference.qdrant_point_id "is_active" $reference.is_active $point.is_active
+        Add-MismatchIfDifferent -Mismatches $payloadMismatches -PointId $reference.qdrant_point_id -Field "dog_id" -MysqlValue $reference.dog_id -QdrantValue $point.dog_id
+        Add-MismatchIfDifferent -Mismatches $payloadMismatches -PointId $reference.qdrant_point_id -Field "embedding_kind" -MysqlValue $reference.embedding_kind -QdrantValue $point.embedding_kind
+        Add-MismatchIfDifferent -Mismatches $payloadMismatches -PointId $reference.qdrant_point_id -Field "dog_image_id" -MysqlValue $reference.dog_image_id -QdrantValue $point.dog_image_id
+        Add-MismatchIfDifferent -Mismatches $payloadMismatches -PointId $reference.qdrant_point_id -Field "reference_index" -MysqlValue $reference.reference_index -QdrantValue $point.reference_index
+        Add-MismatchIfDifferent -Mismatches $payloadMismatches -PointId $reference.qdrant_point_id -Field "model" -MysqlValue $reference.model -QdrantValue $point.model
+        Add-MismatchIfDifferent -Mismatches $payloadMismatches -PointId $reference.qdrant_point_id -Field "dimension" -MysqlValue $reference.dimension -QdrantValue $point.dimension
+        Add-MismatchIfDifferent -Mismatches $payloadMismatches -PointId $reference.qdrant_point_id -Field "preprocess_version" -MysqlValue $reference.preprocess_version -QdrantValue $point.preprocess_version
+        Add-MismatchIfDifferent -Mismatches $payloadMismatches -PointId $reference.qdrant_point_id -Field "is_active" -MysqlValue $reference.is_active -QdrantValue $point.is_active
     }
 
     foreach ($point in $qdrantPoints) {
@@ -713,11 +717,11 @@ ORDER BY qdrant_point_id;
     $summary = [ordered]@{
         collection = $Collection
         checked_at = (Get-Date).ToUniversalTime().ToString("o")
-        mysql_active_reference_count = @($mysqlReferences).Count
-        qdrant_active_point_count = @($qdrantPoints).Count
-        missing_in_qdrant = @($missingInQdrant)
-        orphan_in_qdrant = @($orphanInQdrant)
-        payload_mismatches = @($payloadMismatches)
+        mysql_active_reference_count = $mysqlReferences.Count
+        qdrant_active_point_count = $qdrantPoints.Count
+        missing_in_qdrant = $missingInQdrant.ToArray()
+        orphan_in_qdrant = $orphanInQdrant.ToArray()
+        payload_mismatches = $payloadMismatches.ToArray()
         collection_contract = [ordered]@{
             exists = [bool]$collectionContract.exists
             dimension = $collectionContract.dimension

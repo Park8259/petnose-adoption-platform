@@ -69,6 +69,11 @@ docs/model-analysis/*.parquet
 docs/model-analysis/*.npy
 docs/model-analysis/*.npz
 
+# ── Ops evidence raw/local outputs (sanitized summaries remain tracked) ──────
+docs/ops-evidence/submission-real-model-e2e-local/
+docs/ops-evidence/**/raw/
+docs/ops-evidence/**/*raw*.json
+
 # ── Node ─────────────────────────────────────────────────────────────────────
 node_modules/
 
