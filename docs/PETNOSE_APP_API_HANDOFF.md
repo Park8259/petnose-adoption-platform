@@ -2,42 +2,77 @@
 
 이 문서는 새 앱 MVP flow에서 Flutter가 호출해야 하는 API 순서만 정리한다. 상세 error code와 전체 response shape는 `docs/PETNOSE_MVP_API_CONTRACT.md`를 기준으로 한다.
 
-## Canonical App Flow
+## Final App Connection Flow
 
-1. 회원가입: `POST /api/auth/register`
-2. 로그인: `POST /api/auth/login`
-3. 분양할 강아지 정보와 비문 기준 사진 5장 촬영
-4. 강아지 등록/비문 중복 검사: `POST /api/dogs/register`
-5. `registration_allowed=false`이면 작성 차단
-6. `registration_allowed=true`이면 반환된 `dog_id`를 작성 form state에 저장
-7. 분양글 작성 화면에서 title/content/status 입력
-8. 분양글 생성: `POST /api/adoption-posts`
-9. 공개 분양글 생성 완료
-10. 인도 시점 비문 확인: `POST /api/adoption-posts/{post_id}/handover-verifications`
-11. `matched=true`이면 완료 버튼 활성화
-12. 완료 처리: `PATCH /api/adoption-posts/{post_id}/status` with `COMPLETED` and `adopter_user_id`
+이 섹션은 앱팀 추가 요청사항을 연결할 최종 순서다. 상세 endpoint와 정책은 `PETNOSE_MVP_API_CONTRACT.md`, 화면별 빠른 체크리스트는 `docs/reference/APP_API_FINAL_HANDOFF_CHECKLIST.md`를 기준으로 한다.
 
-## App-Requested Follow-up Flow
+### A. 회원가입/로그인
 
-이 섹션은 앱팀 추가 요청사항을 연결할 순서다. 상세 endpoint와 정책은 `PETNOSE_MVP_API_CONTRACT.md`를 기준으로 한다.
+- JSON 회원가입은 `POST /api/auth/register` with `application/json`으로 호출한다.
+- profile image를 함께 보내려면 같은 `POST /api/auth/register`를 `multipart/form-data`로 호출하고 optional file field `profile_image`를 포함한다.
+- 회원가입/로그인 response의 user payload에는 nullable `profile_image_url`이 포함될 수 있다. 앱은 null-safe로 렌더링한다.
+- 로그인은 `POST /api/auth/login` response의 `access_token`, `token_type`, `expires_in`, `user` payload를 사용한다.
 
-1. 회원가입 화면에서 profile image를 함께 보내려면 `POST /api/auth/register`를 `multipart/form-data`로 호출하고 `profile_image` file part를 포함한다. 기존 JSON signup도 계속 지원한다.
-2. 회원가입/로그인/`GET /api/users/me`의 user payload에는 nullable `profile_image_url`이 포함될 수 있다. 앱은 이 값을 null-safe로 렌더링한다.
-3. 마이페이지 profile image 변경은 `PATCH /api/users/me/profile-image`를 `multipart/form-data`로 호출한다.
-4. 기존 `display_name`/`contact_phone`/`region` 변경은 `PATCH /api/users/me/profile`을 계속 사용한다.
-5. 마이페이지 비밀번호 변경은 `PATCH /api/users/me/password`를 호출한다. request에는 `current_password`와 `new_password`를 보낸다.
-6. 비밀번호 찾기는 비밀번호 조회가 아니라 reset token 기반 요청/확정 흐름으로 연결한다.
-7. 비밀번호 재설정 요청 화면은 `POST /api/auth/password-reset/request`를 호출하고 `requested=true`를 받으면 "재설정 안내가 전송되었습니다" 계열의 동일 메시지를 표시한다. 앱은 email 존재 여부를 구분하지 않는다.
-8. 실제 email/SMS provider는 아직 연결되지 않았다. shared dev에서는 `AUTH_PASSWORD_RESET_EXPOSE_TOKEN_IN_RESPONSE=true`일 때 active user email에 한해 임시 `reset_token`을 받아 confirm flow를 테스트할 수 있다.
-9. 새 비밀번호 설정 화면은 `POST /api/auth/password-reset/confirm`에 `reset_token`과 `new_password`를 보내고 `reset=true`를 받으면 로그인 화면으로 보낸다.
-10. 앱은 비밀번호나 `password_hash`를 조회하려고 하지 않는다.
-11. 분양글 카드와 상세 화면은 response의 `liked` field를 사용하고, 좋아요 추가 `PUT /api/adoption-posts/{post_id}/like`, 좋아요 취소 `DELETE /api/adoption-posts/{post_id}/like`, 내 좋아요 목록 `GET /api/adoption-posts/liked/me`를 사용한다.
-12. 앱은 `users.liked` map을 기대하지 않는다. 서버는 `adoption_post_likes` 관계 테이블 기준으로 좋아요 상태를 계산한다.
-13. 분양 완료 버튼을 누를 때 앱은 `adopter_user_id`를 함께 보낸다.
-14. 마이페이지 "내가 입양한 강아지" 목록은 `GET /api/dogs/adopted/me`로 조회한다.
-15. 입양 후 1주/3개월/6개월 비문 인증, 사후 인증 스케줄/알림, 완료 후 자동 비문 재검증은 이번 follow-up 범위가 아니다.
+### B. 마이페이지 회원정보
 
-Storage distinction:
+- 내 정보 조회는 `GET /api/users/me`를 호출한다.
+- 기존 `display_name`/`contact_phone`/`region` 변경은 `PATCH /api/users/me/profile`을 사용한다.
+- profile image 변경은 `PATCH /api/users/me/profile-image`를 `multipart/form-data`로 호출하고 file field `profile_image`를 보낸다.
+- 마이페이지 비밀번호 변경은 `PATCH /api/users/me/password`에 `current_password`와 `new_password`를 보낸다.
+
+### C. 비밀번호 찾기
+
+- 비밀번호 조회 API는 없다. 앱은 reset token 기반 요청/확정 흐름만 연결한다.
+- 비밀번호 재설정 요청 화면은 `POST /api/auth/password-reset/request`를 호출하고 `requested=true`를 받으면 동일한 안내 메시지를 표시한다.
+- 앱은 email 존재 여부를 구분하지 않는다.
+- 새 비밀번호 설정 화면은 `POST /api/auth/password-reset/confirm`에 `reset_token`과 `new_password`를 보낸다.
+- shared-dev에서 expose token이 켜진 경우에도 `reset_token`은 로그, 스크린샷, PR, evidence에 남기지 않는다.
+
+### D. 분양글 작성
+
+- 먼저 `POST /api/dogs/register`에 강아지 정보와 `nose_images` 5장을 보내고 비문 중복 검사를 완료한다.
+- `registration_allowed=true`일 때만 반환된 `dog_id`를 분양글 작성 form state에 저장한다.
+- 분양글 생성은 `POST /api/adoption-posts`로 호출한다.
+- 분양글 생성의 `profile_image`는 분양글 대표 이미지이며 `dog_images.image_type=PROFILE`로 저장된다.
+- user profile image와 dog/adoption profile image 저장 영역은 다르다.
+
+### E. 분양글 조회/좋아요
+
+- 목록은 `GET /api/adoption-posts`, 상세는 `GET /api/adoption-posts/{post_id}`를 호출한다.
+- 목록/상세 response의 `liked` field를 그대로 사용한다.
+- Authorization header가 없으면 public list/detail은 `liked=false`를 반환한다.
+- Authorization header가 있으면 서버가 current user 기준 `liked`를 계산한다.
+- 좋아요 추가는 `PUT /api/adoption-posts/{post_id}/like`, 취소는 `DELETE /api/adoption-posts/{post_id}/like`를 호출한다.
+- 내 좋아요 목록은 `GET /api/adoption-posts/liked/me`를 호출한다.
+- 앱은 `users.liked` map을 기대하지 않는다.
+
+### F. 채팅
+
+- 앱 write flow는 Spring chat API 기준이다.
+- 앱은 Firestore에 chat room, message, device token을 직접 write하지 않는다.
+- Firebase custom token은 `POST /api/firebase/custom-token`으로 발급받는다.
+- 채팅방 생성/조회는 `POST /api/chat/rooms`, 목록은 `GET /api/chat/rooms`를 사용한다.
+- 메시지는 `POST /api/chat/rooms/{room_id}/messages`, 읽음 처리는 `PATCH /api/chat/rooms/{room_id}/read`로 보낸다.
+- FCM token 등록은 `PUT /api/users/me/fcm-token`을 사용한다.
+- Firebase disabled 시 `FIREBASE_DISABLED`는 서버 runtime 설정 확인 대상이며, route 누락이나 app direct-write 문제로 해석하지 않는다.
+- shared dev 서버 테스트 시 앱 개발자는 service account JSON을 받지 않는다.
+
+### G. 입양 완료
+
+- 완료 처리는 `PATCH /api/adoption-posts/{post_id}/status`를 호출한다.
+- `COMPLETED` request에는 `adopter_user_id`가 required다.
+- 앱은 채팅방의 `inquirer_user_id` 등을 `adopter_user_id`로 넘길 수 있다.
+- 서버는 성공 시 `adoption_posts.adopter_user_id`, `adopted_at`을 저장하고 `dogs.status=ADOPTED`로 변경한다.
+- 서버는 `dogs.owner_user_id`를 변경하지 않는다.
+
+### H. 내가 입양한 강아지
+
+- 마이페이지 "내가 입양한 강아지" 목록은 `GET /api/dogs/adopted/me`로 조회한다.
+- 조회 기준은 `adoption_posts.adopter_user_id=current_user_id`와 `adoption_posts.status=COMPLETED`다.
+- response에는 `nose_image_url`, `author_contact_phone`, `author_user_id`, `adopter_user_id`, `embedding_status`가 포함되지 않는다.
+- 입양 후 1주/3개월/6개월 인증은 이번 범위가 아니다.
+
+## Storage Distinction
 
 - 사용자 `profile_image`는 `users.profile_image_*` fields와 user profile file storage에 저장한다. 앱은 response의 최신 `profile_image_url`만 사용하고 null-safe 처리한다.
 - `PATCH /api/users/me/profile-image`는 이전 이미지 파일을 즉시 삭제하지 않는다. orphan cleanup은 운영 hardening scope다.

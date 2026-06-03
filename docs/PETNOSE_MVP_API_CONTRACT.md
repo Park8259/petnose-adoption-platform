@@ -45,7 +45,7 @@ Base URL: `http://<host>/api`
 | 4 | `PATCH /api/users/me/profile` | 구현됨 | 누락된 `display_name`과 선택적 phone/region을 채운다. |
 | 5 | `POST /api/dogs/register` | 구현됨 | dog identity 등록, 비문 embedding, Qdrant duplicate search, Qdrant upsert의 유일한 진입점이다. |
 | 6 | `registration_allowed=false` | 구현됨 | duplicate suspected 화면으로 분기하고 post creation을 막는다. Qdrant upsert는 수행하지 않는다. |
-| 7 | `registration_allowed=true` | 구현됨 | response `dog_id`를 분양글 작성 form state에 저장한다. Qdrant point id도 같은 `dog_id`다. |
+| 7 | `registration_allowed=true` | 구현됨 | response `dog_id`를 분양글 작성 form state에 저장한다. dog nose v2의 `qdrant_point_id` response field는 `null`이며 Qdrant point ids는 `dog_nose_references`가 추적한다. |
 | 8 | `POST /api/adoption-posts` | 구현됨 | 이미 등록된 `dog_id`, title, content, status, required `profile_image`로 `DRAFT` 또는 `OPEN` post를 만든다. |
 | 9 | `GET /api/dogs/me` | 구현됨 | current user의 dog 목록과 post 생성 가능 여부를 읽는다. |
 | 10 | `GET /api/dogs/{dog_id}` | 구현됨 | owner detail 또는 public dog detail을 렌더링한다. |
@@ -53,7 +53,7 @@ Base URL: `http://<host>/api`
 | 12 | `GET /api/adoption-posts/{post_id}` | 구현됨 | nose image 없이 public post detail을 렌더링한다. |
 | 13 | `GET /api/adoption-posts/me` | 구현됨 | current user의 post만 나열한다. |
 | 14 | `PATCH /api/adoption-posts/{post_id}/status` | 구현됨 | owner-only post status management를 수행한다. |
-| 15 | `POST /api/adoption-posts/{post_id}/handover-verifications` | 구현됨 | `post_id -> adoption_posts.dog_id -> Qdrant point id = dog_id`로 1:1 identity check를 수행한다. |
+| 15 | `POST /api/adoption-posts/{post_id}/handover-verifications` | 구현됨 | `post_id -> adoption_posts.dog_id -> dog_nose_references/Qdrant expected reference set`으로 1:1 identity check를 수행한다. |
 | 16 | `PATCH /api/users/me/password` | 구현됨 | current password 검증 후 새 비밀번호를 저장한다. |
 | 17 | `POST /api/auth/password-reset/request`, `POST /api/auth/password-reset/confirm` | 구현됨 | reset token 기반 비밀번호 재설정을 수행한다. |
 | 18 | `PUT /api/adoption-posts/{post_id}/like` | 구현됨 | public visible post에 current user 좋아요를 idempotent하게 추가한다. |
@@ -67,24 +67,25 @@ handover verification endpoint는 MVP trust/safety flow의 일부다. 이 contra
 
 이 섹션은 앱팀 추가 요청사항의 API/DB/PR 단위를 고정한 contract다. PR 3까지 profile image 흐름이 구현되었고, PR 4에서 password change/reset 흐름이 구현되었다. PR 5에서 좋아요/찜 흐름이 `adoption_post_likes` 관계 테이블로 구현되었다. PR 6에서는 입양 완료 시 adopter 저장을 구현했다. PR 7에서는 내가 입양한 강아지 목록 API를 구현했다.
 
-Included planned scope:
+Implemented app-requested scope:
 
 - Firebase chat `FIREBASE_DISABLED` 대응은 runtime 설정/운영 확인으로 처리한다.
-- `POST /api/auth/register` multipart/form-data 지원을 추가한다.
-- 회원가입 multipart field에 optional `profile_image`를 추가한다.
-- 사용자 profile image 저장 및 변경 API를 추가한다.
-- 로그인 사용자 비밀번호 변경 API는 PR 4에서 구현한다.
-- 비밀번호 찾기는 비밀번호 조회가 아니라 reset token 기반 재설정 API로 PR 4에서 구현한다.
+- `POST /api/auth/register`는 `application/json`과 `multipart/form-data`를 모두 지원한다.
+- 회원가입 multipart field에는 optional `profile_image`가 있다.
+- 사용자 profile image 저장 및 변경 API를 제공한다.
+- 로그인 사용자 비밀번호 변경 API는 구현되어 있다.
+- 비밀번호 찾기는 비밀번호 조회가 아니라 reset token 기반 재설정 API로 구현되어 있다.
 - 좋아요/찜은 `users.liked` JSON/map이 아니라 `adoption_post_likes` 관계 테이블로 구현한다. MySQL `adoption_post_likes`가 좋아요 상태의 source of truth다.
 - 입양 완료 시 `adoption_posts.adopter_user_id`와 `adopted_at`을 저장한다.
-- 내가 입양한 강아지 목록 `GET /api/dogs/adopted/me`는 PR 7에서 추가한다.
+- 내가 입양한 강아지 목록 `GET /api/dogs/adopted/me`는 구현되어 있다.
 
-Excluded planned scope:
+Excluded app-requested scope:
 
 - 입양 후 1주/3개월/6개월 비문 인증
 - `post_adoption_verifications` table
 - 입양 후 비문 인증 스케줄/기한/알림
 - 완료 후 자동 비문 재검증
+- `ADOPTER` role
 - `dogs.owner_user_id`를 입양자로 변경하는 방식
 - Firebase로 MySQL domain data를 대체하는 구조
 
@@ -100,6 +101,14 @@ Core policies:
 - `profile_image` multipart field는 사용자 프로필 이미지와 분양글 대표 이미지 양쪽에서 쓰일 수 있으므로 저장 위치와 DB column을 명확히 분리한다.
 - 사용자 프로필 이미지는 `users.profile_image_*` fields로 관리하고 `/files/{relative_path}` URL로 계산한다.
 - 분양글 대표 이미지는 기존 `dog_images.image_type=PROFILE` 정책을 유지한다.
+
+Final implemented app-requested endpoints:
+
+- Auth/User: `POST /api/auth/register` with `application/json`, `POST /api/auth/register` with `multipart/form-data`, optional multipart `profile_image`, `POST /api/auth/login`, `GET /api/users/me`, `PATCH /api/users/me/profile`, `PATCH /api/users/me/profile-image`, `PATCH /api/users/me/password`, `POST /api/auth/password-reset/request`, `POST /api/auth/password-reset/confirm`.
+- Firebase Chat: `POST /api/firebase/custom-token`, `PUT /api/users/me/fcm-token`, `POST /api/chat/rooms`, `GET /api/chat/rooms`, `POST /api/chat/rooms/{room_id}/messages`, `PATCH /api/chat/rooms/{room_id}/read`. `FIREBASE_DISABLED` is a normal disabled-runtime response after Spring authentication succeeds.
+- Adoption Posts: `POST /api/adoption-posts`, `GET /api/adoption-posts`, `GET /api/adoption-posts/{post_id}`, `GET /api/adoption-posts/me`, `PATCH /api/adoption-posts/{post_id}/status`, `PUT /api/adoption-posts/{post_id}/like`, `DELETE /api/adoption-posts/{post_id}/like`, `GET /api/adoption-posts/liked/me`.
+- Dogs: `POST /api/dogs/register`, `GET /api/dogs/me`, `GET /api/dogs/{dog_id}`, `GET /api/dogs/adopted/me`.
+- Handover: `POST /api/adoption-posts/{post_id}/handover-verifications` remains the existing handover-time verification API. It is not a post-adoption periodic verification API.
 
 ### A. 회원가입 multipart
 
@@ -1983,7 +1992,7 @@ curl -X POST "http://localhost/api/adoption-posts/<post_id>/handover-verificatio
 
 ## Firebase Chat API (Optional)
 
-Firebase chat/push is an optional communication layer. It does not change the canonical 6-table MySQL schema and does not replace MySQL as the source of truth.
+Firebase chat/push is an optional communication layer. It does not change the active MySQL domain/auth schema and does not replace MySQL as the source of truth.
 
 All endpoints in this section require a Spring Bearer token. When Firebase is disabled, authenticated requests return `503` with `FIREBASE_DISABLED`. Disabled mode is a normal runtime mode for local/dev environments where Firebase chat is intentionally not wired.
 

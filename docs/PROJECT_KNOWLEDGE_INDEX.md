@@ -70,10 +70,11 @@ schema count 불일치는 해결되었다. pre-adoption nose verification ticket
 - 활성 auth support table은 `password_reset_tokens`다. reset token 원문은 저장하지 않고 SHA-256 hash만 저장한다.
 - `users`가 `display_name`, `contact_phone`, `region`, optional `profile_image_*`, `is_active`를 직접 가진다.
 - 사용자 payload의 `profile_image_url`은 nullable이며 `users.profile_image_path`에서 `/files/{relative_path}`로 계산한다.
+- `adoption_posts`는 입양 완료 추적을 위해 nullable `adopter_user_id`와 `adopted_at`을 가진다.
 - MySQL이 source of truth다.
 - Qdrant는 dog nose vector index일 뿐이다.
 - Firebase chat/push는 optional communication layer로 구현될 수 있으며 MySQL 대체물이 아니다.
-- Firebase chat/push는 canonical 6-table MySQL schema를 변경하지 않는다.
+- Firebase chat/push는 active MySQL domain/auth schema를 변경하지 않는다.
 - `dog_images.file_path`는 upload root 기준 상대 경로만 저장한다.
 - API 응답 필드 `qdrant_point_id`, `verification_status`, `embedding_status`는 계산 필드이며 DB column이 아니다.
 - Dog nose v2 real Qdrant collection은 `dog_nose_embeddings_real_v2`이며 vector dimension은 `2048`, distance는 `Cosine`이다.
@@ -93,20 +94,20 @@ schema count 불일치는 해결되었다. pre-adoption nose verification ticket
 
 ## App-Requested Follow-up Scope
 
-앱팀 추가 요청사항은 current active MVP 위에 follow-up API를 더하는 계획으로 다룬다. Profile image 흐름은 PR 3까지 구현되었고, password change/reset 흐름은 PR 4에서 구현되었다. 좋아요/찜 흐름은 PR 5에서 `adoption_post_likes` 관계 테이블로 구현되었다. PR 6에서는 입양 완료 시 `adoption_posts.adopter_user_id`와 `adopted_at`을 저장했다. PR 7에서는 내가 입양한 강아지 목록 API를 구현했다.
+앱팀 추가 요청사항은 current active MVP 위에 follow-up API를 더한 완료 범위로 다룬다. Profile image 흐름은 PR 3까지 구현되었고, password change/reset 흐름은 PR 4에서 구현되었다. 좋아요/찜 흐름은 PR 5에서 `adoption_post_likes` 관계 테이블로 구현되었다. PR 6에서는 입양 완료 시 `adoption_posts.adopter_user_id`와 `adopted_at`을 저장했다. PR 7에서는 내가 입양한 강아지 목록 API를 구현했다. PR 8은 새 기능 구현 없이 contract/handoff/evidence를 정리하는 regression/docs PR이다.
 
-Included planned scope:
+Implemented follow-up scope:
 
 - Firebase chat `FIREBASE_DISABLED` 대응은 runtime 설정/운영 확인으로 처리한다.
-- `POST /api/auth/register`는 기존 JSON signup을 유지하면서 multipart/form-data와 optional `profile_image`를 추가할 예정이다.
-- 사용자 profile image 저장/변경 API와 로그인 사용자 비밀번호 변경 API, reset token 기반 비밀번호 재설정 API를 추가한다.
+- `POST /api/auth/register`는 기존 JSON signup을 유지하면서 multipart/form-data와 optional `profile_image`를 지원한다.
+- 사용자 profile image 저장/변경 API와 로그인 사용자 비밀번호 변경 API, reset token 기반 비밀번호 재설정 API를 제공한다.
 - 좋아요/찜은 `users.liked` JSON/map이 아니라 `adoption_post_likes` 관계 테이블로 구현한다.
 - 입양 완료 시 입양자는 `dogs.owner_user_id`가 아니라 `adoption_posts.adopter_user_id`로 추적한다.
 - `adoption_posts.adopter_user_id`는 `users.id` reference이며 `ADOPTER` role이 아니다.
 - `COMPLETED` 처리 시 `dogs.status = ADOPTED`는 유지한다.
 - 내가 입양한 강아지 목록은 `GET /api/dogs/adopted/me`에서 `adoption_posts.status = COMPLETED AND adoption_posts.adopter_user_id = current_user_id` 기준으로 조회한다.
 
-Excluded planned scope:
+Excluded follow-up scope:
 
 - 입양 후 1주/3개월/6개월 비문 인증, `post_adoption_verifications` table, 스케줄/기한/알림, 완료 후 자동 비문 재검증은 제외한다.
 - `dogs.owner_user_id`를 입양자로 변경하지 않는다. 이 field는 기존 등록자/작성자 ownership으로 유지한다.
@@ -148,6 +149,8 @@ Optional Firebase chat/push communication endpoints are implemented behind Fireb
 - `PATCH /api/chat/rooms/{room_id}/read`
 
 These endpoints do not change the canonical MySQL domain schema. Firebase disabled mode returns `FIREBASE_DISABLED` after Spring authentication succeeds. This index does not claim Flutter chat UI implementation is complete.
+
+Final app handoff checklist는 `docs/reference/APP_API_FINAL_HANDOFF_CHECKLIST.md`에 있고, PR 8 regression evidence는 `docs/ops-evidence/app-requested-api-regression-log.md`에 기록한다.
 
 상세 request/response, error code, visibility rule은 `docs/PETNOSE_MVP_API_CONTRACT.md`가 기준이다.
 

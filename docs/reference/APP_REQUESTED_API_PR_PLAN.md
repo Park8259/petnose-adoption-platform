@@ -34,12 +34,37 @@ Core policy:
 - `dogs.owner_user_id` remains original registrant/author ownership.
 - Adopter identity is tracked by `adoption_posts.adopter_user_id`.
 - `COMPLETED` still sets `dogs.status = ADOPTED`.
+- `ADOPTER` role/enum must not be added.
 - User password lookup APIs must not exist.
 - `password_hash` must never be exposed in responses.
 - User profile images use `users.profile_image_*` fields once PR 2 lands.
 - Adoption post representative images continue to use `dog_images.image_type=PROFILE`.
 
+Final status:
+
+- PR 0 docs/app-api-delta-plan: completed.
+- PR 1 chore/firebase-chat-runtime-check: completed.
+- PR 2 feat/user-profile-image-storage: completed.
+- PR 3 feat/auth-register-multipart-profile-image: completed.
+- PR 4 feat/user-password-apis: completed.
+- PR 5 feat/adoption-post-likes: completed.
+- PR 6 feat/adoption-completion-adopter: completed.
+- PR 7 feat/my-adopted-dogs-api: completed.
+- PR 8 test/app-api-regression-and-handoff: current.
+
+Final excluded scope:
+
+- post-adoption periodic nose verification is excluded.
+- `post_adoption_verifications` table was not added.
+- `ADOPTER` role was not added.
+- `dogs.owner_user_id` reassignment was not implemented.
+- Firebase remains optional chat/push layer only.
+
 ## PR 0 docs/app-api-delta-plan
+
+Status:
+
+- Completed.
 
 Purpose:
 
@@ -69,6 +94,10 @@ Acceptance criteria:
 
 ## PR 1 chore/firebase-chat-runtime-check
 
+Status:
+
+- Completed.
+
 Purpose:
 
 - Confirm and document shared/local Firebase runtime behavior for app-team testing.
@@ -92,6 +121,10 @@ Acceptance criteria:
 - Local Firebase-enabled testing documents required env values and external credential path.
 
 ## PR 2 feat/user-profile-image-storage
+
+Status:
+
+- Completed.
 
 Purpose:
 
@@ -284,23 +317,31 @@ Follow-up:
 
 ## PR 8 test/app-api-regression-and-handoff
 
+Status:
+
+- Current.
+
 Purpose:
 
 - Run focused regression after app-requested API implementation PRs land.
 
 Included files:
 
-- API regression tests or smoke scripts.
-- Updated handoff/evidence docs.
-- Any final contract clarifications discovered during verification.
+- Updated API contract, handoff, final checklist, knowledge index, PR plan, and sanitized regression evidence docs.
+- No Java business logic, backend tests, Flyway migration, active `docs/db` schema, GitHub Actions workflow, or runtime secret changes.
 
 Excluded scope:
 
 - No new product features beyond PRs 1-7.
 - No post-adoption periodic nose verification.
+- No `post_adoption_verifications` table.
+- No `ADOPTER` role.
+- No `dogs.owner_user_id` reassignment.
+- No Firebase service account JSON, JWT, reset token, `.env`, or other secret material.
 
 Acceptance criteria:
 
 - Existing MVP signup/login/dog registration/adoption post/handover flow still passes.
 - New profile image, password, likes, adopter completion, and adopted dogs APIs pass regression checks.
 - App handoff doc matches implemented endpoint behavior.
+- Regression evidence records local automated tests, static diff checks, excluded-scope scan, secret scan, and any runtime smoke PASS/NOT_RUN status without sensitive values.
