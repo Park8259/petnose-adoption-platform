@@ -225,12 +225,13 @@ GitHub Actions `ci.yaml`의 compose smoke는 이 mock/dev 경로만 검증합니
 ## GHCR 이미지 Publish
 
 `develop` 또는 `main` 브랜치에 push 되면 `.github/workflows/publish-images.yaml` 이 자동 실행되어  
-두 이미지를 빌드하고 GitHub Container Registry(GHCR)에 push합니다.
+세 이미지를 빌드하고 GitHub Container Registry(GHCR)에 push합니다.
 
 | 이미지 | GHCR 경로 |
 |--------|-----------|
 | Spring Boot API | `ghcr.io/jaaesung/petnose-spring-api` |
 | Python Embed | `ghcr.io/jaaesung/petnose-python-embed` |
+| Python Embed Real | `ghcr.io/jaaesung/petnose-python-embed-real` |
 
 **태그 전략**
 
@@ -238,6 +239,10 @@ GitHub Actions `ci.yaml`의 compose smoke는 이 mock/dev 경로만 검증합니
 |------|------|------|
 | `<branch>-latest` | `develop-latest` | 해당 브랜치 최신 이미지 |
 | `<branch>-<sha>` | `develop-a1b2c3d` | 특정 커밋 고정 이미지 (7자리 SHA) |
+
+workflow summary에는 image digest, provenance/SBOM/attestation 적용 여부가 기록됩니다.
+`petnose-python-embed-real` 이미지는 real-model dependency만 포함하며 model checkpoint는 image에 포함하지 않습니다.
+checkpoint는 서버의 `DOG_NOSE_MODEL_DIR_HOST` 경로를 read-only mount합니다.
 
 **이미지 pull 예시**
 
@@ -260,12 +265,13 @@ docker pull ghcr.io/jaaesung/petnose-spring-api:develop-a1b2c3d
 배포는 아래 경로만 사용합니다:
 
 1. GitHub Actions `publish-images.yaml`에서 GHCR 이미지 publish
-2. 서버에서 `infra/scripts/deploy.sh` 실행
-3. `deploy.sh` 내부에서:
+2. mock/prod path는 서버에서 `infra/scripts/deploy.sh` 실행
+3. dog nose v2 real-model path는 서버에서 `infra/scripts/deploy-real-model.sh` 실행
+4. deploy script 내부에서:
    - `docker compose pull`
    - `docker compose up -d --no-build`
    - post-deploy healthcheck (`/actuator/health` via nginx, canonical)
-4. healthcheck 실패 시 즉시 non-zero 종료 (fail-fast)
+5. healthcheck 실패 시 즉시 non-zero 종료 (fail-fast)
 
 즉, **서버에서 `git pull` 후 소스 빌드하는 방식은 사용하지 않습니다.**
 
@@ -277,21 +283,25 @@ docker pull ghcr.io/jaaesung/petnose-spring-api:develop-a1b2c3d
 - 자동: `publish-images.yaml` 성공 + `develop` 브랜치
 - 수동: `workflow_dispatch` (원하는 `image_tag` 지정 가능)
 - 태그 형식: `develop-latest` 또는 `develop-<sha7>`만 허용
-- 배포 시 서버 `.env` image 키를 직접 수정하지 않고, 해당 run에서만 env override로 `deploy.sh`를 실행
-- 배포 전 `/opt/petnose`의 핵심 파일(`deploy.sh`, `compose.yaml`, `compose.prod.yaml`) 해시를 워크플로우 체크아웃본과 비교해 drift를 차단
+- 자동 deploy는 `develop-<sha7>` immutable tag와 `real_model=true` 기준으로 실행됩니다.
+- `real_model=true`에서는 `PYTHON_EMBED_REAL_IMAGE`를 real image repo로 pinning하고 `deploy-real-model.sh`를 실행합니다.
+- `real_model=false`에서는 `PYTHON_EMBED_IMAGE`를 mock/prod image repo로 pinning하고 `deploy.sh`를 실행합니다.
+- workflow는 `.env` 전체를 출력하지 않고 key existence, model path, compose config만 확인합니다.
 
 필수 선행 조건 (UNVERIFIED, 수동 설정 필요):
 1. GitHub self-hosted runner가 dev 서버에서 online/idle 상태이고 라벨이 `self-hosted`, `Linux`, `X64`, `petnose-dev`와 일치
-2. dev 서버에 `/opt/petnose` 배치 및 `infra/scripts/deploy.sh` 실행 가능 상태
-3. 서버 `.env`에 배포/DB 환경변수 설정 (`SPRING_API_IMAGE`, `PYTHON_EMBED_IMAGE` 포함)
-4. GHCR 패키지가 private이면 서버에서 pull 가능한 인증(`GHCR_USERNAME`, `GHCR_TOKEN`)
-5. (수동 검증) runner 서비스 계정이 Docker 명령 실행 가능한 권한 보유 (`docker compose` 실행 가능)
+2. dev 서버에 `/opt/petnose` 배치 및 `infra/scripts/deploy.sh`, `infra/scripts/deploy-real-model.sh` 실행 가능 상태
+3. 서버 `.env`에 배포/DB 환경변수 설정 (`SPRING_API_IMAGE`, `PYTHON_EMBED_IMAGE`, `PYTHON_EMBED_REAL_IMAGE` 포함)
+4. real-model 배포 시 `DOG_NOSE_MODEL_DIR_HOST`와 required checkpoint가 서버에 존재
+5. GHCR 패키지가 private이면 서버에서 pull 가능한 인증(`GHCR_USERNAME`, `GHCR_TOKEN`)
+6. (수동 검증) runner 서비스 계정이 Docker 명령 실행 가능한 권한 보유 (`docker compose` 실행 가능)
 
 실패 시 확인 우선순위:
 1. self-hosted runner 라벨 불일치 또는 offline
 2. `/opt/petnose` preflight 실패 (파일 누락, `.env` 누락, compose config 오류)
-3. GHCR pull 실패 (권한/태그 오타)
-4. `deploy.sh`의 post-deploy healthcheck 실패 (`/actuator/health` via nginx)
+3. real-model path 누락 (`DOG_NOSE_MODEL_DIR_HOST`, checkpoint, `compose.prod-real-model.yaml`)
+4. GHCR pull 실패 (권한/태그 오타)
+5. deploy script의 post-deploy healthcheck 실패 (`/actuator/health` via nginx)
 
 ---
 
@@ -302,9 +312,9 @@ docker pull ghcr.io/jaaesung/petnose-spring-api:develop-a1b2c3d
 3. `cd-dev.yaml` 실행 (자동: workflow_run / 수동: workflow_dispatch)
 4. `cd-dev` guardrail 확인
    - tag 형식 검증 (`develop-latest` 또는 `develop-<sha7>`)
-   - GHCR manifest 존재 확인 (spring/python)
-   - 서버 배포 파일 해시 정합성 확인 (`/opt/petnose` vs workflow checkout)
-5. `deploy.sh` 실행 (`pull` → `up --no-build` → `actuator/health`)
+   - real-model deploy files, model mount, compose config
+   - optional Qdrant/MySQL reconciliation (`pwsh`가 있을 때)
+5. `deploy-real-model.sh` 실행 (`pull` → `up --no-build` → `actuator/health`)
 
 ---
 
@@ -314,8 +324,8 @@ docker pull ghcr.io/jaaesung/petnose-spring-api:develop-a1b2c3d
 |---|---|---|
 | runner 미수신/대기 | GitHub Actions run 상태 확인 | self-hosted `petnose-dev` 라벨 잡 수신 |
 | tag 검증 실패 | workflow 로그의 `Resolve image tag` 확인 | `develop-latest` 또는 `develop-<sha7>` |
-| GHCR 태그 없음 | workflow 로그의 `Verify image tag exists in GHCR` 확인 | spring/python 모두 manifest 조회 성공 |
-| 서버 파일 drift | workflow 로그의 `Verify server deploy files match repository` 확인 | `deploy.sh`, `compose.yaml`, `compose.prod.yaml` 해시 일치 |
+| real-model preflight 실패 | `Runner Smoke` 또는 `cd-dev` preflight 로그 확인 | `compose.prod-real-model.yaml`, `DOG_NOSE_MODEL_DIR_HOST`, checkpoint 존재 |
+| GHCR pull 실패 | deploy script 로그 확인 | spring/python-real image pull 성공 |
 | deploy 후 health 실패 | `docker compose ... ps` / `docker compose ... logs --tail=200 spring-api nginx python-embed` | `http://localhost/actuator/health` 성공 |
 
 ---

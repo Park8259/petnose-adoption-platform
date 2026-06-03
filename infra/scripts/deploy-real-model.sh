@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # AWS EC2 real-model deploy script (GHCR pull-based).
 # - no source build on server
-# - uses base + prod + real-model compose files
+# - uses base + prod + prod-real-model compose files
 # - optionally includes Firebase only when explicitly requested
 # - fail-fast on the Nginx-routed Spring actuator healthcheck
 set -euo pipefail
@@ -11,12 +11,12 @@ DOCKER_DIR="${SCRIPT_DIR}/../docker"
 ENV_FILE="${DOCKER_DIR}/.env"
 COMPOSE_BASE="${DOCKER_DIR}/compose.yaml"
 COMPOSE_PROD="${DOCKER_DIR}/compose.prod.yaml"
-COMPOSE_REAL="${DOCKER_DIR}/compose.real-model.yaml"
+COMPOSE_REAL_PROD="${DOCKER_DIR}/compose.prod-real-model.yaml"
 COMPOSE_FIREBASE="${DOCKER_DIR}/compose.firebase.yaml"
 MODEL_CHECKPOINT_RELATIVE="logs/s101_224/model_final.pth"
 
 SPRING_IMAGE_DEFAULT="ghcr.io/jaaesung/petnose-spring-api:main-latest"
-PYTHON_IMAGE_DEFAULT="ghcr.io/jaaesung/petnose-python-embed:main-latest"
+PYTHON_REAL_IMAGE_DEFAULT="ghcr.io/jaaesung/petnose-python-embed-real:main-latest"
 
 INCLUDE_FIREBASE="false"
 
@@ -32,7 +32,7 @@ Required env file:
 Compose files used by default:
   infra/docker/compose.yaml
   infra/docker/compose.prod.yaml
-  infra/docker/compose.real-model.yaml
+  infra/docker/compose.prod-real-model.yaml
 
 Firebase is disabled by default. Include infra/docker/compose.firebase.yaml
 only by passing --firebase or setting:
@@ -40,7 +40,7 @@ only by passing --firebase or setting:
 
 Expected production images:
   SPRING_API_IMAGE=ghcr.io/jaaesung/petnose-spring-api:main-<sha7>
-  PYTHON_EMBED_IMAGE=ghcr.io/jaaesung/petnose-python-embed-real:main-<sha7>
+  PYTHON_EMBED_REAL_IMAGE=ghcr.io/jaaesung/petnose-python-embed-real:main-<sha7>
 
 Required .env highlights:
   DOG_NOSE_MODEL_DIR_HOST=/opt/petnose/models/dog_nose_identification2
@@ -144,7 +144,7 @@ fi
 require_file "${ENV_FILE}"
 require_file "${COMPOSE_BASE}"
 require_file "${COMPOSE_PROD}"
-require_file "${COMPOSE_REAL}"
+require_file "${COMPOSE_REAL_PROD}"
 
 if is_true "$(read_config_var PETNOSE_INCLUDE_FIREBASE)"; then
   INCLUDE_FIREBASE="true"
@@ -153,7 +153,7 @@ fi
 COMPOSE_FILES=(
   -f "${COMPOSE_BASE}"
   -f "${COMPOSE_PROD}"
-  -f "${COMPOSE_REAL}"
+  -f "${COMPOSE_REAL_PROD}"
 )
 
 if [ "${INCLUDE_FIREBASE}" = "true" ]; then
@@ -169,28 +169,33 @@ compose_real_prod() {
 }
 
 SPRING_IMAGE_EFFECTIVE="$(read_config_var SPRING_API_IMAGE)"
-PYTHON_IMAGE_EFFECTIVE="$(read_config_var PYTHON_EMBED_IMAGE)"
+PYTHON_REAL_IMAGE_EFFECTIVE="$(read_config_var PYTHON_EMBED_REAL_IMAGE)"
+PYTHON_LEGACY_IMAGE_EFFECTIVE="$(read_config_var PYTHON_EMBED_IMAGE)"
 DOG_NOSE_MODEL_DIR_HOST_EFFECTIVE="$(read_config_var DOG_NOSE_MODEL_DIR_HOST)"
 ALLOW_NON_REAL_PYTHON_IMAGE_VALUE="$(read_config_var ALLOW_NON_REAL_PYTHON_IMAGE)"
 GHCR_USER="$(read_config_var GHCR_USERNAME)"
 GHCR_TOKEN_VALUE="$(read_config_var GHCR_TOKEN)"
 
 SPRING_IMAGE_EFFECTIVE="${SPRING_IMAGE_EFFECTIVE:-${SPRING_IMAGE_DEFAULT}}"
-PYTHON_IMAGE_EFFECTIVE="${PYTHON_IMAGE_EFFECTIVE:-${PYTHON_IMAGE_DEFAULT}}"
+PYTHON_REAL_IMAGE_EFFECTIVE="${PYTHON_REAL_IMAGE_EFFECTIVE:-${PYTHON_LEGACY_IMAGE_EFFECTIVE}}"
+PYTHON_REAL_IMAGE_EFFECTIVE="${PYTHON_REAL_IMAGE_EFFECTIVE:-${PYTHON_REAL_IMAGE_DEFAULT}}"
+
+export SPRING_API_IMAGE="${SPRING_IMAGE_EFFECTIVE}"
+export PYTHON_EMBED_REAL_IMAGE="${PYTHON_REAL_IMAGE_EFFECTIVE}"
 
 echo "[INFO] Deploy image targets"
 echo "  SPRING_API_IMAGE=${SPRING_IMAGE_EFFECTIVE}"
-echo "  PYTHON_EMBED_IMAGE=${PYTHON_IMAGE_EFFECTIVE}"
+echo "  PYTHON_EMBED_REAL_IMAGE=${PYTHON_REAL_IMAGE_EFFECTIVE}"
 echo "[INFO] Firebase compose included: ${INCLUDE_FIREBASE}"
 
-if [[ "${SPRING_IMAGE_EFFECTIVE}" == *":main-latest" ]] || [[ "${PYTHON_IMAGE_EFFECTIVE}" == *":main-latest" ]]; then
+if [[ "${SPRING_IMAGE_EFFECTIVE}" == *":main-latest" ]] || [[ "${PYTHON_REAL_IMAGE_EFFECTIVE}" == *":main-latest" ]]; then
   echo "[WARN] Production releases should pin immutable main-<sha7> tags instead of main-latest."
 fi
 
-if [[ "${PYTHON_IMAGE_EFFECTIVE}" != *"petnose-python-embed-real"* ]] && ! is_true "${ALLOW_NON_REAL_PYTHON_IMAGE_VALUE}"; then
-  echo "[ERROR] PYTHON_EMBED_IMAGE must use the real image repository for AWS real-model deployment."
+if [[ "${PYTHON_REAL_IMAGE_EFFECTIVE}" != *"petnose-python-embed-real"* ]] && ! is_true "${ALLOW_NON_REAL_PYTHON_IMAGE_VALUE}"; then
+  echo "[ERROR] PYTHON_EMBED_REAL_IMAGE must use the real image repository for AWS real-model deployment."
   echo "        Expected image name to contain: petnose-python-embed-real"
-  echo "        Current PYTHON_EMBED_IMAGE: ${PYTHON_IMAGE_EFFECTIVE}"
+  echo "        Current PYTHON_EMBED_REAL_IMAGE: ${PYTHON_REAL_IMAGE_EFFECTIVE}"
   echo "        Set ALLOW_NON_REAL_PYTHON_IMAGE=true only for an intentional emergency override."
   exit 1
 fi

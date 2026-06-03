@@ -14,6 +14,12 @@ name: Publish Images to GHCR
 #   develop-<shortsha>  develop 브랜치 특정 커밋 (7자리 SHA)
 #   main-latest         main 브랜치 최신 커밋
 #   main-<shortsha>     main 브랜치 특정 커밋
+#
+# real image policy:
+#   - petnose-python-embed-real은 real-model Python dependencies만 포함합니다.
+#   - dog-nose-identification2 checkpoint는 이미지에 포함하지 않습니다.
+#   - checkpoint, Firebase credential, JWT secret, DOG_NOSE_MODEL_DIR_HOST 등
+#     runtime/server-only 값은 build args로 전달하지 않습니다.
 
 on:
   push:
@@ -21,14 +27,15 @@ on:
       - develop
       - main
 
-# GITHUB_TOKEN 에 packages write 권한 부여 (GHCR push 필수)
 permissions:
   contents: read
   packages: write
+  attestations: write
+  id-token: write
 
 jobs:
   publish:
-    name: "${{ matrix.name }} → GHCR"
+    name: "${{ matrix.name }} -> GHCR"
     runs-on: ubuntu-latest
 
     strategy:
@@ -56,34 +63,43 @@ jobs:
               INSTALL_REAL_MODEL_DEPS=1
 
     steps:
-      - name: 코드 체크아웃
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # BuildKit 활성화 — 레이어 캐시(type=gha) 사용에 필요
-      - name: Docker Buildx 설정
-        uses: docker/setup-buildx-action@v3
+      - name: Check build args are non-secret
+        env:
+          BUILD_ARGS: ${{ matrix.build_args }}
+        run: |
+          set -euo pipefail
+          if printf '%s\n' "${BUILD_ARGS}" | grep -E 'PRIVATE_KEY|FIREBASE|AUTH_JWT_SECRET|TOKEN|PASSWORD|DOG_NOSE_MODEL_DIR_HOST'; then
+            echo "::error::Build args must not contain secrets or runtime host paths."
+            exit 1
+          fi
 
-      # GITHUB_TOKEN 으로 GHCR 인증 (별도 secrets 불필요)
-      - name: GHCR 로그인
-        uses: docker/login-action@v3
+      # BuildKit 활성화. Docker docs의 attestation/SBOM 예시는 setup-buildx-action@v4와
+      # build-push-action@v7을 사용하며, pushed image에만 attestations를 붙일 수 있습니다.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 브랜치명과 SHA 기반 태그 자동 생성
-      # 결과 예: develop-latest, develop-a1b2c3d
-      - name: 이미지 메타데이터 생성
+      - name: Generate image metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image_suffix }}
           tags: |
             type=raw,value=${{ github.ref_name }}-latest
             type=sha,prefix=${{ github.ref_name }}-,format=short
 
-      - name: 이미지 빌드 및 push
-        uses: docker/build-push-action@v5
+      - name: Build and push image
+        id: build
+        uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
@@ -91,6 +107,38 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: ${{ matrix.build_args }}
+          provenance: mode=max
+          sbom: true
           # 서비스별 독립 캐시 스코프 (spring-api / python-embed / python-embed-real 분리)
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,scope=${{ matrix.name }},mode=max
+
+      - name: Generate GitHub image attestation
+        uses: actions/attest@v4
+        with:
+          subject-name: ghcr.io/${{ github.repository_owner }}/${{ matrix.image_suffix }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Write image digest summary
+        env:
+          IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/${{ matrix.image_suffix }}
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### ${IMAGE_NAME}"
+            echo ""
+            echo "- Digest: \`${IMAGE_DIGEST}\`"
+            echo "- Provenance: docker/build-push-action \`mode=max\` + GitHub image attestation"
+            echo "- SBOM: docker/build-push-action \`sbom: true\`"
+            echo "- Tags:"
+            while IFS= read -r tag; do
+              if [ -n "${tag}" ]; then
+                echo "  - \`${tag}\`"
+              fi
+            done <<< "${IMAGE_TAGS}"
+            echo ""
+            echo "Real-model checkpoint and server-only secrets are not baked into this image."
+          } >> "${GITHUB_STEP_SUMMARY}"
