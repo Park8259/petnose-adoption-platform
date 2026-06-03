@@ -4,12 +4,39 @@ on:
   workflow_dispatch:
     inputs:
       image_tag:
-        description: "Image tag to deploy (e.g. develop-latest or develop-<sha7>)"
+        description: "Image tag to deploy (develop-latest or develop-<sha7>)"
         required: true
         default: "develop-latest"
+      real_model:
+        description: "Deploy with real-model compose override"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      run_reconciliation:
+        description: "Run Qdrant/MySQL reconciliation after real-model deploy"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      run_healthcheck:
+        description: "Run an additional post-deploy actuator healthcheck"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
   workflow_run:
     workflows: ["Publish Images to GHCR"]
     types: [completed]
+
+permissions:
+  contents: read
 
 jobs:
   dev-deploy:
@@ -19,66 +46,191 @@ jobs:
        github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.head_branch == 'develop')
     runs-on: [self-hosted, Linux, X64, petnose-dev]
+    timeout-minutes: 30
     env:
       DEPLOY_ROOT: /opt/petnose
       SPRING_IMAGE_REPO: ghcr.io/${{ github.repository_owner }}/petnose-spring-api
       PYTHON_IMAGE_REPO: ghcr.io/${{ github.repository_owner }}/petnose-python-embed
+      PYTHON_REAL_IMAGE_REPO: ghcr.io/${{ github.repository_owner }}/petnose-python-embed-real
+
     steps:
-      - name: Resolve image tag
+      - name: Resolve deploy inputs
         id: resolve
         shell: bash
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="${{ github.event.inputs.image_tag }}"
+            TAG="${{ inputs.image_tag }}"
+            REAL_MODEL="${{ inputs.real_model }}"
+            RUN_RECONCILIATION="${{ inputs.run_reconciliation }}"
+            RUN_HEALTHCHECK="${{ inputs.run_healthcheck }}"
           else
             SHA="${{ github.event.workflow_run.head_sha }}"
             TAG="develop-${SHA:0:7}"
+            REAL_MODEL="true"
+            RUN_RECONCILIATION="true"
+            RUN_HEALTHCHECK="true"
           fi
-          if [[ ! "${TAG}" =~ ^[A-Za-z0-9._-]+$ ]]; then
-            echo "[ERROR] Invalid image tag format: ${TAG}"
+
+          if [[ ! "${TAG}" =~ ^develop-(latest|[0-9a-f]{7})$ ]]; then
+            echo "[ERROR] Invalid dev image tag: ${TAG}. Use develop-latest or develop-<sha7>."
             exit 1
           fi
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "Resolved tag: $TAG"
 
-      - name: Preflight on dev server (local runner)
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "real_model=${REAL_MODEL}" >> "$GITHUB_OUTPUT"
+          echo "run_reconciliation=${RUN_RECONCILIATION}" >> "$GITHUB_OUTPUT"
+          echo "run_healthcheck=${RUN_HEALTHCHECK}" >> "$GITHUB_OUTPUT"
+          echo "Resolved dev deploy: tag=${TAG}, real_model=${REAL_MODEL}"
+
+      - name: Preflight on dev server
         shell: bash
+        env:
+          REAL_MODEL: ${{ steps.resolve.outputs.real_model }}
+          RUN_RECONCILIATION: ${{ steps.resolve.outputs.run_reconciliation }}
         run: |
           set -euo pipefail
+
+          require_file() {
+            test -f "$1" || {
+              echo "[ERROR] Missing file: $1"
+              exit 1
+            }
+          }
+
+          read_env_var() {
+            local key="$1"
+            local line
+            line="$(grep -m1 "^${key}=" infra/docker/.env || true)"
+            if [ -z "${line}" ]; then
+              return 0
+            fi
+            local value="${line#*=}"
+            value="${value%$'\r'}"
+            value="${value%\"}"
+            value="${value#\"}"
+            value="${value%\'}"
+            value="${value#\'}"
+            printf '%s' "${value}"
+          }
+
+          test -d "${DEPLOY_ROOT}"
           cd "${DEPLOY_ROOT}"
-          test -f infra/scripts/deploy.sh
-          test -f infra/docker/.env
-          test -f infra/docker/compose.yaml
-          test -f infra/docker/compose.prod.yaml
+
+          require_file infra/scripts/deploy.sh
+          require_file infra/docker/.env
+          require_file infra/docker/compose.yaml
+          require_file infra/docker/compose.prod.yaml
           grep -q '^SPRING_API_IMAGE=' infra/docker/.env
           grep -q '^PYTHON_EMBED_IMAGE=' infra/docker/.env
+
           docker --version
           docker compose version
           curl --version
-          docker compose --env-file infra/docker/.env -f infra/docker/compose.yaml -f infra/docker/compose.prod.yaml config >/dev/null
+
+          docker compose \
+            --env-file infra/docker/.env \
+            -f infra/docker/compose.yaml \
+            -f infra/docker/compose.prod.yaml \
+            config > /dev/null
+
+          if [ "${REAL_MODEL}" = "true" ]; then
+            require_file infra/scripts/deploy-real-model.sh
+            require_file infra/docker/compose.prod-real-model.yaml
+            grep -q '^PYTHON_EMBED_REAL_IMAGE=' infra/docker/.env
+            grep -q '^DOG_NOSE_MODEL_DIR_HOST=' infra/docker/.env
+
+            MODEL_DIR="$(read_env_var DOG_NOSE_MODEL_DIR_HOST)"
+            test -d "${MODEL_DIR}"
+            test -f "${MODEL_DIR%/}/logs/s101_224/model_final.pth"
+
+            docker compose \
+              --env-file infra/docker/.env \
+              -f infra/docker/compose.yaml \
+              -f infra/docker/compose.prod.yaml \
+              -f infra/docker/compose.prod-real-model.yaml \
+              config > /dev/null
+          fi
+
+          if [ "${RUN_RECONCILIATION}" = "true" ]; then
+            if ! command -v pwsh > /dev/null 2>&1; then
+              echo "::warning::pwsh is not installed; optional reconciliation will be skipped."
+            fi
+          fi
 
       - name: Pin image tags in env
         shell: bash
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
+          REAL_MODEL: ${{ steps.resolve.outputs.real_model }}
         run: |
           set -euo pipefail
           cd "${DEPLOY_ROOT}"
-          TAG="${{ steps.resolve.outputs.tag }}"
-          sed -i "s|^SPRING_API_IMAGE=.*|SPRING_API_IMAGE=${SPRING_IMAGE_REPO}:${TAG}|" infra/docker/.env
-          sed -i "s|^PYTHON_EMBED_IMAGE=.*|PYTHON_EMBED_IMAGE=${PYTHON_IMAGE_REPO}:${TAG}|" infra/docker/.env
 
-      - name: Run deploy.sh on dev server
+          set_env_var() {
+            local key="$1"
+            local value="$2"
+            if grep -q "^${key}=" infra/docker/.env; then
+              sed -i "s|^${key}=.*|${key}=${value}|" infra/docker/.env
+            else
+              printf '\n%s=%s\n' "${key}" "${value}" >> infra/docker/.env
+            fi
+          }
+
+          set_env_var SPRING_API_IMAGE "${SPRING_IMAGE_REPO}:${TAG}"
+          if [ "${REAL_MODEL}" = "true" ]; then
+            set_env_var PYTHON_EMBED_REAL_IMAGE "${PYTHON_REAL_IMAGE_REPO}:${TAG}"
+          else
+            set_env_var PYTHON_EMBED_IMAGE "${PYTHON_IMAGE_REPO}:${TAG}"
+          fi
+
+      - name: Run deploy script
+        shell: bash
+        env:
+          REAL_MODEL: ${{ steps.resolve.outputs.real_model }}
+        run: |
+          set -euo pipefail
+          cd "${DEPLOY_ROOT}"
+          if [ "${REAL_MODEL}" = "true" ]; then
+            bash infra/scripts/deploy-real-model.sh
+          else
+            bash infra/scripts/deploy.sh
+          fi
+
+      - name: Optional reconciliation
+        if: ${{ steps.resolve.outputs.real_model == 'true' && steps.resolve.outputs.run_reconciliation == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
           cd "${DEPLOY_ROOT}"
-          bash infra/scripts/deploy.sh
+          if ! command -v pwsh > /dev/null 2>&1; then
+            echo "::warning::pwsh is not installed; skipping optional reconciliation."
+            exit 0
+          fi
+          pwsh -NoProfile -File ./scripts/check-qdrant-reference-consistency.ps1 \
+            -EnvFile infra/docker/.env \
+            -QdrantUrl http://localhost:6333 \
+            -Collection dog_nose_embeddings_real_v2 \
+            -ExpectedDimension 2048 \
+            -ExpectedDistance Cosine \
+            -FailOnDrift
 
       - name: Post-deploy status snapshot
         if: always()
         shell: bash
+        env:
+          REAL_MODEL: ${{ steps.resolve.outputs.real_model }}
+          RUN_HEALTHCHECK: ${{ steps.resolve.outputs.run_healthcheck }}
         run: |
           set -euo pipefail
           cd "${DEPLOY_ROOT}"
-          docker compose --env-file infra/docker/.env -f infra/docker/compose.yaml -f infra/docker/compose.prod.yaml ps
-          curl -fsS http://localhost/actuator/health || true
+
+          COMPOSE_FILES=(-f infra/docker/compose.yaml -f infra/docker/compose.prod.yaml)
+          if [ "${REAL_MODEL}" = "true" ]; then
+            COMPOSE_FILES+=(-f infra/docker/compose.prod-real-model.yaml)
+          fi
+
+          docker compose --env-file infra/docker/.env "${COMPOSE_FILES[@]}" ps || true
+          if [ "${RUN_HEALTHCHECK}" = "true" ]; then
+            curl -fsS http://localhost/actuator/health
+          fi
