@@ -4,8 +4,8 @@
 
 ## 실행 환경
 
-- Model root: `C:\Dev\dog_nose_identification2\dog_nose_identification2`
-- Dataset: `C:\Dev\dog_nose_identification2\dog_nose_identification2\dir_train`
+- Model root: `<local_model_repo>`
+- Dataset: `<model_dataset_dir>`
 - Checkpoint: `logs\s101_224\model_final.pth`
 - Model: `dog-nose-identification2:s101_224`
 - Vector dimension: 2048
@@ -21,13 +21,13 @@
 - multi-reference 실험은 앞 3장을 등록 reference, 뒤 2장을 validation query로 사용했다.
 - 선택 dog_id: `1771`-`1821` 범위의 50개 dog_id. `1819`는 5장 조건을 만족하지 않아 건너뛰었다.
 
-생성 파일:
+생성 산출물:
 
-- `docs/model-analysis/pairwise_scores.csv`: 31,175 rows
-- `docs/model-analysis/multi_reference_scores.csv`: 5,000 rows
-- `docs/model-analysis/experiment_summary.json`: 실험 summary
+- `pairwise_scores.csv`: 31,175 rows, generated raw CSV artifact
+- `multi_reference_scores.csv`: 5,000 rows, generated raw CSV artifact
+- `experiment_summary.json`: 실험 summary, repository에 유지하는 primary tracked summary
 
-CSV 내부 이미지 경로는 Docker mount 기준 `/models/dog_nose_identification2/...`로 기록되어 있으며, 로컬에서는 `C:\Dev\dog_nose_identification2\dog_nose_identification2\...`에 대응한다.
+Raw CSV는 active repository에 tracked file로 유지하지 않는다. 필요하면 `docs/model-analysis/README.md`의 artifact policy와 `run_similarity_experiment.py`로 local artifact directory에 재생성한다.
 
 ## 실험 A: 동일 이미지 재입력
 
@@ -104,7 +104,7 @@ Positive = query dog_id와 target dog_id가 같음. Negative = 다름.
 
 현재 PetNose 구현에는 query expansion 또는 re-ranking 단계가 없다. Qdrant가 반환한 point score 중 max를 바로 Spring threshold와 비교한다.
 
-이번 CSV의 multi-reference 행은 각 query를 모든 target dog의 3-reference set과 비교했기 때문에, "reference point search 후 dog_id로 group-by re-ranking"을 오프라인으로 재현한 형태다. 별도의 query vector expansion은 실행하지 않았다. v2 설계에서는 Qdrant reference search 결과를 dog_id로 묶고 `max_reference_score`, `top2_average_score`, `centroid_score`로 re-ranking하는 방식을 권장한다.
+생성된 multi-reference raw artifact의 행은 각 query를 모든 target dog의 3-reference set과 비교했기 때문에, "reference point search 후 dog_id로 group-by re-ranking"을 오프라인으로 재현한 형태다. 별도의 query vector expansion은 실행하지 않았다. v2 설계에서는 Qdrant reference search 결과를 dog_id로 묶고 `max_reference_score`, `top2_average_score`, `centroid_score`로 re-ranking하는 방식을 권장한다.
 
 ## Threshold 초안
 

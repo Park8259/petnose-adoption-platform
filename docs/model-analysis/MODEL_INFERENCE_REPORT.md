@@ -6,8 +6,8 @@
 
 ## 대상
 
-- PetNose repository: `C:\Dev\_petnose_fix`
-- Model repository: `C:\Dev\dog_nose_identification2\dog_nose_identification2`
+- PetNose repository: repository root
+- Model repository: `<local_model_repo>`
 - 실제 PetNose embedder: `python-embed/app/embedding/dog_nose_identification2_embedder.py`
 - 원 모델 근거: `dog_nose_inference_colab.ipynb`
 
@@ -24,15 +24,15 @@
 | 실제 embedder | `python-embed/app/embedding/dog_nose_identification2_embedder.py` |
 | env 분기 | `EMBED_MODEL=mock-v1`이면 mock, `EMBED_MODEL=dog-nose-identification2`이면 real |
 | 기본 model dir | `/models/dog_nose_identification2` |
-| host model dir 예시 | `C:\Dev\dog_nose_identification2\dog_nose_identification2` |
+| host model dir 예시 | `<local_model_repo>` |
 | checkpoint 직접 지정 | `DOG_NOSE_MODEL_PATH`가 있으면 그 파일 우선 |
 | checkpoint 탐색 우선순위 | `logs/s101_224/model_final.pth`, `logs/s101_256/model_final.pth`, `logs/s101_288/model_final.pth`, `logs/S200_224/model_final.pth`, 이후 `model_final.pth`/weight 확장자 rglob |
-| 실제 사용 checkpoint | `C:\Dev\dog_nose_identification2\dog_nose_identification2\logs\s101_224\model_final.pth` |
+| 실제 사용 checkpoint | `<local_model_repo>/logs/s101_224/model_final.pth` |
 | model tag | `s101_224` |
 | response model | `dog-nose-identification2:s101_224` |
 | vector dimension | 2048 |
 | device | `EMBED_DEVICE` 기본 `cpu`; `cuda*` 요청 시 CUDA 가능할 때만 CUDA, 아니면 CPU |
-| Docker real override | `compose.real-model.yaml`이 `EMBED_MODEL=dog-nose-identification2`, `EMBED_VECTOR_DIM=2048`, `QDRANT_VECTOR_DIM=2048`, `QDRANT_COLLECTION=dog_nose_embeddings_real_v1` 강제 |
+| historical Docker real override | 당시 `compose.real-model.yaml`이 `EMBED_MODEL=dog-nose-identification2`, `EMBED_VECTOR_DIM=2048`, `QDRANT_VECTOR_DIM=2048`, `QDRANT_COLLECTION=dog_nose_embeddings_real_v1` 강제 |
 
 실제 점검 결과:
 
@@ -104,10 +104,11 @@
 9. duplicate면 DB 상태를 `DUPLICATE_SUSPECTED`로 바꾸고 Qdrant upsert를 생략한다.
 10. duplicate가 아니면 Qdrant upsert 후 `REGISTERED`로 확정한다.
 
-Qdrant search/upsert:
+Qdrant search/upsert historical note:
 
-- Collection default: `dog_nose_embeddings`
-- Real model override: `dog_nose_embeddings_real_v1`
+- 당시 collection default: `dog_nose_embeddings`
+- 당시 real model override: `dog_nose_embeddings_real_v1`
+- 현재 active dog nose v2 collection 기준은 `docs/PROJECT_KNOWLEDGE_INDEX.md`와 `docs/PETNOSE_MVP_API_CONTRACT.md`의 `dog_nose_embeddings_real_v2`를 따른다.
 - Dimension default: mock 128, real override 2048
 - Distance metric: `Cosine`
 - Search endpoint: `/collections/{collection}/points/search`

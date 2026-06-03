@@ -60,6 +60,15 @@ htmlcov/
 *.safetensors
 saved_model/
 
+# ── Model analysis generated outputs ─────────────────────────────────────────
+docs/model-analysis/*.csv
+docs/model-analysis/outputs/
+docs/model-analysis/raw/
+docs/model-analysis/generated/
+docs/model-analysis/*.parquet
+docs/model-analysis/*.npy
+docs/model-analysis/*.npz
+
 # ── Node ─────────────────────────────────────────────────────────────────────
 node_modules/
 
