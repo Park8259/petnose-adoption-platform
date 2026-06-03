@@ -29,6 +29,7 @@
 | Migration 참고 | `reference/DB_MIGRATION_STRATEGY.md` | Flyway/runtime migration 작업 |
 | Vector/Storage 참고 | `reference/STORAGE_AND_VECTOR_BOUNDARY.md` | Qdrant/Python Embed/file storage 경계 판단 |
 | Qdrant 정합성 복구 | `reference/QDRANT_RECONCILIATION_RUNBOOK.md` | `dog_nose_references`와 Qdrant active points drift 점검/복구 |
+| 모델 분석 근거 | `model-analysis/README.md` | dog nose v2 threshold/Qdrant reference 설계 summary와 재현 경로 확인 |
 | Spring-Python 참고 | `reference/SPRING_PYTHON_EMBED_CONTRACT.md` | Spring Boot ↔ Python Embed 연동 작업 |
 | 공유 전 점검 | `reference/MVP_SCHEMA_TABLE_COUNT_REVIEW.md` | 과거 table count 기준 충돌 확인 |
 | 앱 요청 후속 API 계획 | `reference/APP_REQUESTED_API_PR_PLAN.md` | 앱팀 추가 요청사항의 PR 분할/범위 확인 |
