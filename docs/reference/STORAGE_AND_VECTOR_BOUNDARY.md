@@ -19,6 +19,7 @@
 - MySQL이 source of truth다.
 - Qdrant는 account, dog lifecycle, adoption post, verification history의 authority가 아니다.
 - Qdrant는 dog nose vector search index로만 사용한다.
+- MySQL `dog_nose_references`가 Qdrant point id와 point metadata의 source of truth다.
 - MySQL은 embedding vector 또는 image BLOB를 저장하지 않는다.
 - file binary는 file storage에 저장하고, MySQL은 `dog_images.file_path`에 upload-root-relative path만 저장한다.
 
@@ -56,6 +57,18 @@ Qdrant point id는 `dogs.id`와 같지 않다. Dog nose v2의 point id와 refere
 - adoption post creation: no Qdrant point is created or updated
 
 정상 등록(`PASSED`)에서만 Qdrant `REFERENCE` point 5개와 `CENTROID` point 1개를 upsert한다. `DUPLICATE_SUSPECTED`와 reference quality failure(`RETAKE_ONE`, `RETAKE_ALL`)는 Qdrant upsert를 수행하지 않는다.
+
+## Qdrant Reconciliation Policy
+
+Qdrant/MySQL drift 점검과 복구 절차는 [QDRANT_RECONCILIATION_RUNBOOK.md](QDRANT_RECONCILIATION_RUNBOOK.md)를 따른다.
+
+운영 기준:
+
+- MySQL `dog_nose_references`가 Qdrant point metadata의 source of truth다.
+- Qdrant vector 자체는 MySQL에 저장하지 않는다.
+- 따라서 MySQL에는 active `dog_nose_references` row가 있지만 Qdrant point가 사라진 `missing_in_qdrant` 상태는 script가 자동 재생성할 수 없다.
+- MySQL source of truth에 없는 `orphan_in_qdrant` point는 dry-run evidence를 확인한 뒤 삭제할 수 있다.
+- Qdrant payload mismatch는 자동 patch하지 않는다. evidence chain을 보존하려면 삭제 후 재등록/재생성을 우선 검토한다.
 
 ## Image Storage Policy
 
