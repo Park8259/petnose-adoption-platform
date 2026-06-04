@@ -2,6 +2,18 @@ spring:
   application:
     name: petnose-api
 
+  mail:
+    host: ${MAIL_HOST:}
+    port: ${MAIL_PORT:587}
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_PASSWORD:}
+    properties:
+      "[mail.smtp.auth]": ${MAIL_SMTP_AUTH:true}
+      "[mail.smtp.starttls.enable]": ${MAIL_SMTP_STARTTLS_ENABLE:true}
+      "[mail.smtp.connectiontimeout]": ${MAIL_SMTP_CONNECTION_TIMEOUT_MS:5000}
+      "[mail.smtp.timeout]": ${MAIL_SMTP_TIMEOUT_MS:3000}
+      "[mail.smtp.writetimeout]": ${MAIL_SMTP_WRITE_TIMEOUT_MS:5000}
+
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:mysql://localhost:3306/petnose?useSSL=false&allowPublicKeyRetrieval=true&characterEncoding=UTF-8}
     username: ${SPRING_DATASOURCE_USERNAME:petnose}
@@ -91,6 +103,10 @@ auth:
   password-reset:
     token-ttl-seconds: ${AUTH_PASSWORD_RESET_TOKEN_TTL_SECONDS:1800}
     expose-token-in-response: ${AUTH_PASSWORD_RESET_EXPOSE_TOKEN_IN_RESPONSE:false}
+    email-enabled: ${AUTH_PASSWORD_RESET_EMAIL_ENABLED:false}
+    reset-url-template: ${AUTH_PASSWORD_RESET_URL_TEMPLATE:http://localhost:3000/password-reset?token={token}}
+    mail-from: ${AUTH_PASSWORD_RESET_MAIL_FROM:no-reply@petnose.local}
+    mail-subject: ${AUTH_PASSWORD_RESET_MAIL_SUBJECT:[PetNose] 비밀번호 재설정 안내}
 
 firebase:
   enabled: ${FIREBASE_ENABLED:false}

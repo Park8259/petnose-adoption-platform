@@ -1,5 +1,6 @@
 package com.petnose.api.service;
 
+import com.petnose.api.config.PasswordResetEmailProperties;
 import com.petnose.api.domain.entity.PasswordResetToken;
 import com.petnose.api.domain.entity.User;
 import com.petnose.api.domain.enums.UserRole;
@@ -20,11 +21,14 @@ import com.petnose.api.exception.ApiException;
 import com.petnose.api.repository.PasswordResetTokenRepository;
 import com.petnose.api.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -42,6 +46,7 @@ import java.util.Map;
 import java.util.regex.Pattern;
 
 @Service
+@Slf4j
 @RequiredArgsConstructor
 public class AuthService {
 
@@ -62,6 +67,8 @@ public class AuthService {
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenService jwtTokenService;
     private final FileStorageService fileStorageService;
+    private final PasswordResetEmailService passwordResetEmailService;
+    private final PasswordResetEmailProperties passwordResetEmailProperties;
     private final SecureRandom secureRandom = new SecureRandom();
 
     @Value("${auth.password-reset.token-ttl-seconds:1800}")
@@ -202,8 +209,10 @@ public class AuthService {
             PasswordResetToken token = new PasswordResetToken();
             token.setUserId(user.getId());
             token.setTokenHash(sha256Hex(resetToken));
-            token.setExpiresAt(now.plusSeconds(passwordResetTokenTtlSeconds));
+            Instant expiresAt = now.plusSeconds(passwordResetTokenTtlSeconds);
+            token.setExpiresAt(expiresAt);
             passwordResetTokenRepository.save(token);
+            schedulePasswordResetEmailAfterCommit(user, resetToken, expiresAt);
         }
 
         if (exposePasswordResetTokenInResponse) {
@@ -240,6 +249,32 @@ public class AuthService {
         storedToken.setUsedAt(now);
         passwordResetTokenRepository.markOtherUnusedTokensUsed(user.getId(), storedToken.getId(), now);
         return new PasswordResetConfirmResponse(true);
+    }
+
+    private void schedulePasswordResetEmailAfterCommit(User user, String resetToken, Instant expiresAt) {
+        if (!passwordResetEmailProperties.isEmailEnabled()) {
+            return;
+        }
+
+        Runnable sendTask = () -> {
+            try {
+                passwordResetEmailService.sendPasswordResetEmailAsync(user.getEmail(), resetToken, expiresAt);
+            } catch (RuntimeException e) {
+                log.warn("Password reset email scheduling failed for user_id={}: {}", user.getId(), e.getMessage());
+            }
+        };
+
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    sendTask.run();
+                }
+            });
+            return;
+        }
+
+        sendTask.run();
     }
 
     @Transactional(readOnly = true)
