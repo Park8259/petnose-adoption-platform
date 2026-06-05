@@ -73,4 +73,4 @@ cd backend && gradle bootJar --no-daemon
 docker compose --env-file infra/docker/.env -f infra/docker/compose.yaml -f infra/docker/compose.dev.yaml config --quiet
 ```
 
-real-model E2E를 다시 검증할 때는 `infra/docker/compose.real-model.yaml`을 함께 포함하고, `dog-nose-identification2`, 2048차원, `dog_nose_embeddings_real_v1` 기준을 사용한다.
+real-model E2E를 다시 검증할 때는 `infra/docker/compose.real-model.yaml`을 함께 포함하고, `dog-nose-identification2`, 2048차원, `dog_nose_embeddings_real_v2` 기준을 사용한다.

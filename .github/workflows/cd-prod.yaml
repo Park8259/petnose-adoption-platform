@@ -1,30 +1,68 @@
-name: CD — Prod Deploy (GHCR Pull Path)
+name: CD - Prod Deploy (GHCR Pull Path)
 
 # main 브랜치 기준, 수동 실행(workflow_dispatch)으로만 배포합니다.
-# 자동 배포는 의도치 않은 릴리즈를 방지하기 위해 보수적으로 운영합니다.
-# 실행 전 `publish-images.yaml`이 main 브랜치 최신 이미지를 push 했는지 확인하세요.
-#
-# UNVERIFIED PLACEHOLDER:
-#   - 실제 서버 접근/권한/네트워크는 이 저장소에서 검증할 수 없습니다.
-#   - PROD_* secrets 설정이 필요합니다.
+# production은 immutable main-<sha7> tag를 직접 입력해야 합니다.
+# 실행 전 publish-images.yaml이 해당 main tag를 GHCR에 push 했는지 확인하세요.
 
 on:
   workflow_dispatch:
     inputs:
+      image_tag:
+        description: "Immutable image tag to deploy. Required format: main-<sha7>"
+        required: true
       confirm:
         description: "prod 배포를 진행합니까? (yes 입력)"
         required: true
         default: "no"
+      real_model:
+        description: "Deploy with real-model compose override"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      run_healthcheck:
+        description: "Run an additional post-deploy actuator healthcheck"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+permissions:
+  contents: read
 
 jobs:
   deploy-prod:
-    name: Prod 서버 배포
+    name: Prod server deploy
     runs-on: ubuntu-latest
-    if: ${{ github.event.inputs.confirm == 'yes' }}
-    timeout-minutes: 20
+    if: ${{ inputs.confirm == 'yes' }}
+    timeout-minutes: 30
+    environment: production
+    env:
+      SPRING_IMAGE_REPO: ghcr.io/${{ github.repository_owner }}/petnose-spring-api
+      PYTHON_IMAGE_REPO: ghcr.io/${{ github.repository_owner }}/petnose-python-embed
+      PYTHON_REAL_IMAGE_REPO: ghcr.io/${{ github.repository_owner }}/petnose-python-embed-real
 
     steps:
-      - name: SSH 준비
+      - name: Validate production inputs
+        id: validate
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.image_tag }}"
+          if [[ ! "${TAG}" =~ ^main-[0-9a-f]{7}$ ]]; then
+            echo "[ERROR] Production deploy requires immutable main-<sha7> tag. Received: ${TAG}"
+            exit 1
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "real_model=${{ inputs.real_model }}" >> "$GITHUB_OUTPUT"
+          echo "run_healthcheck=${{ inputs.run_healthcheck }}" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare SSH
+        shell: bash
         run: |
           set -euo pipefail
           mkdir -p ~/.ssh
@@ -32,13 +70,102 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "${{ secrets.PROD_HOST }}" >> ~/.ssh/known_hosts
 
-      - name: Prod 배포 실행
+      - name: Run prod deploy
+        shell: bash
+        env:
+          TAG: ${{ steps.validate.outputs.tag }}
+          REAL_MODEL: ${{ steps.validate.outputs.real_model }}
+          RUN_HEALTHCHECK: ${{ steps.validate.outputs.run_healthcheck }}
         run: |
           set -euo pipefail
+
+          SPRING_IMAGE="${SPRING_IMAGE_REPO}:${TAG}"
+          PYTHON_IMAGE="${PYTHON_IMAGE_REPO}:${TAG}"
+          PYTHON_REAL_IMAGE="${PYTHON_REAL_IMAGE_REPO}:${TAG}"
+
           ssh -o StrictHostKeyChecking=yes \
             -i ~/.ssh/id_ed25519 \
             "${{ secrets.PROD_USER }}@${{ secrets.PROD_HOST }}" \
-            "cd /opt/petnose && \
-             SPRING_API_IMAGE=ghcr.io/${{ github.repository_owner }}/petnose-spring-api:main-latest \
-             PYTHON_EMBED_IMAGE=ghcr.io/${{ github.repository_owner }}/petnose-python-embed:main-latest \
-             bash infra/scripts/deploy.sh"
+            "TAG='${TAG}' REAL_MODEL='${REAL_MODEL}' RUN_HEALTHCHECK='${RUN_HEALTHCHECK}' SPRING_IMAGE='${SPRING_IMAGE}' PYTHON_IMAGE='${PYTHON_IMAGE}' PYTHON_REAL_IMAGE='${PYTHON_REAL_IMAGE}' bash -s" <<'EOF'
+          set -euo pipefail
+
+          DEPLOY_ROOT=/opt/petnose
+
+          require_file() {
+            test -f "$1" || {
+              echo "[ERROR] Missing file: $1"
+              exit 1
+            }
+          }
+
+          read_env_var() {
+            local key="$1"
+            local line
+            line="$(grep -m1 "^${key}=" infra/docker/.env || true)"
+            if [ -z "${line}" ]; then
+              return 0
+            fi
+            local value="${line#*=}"
+            value="${value%$'\r'}"
+            value="${value%\"}"
+            value="${value#\"}"
+            value="${value%\'}"
+            value="${value#\'}"
+            printf '%s' "${value}"
+          }
+
+          test -d "${DEPLOY_ROOT}"
+          cd "${DEPLOY_ROOT}"
+
+          require_file infra/docker/.env
+          require_file infra/docker/compose.yaml
+          require_file infra/docker/compose.prod.yaml
+          require_file infra/scripts/deploy.sh
+          docker --version
+          docker compose version
+          curl --version
+
+          if [ "${REAL_MODEL}" = "true" ]; then
+            require_file infra/scripts/deploy-real-model.sh
+            require_file infra/docker/compose.prod-real-model.yaml
+            grep -q '^DOG_NOSE_MODEL_DIR_HOST=' infra/docker/.env
+            MODEL_DIR="$(read_env_var DOG_NOSE_MODEL_DIR_HOST)"
+            test -d "${MODEL_DIR}"
+            test -f "${MODEL_DIR%/}/logs/s101_224/model_final.pth"
+
+            SPRING_API_IMAGE="${SPRING_IMAGE}" \
+            PYTHON_EMBED_REAL_IMAGE="${PYTHON_REAL_IMAGE}" \
+            docker compose \
+              --env-file infra/docker/.env \
+              -f infra/docker/compose.yaml \
+              -f infra/docker/compose.prod.yaml \
+              -f infra/docker/compose.prod-real-model.yaml \
+              config > /dev/null
+
+            SPRING_API_IMAGE="${SPRING_IMAGE}" \
+            PYTHON_EMBED_REAL_IMAGE="${PYTHON_REAL_IMAGE}" \
+            bash infra/scripts/deploy-real-model.sh
+          else
+            SPRING_API_IMAGE="${SPRING_IMAGE}" \
+            PYTHON_EMBED_IMAGE="${PYTHON_IMAGE}" \
+            docker compose \
+              --env-file infra/docker/.env \
+              -f infra/docker/compose.yaml \
+              -f infra/docker/compose.prod.yaml \
+              config > /dev/null
+
+            SPRING_API_IMAGE="${SPRING_IMAGE}" \
+            PYTHON_EMBED_IMAGE="${PYTHON_IMAGE}" \
+            bash infra/scripts/deploy.sh
+          fi
+
+          COMPOSE_FILES=(-f infra/docker/compose.yaml -f infra/docker/compose.prod.yaml)
+          if [ "${REAL_MODEL}" = "true" ]; then
+            COMPOSE_FILES+=(-f infra/docker/compose.prod-real-model.yaml)
+          fi
+
+          docker compose --env-file infra/docker/.env "${COMPOSE_FILES[@]}" ps
+          if [ "${RUN_HEALTHCHECK}" = "true" ]; then
+            curl -fsS http://localhost/actuator/health
+          fi
+          EOF

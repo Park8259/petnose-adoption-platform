@@ -2,6 +2,18 @@ spring:
   application:
     name: petnose-api
 
+  mail:
+    host: ${MAIL_HOST:}
+    port: ${MAIL_PORT:587}
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_PASSWORD:}
+    properties:
+      "[mail.smtp.auth]": ${MAIL_SMTP_AUTH:true}
+      "[mail.smtp.starttls.enable]": ${MAIL_SMTP_STARTTLS_ENABLE:true}
+      "[mail.smtp.connectiontimeout]": ${MAIL_SMTP_CONNECTION_TIMEOUT_MS:5000}
+      "[mail.smtp.timeout]": ${MAIL_SMTP_TIMEOUT_MS:3000}
+      "[mail.smtp.writetimeout]": ${MAIL_SMTP_WRITE_TIMEOUT_MS:5000}
+
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:mysql://localhost:3306/petnose?useSSL=false&allowPublicKeyRetrieval=true&characterEncoding=UTF-8}
     username: ${SPRING_DATASOURCE_USERNAME:petnose}
@@ -34,13 +46,16 @@ spring:
 
   servlet:
     multipart:
-      max-file-size: ${MAX_UPLOAD_SIZE_MB:20}MB
-      max-request-size: ${MAX_UPLOAD_SIZE_MB:20}MB
+      max-file-size: ${MAX_UPLOAD_FILE_SIZE_MB:20}MB
+      max-request-size: ${MAX_UPLOAD_REQUEST_SIZE_MB:80}MB
 
 server:
   port: 8080
 
 management:
+  health:
+    mail:
+      enabled: ${MANAGEMENT_HEALTH_MAIL_ENABLED:false}
   endpoints:
     web:
       exposure:
@@ -52,16 +67,16 @@ management:
 embed:
   url: ${PYTHON_EMBED_URL:http://localhost:8000}
   connect-timeout-ms: ${PYTHON_EMBED_CONNECT_TIMEOUT_MS:3000}
-  response-timeout-ms: ${PYTHON_EMBED_RESPONSE_TIMEOUT_MS:10000}
+  response-timeout-ms: ${PYTHON_EMBED_RESPONSE_TIMEOUT_MS:30000}
 
 qdrant:
   host: ${QDRANT_HOST:qdrant}
   port: ${QDRANT_PORT:6333}
-  collection: ${QDRANT_COLLECTION:dog_nose_embeddings}
-  vector-dimension: ${QDRANT_VECTOR_DIM:128}
+  collection: ${QDRANT_COLLECTION:dog_nose_embeddings_real_v2}
+  vector-dimension: ${QDRANT_VECTOR_DIM:2048}
   distance: ${QDRANT_DISTANCE:Cosine}
   search-top-k: ${QDRANT_SEARCH_TOP_K:5}
-  search-score-threshold: ${QDRANT_SEARCH_SCORE_THRESHOLD:0.70}
+  search-score-threshold: ${QDRANT_SEARCH_SCORE_THRESHOLD:0.55}
   search-timeout-ms: ${QDRANT_SEARCH_TIMEOUT_MS:3000}
   upsert-timeout-ms: ${QDRANT_UPSERT_TIMEOUT_MS:3000}
 
@@ -69,18 +84,32 @@ upload:
   base-path: ${UPLOAD_BASE_PATH:/var/uploads}
 
 nose:
-  duplicate-threshold: ${NOSE_DUPLICATE_THRESHOLD:0.70}
+  duplicate-threshold: ${NOSE_DUPLICATE_THRESHOLD:0.65}
+  review-lower-bound: ${NOSE_REVIEW_LOWER_BOUND:0.65}
+  reference-min-count: ${NOSE_REFERENCE_MIN_COUNT:5}
+  reference-max-count: ${NOSE_REFERENCE_MAX_COUNT:5}
+  reference-consistency-threshold: ${NOSE_REFERENCE_CONSISTENCY_THRESHOLD:0.55}
+  reference-outlier-improvement-threshold: ${NOSE_REFERENCE_OUTLIER_IMPROVEMENT_THRESHOLD:0.04}
+  reference-quality-warning-enabled: ${NOSE_REFERENCE_QUALITY_WARNING_ENABLED:true}
+  preprocess-version: ${NOSE_PREPROCESS_VERSION:rgb_resize224_bicubic_imagenet_l2_v1}
 
 petnose:
   handover-verification:
-    match-threshold: ${PETNOSE_HANDOVER_VERIFICATION_MATCH_THRESHOLD:0.70}
-    ambiguous-threshold: ${PETNOSE_HANDOVER_VERIFICATION_AMBIGUOUS_THRESHOLD:0.70}
+    match-threshold: ${PETNOSE_HANDOVER_VERIFICATION_MATCH_THRESHOLD:0.65}
+    ambiguous-threshold: ${PETNOSE_HANDOVER_VERIFICATION_AMBIGUOUS_THRESHOLD:0.65}
     top-k: ${PETNOSE_HANDOVER_VERIFICATION_TOP_K:5}
 
 auth:
   jwt:
     secret: ${AUTH_JWT_SECRET:petnose-local-dev-jwt-secret-change-me-32bytes}
     access-token-ttl-seconds: ${AUTH_JWT_ACCESS_TOKEN_TTL_SECONDS:3600}
+  password-reset:
+    token-ttl-seconds: ${AUTH_PASSWORD_RESET_TOKEN_TTL_SECONDS:1800}
+    expose-token-in-response: ${AUTH_PASSWORD_RESET_EXPOSE_TOKEN_IN_RESPONSE:false}
+    email-enabled: ${AUTH_PASSWORD_RESET_EMAIL_ENABLED:false}
+    reset-url-template: ${AUTH_PASSWORD_RESET_URL_TEMPLATE:http://localhost:3000/password-reset?token={token}}
+    mail-from: ${AUTH_PASSWORD_RESET_MAIL_FROM:no-reply@petnose.local}
+    mail-subject: ${AUTH_PASSWORD_RESET_MAIL_SUBJECT:[PetNose] 비밀번호 재설정 안내}
 
 firebase:
   enabled: ${FIREBASE_ENABLED:false}

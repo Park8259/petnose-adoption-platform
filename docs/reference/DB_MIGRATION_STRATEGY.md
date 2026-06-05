@@ -35,9 +35,14 @@ Current runtime migrations:
 - `V2__align_adoption_post_content_constraints.sql`: aligns `adoption_posts.title` with the 200-character API policy and makes `adoption_posts.content` `NOT NULL`.
 - `V3__add_nose_verification_attempts.sql`: historical pre-refactor migration that added the auxiliary pre-post verification table.
 - `V4__remove_nose_verification_attempts_and_align_verification_logs.sql`: removes the auxiliary table and aligns `verification_logs` with dog-centered verification history.
+- `V5__add_multi_reference_nose_references.sql`: adds dog nose v2 multi-reference tracking through `dog_nose_references` and `verification_logs.score_breakdown_json`.
+- `V6__add_user_profile_image_fields.sql`: adds optional `users.profile_image_*` metadata fields.
+- `V7__add_password_reset_tokens.sql`: adds the auth support table for reset token hashes.
+- `V8__add_adoption_post_likes.sql`: adds the `adoption_post_likes` relationship table.
+- `V9__add_adoption_completion_adopter.sql`: adds `adoption_posts.adopter_user_id` and `adopted_at`.
 
 V2 assumes existing `adoption_posts` rows were created through the current API/service policy. If a manually inserted legacy row has a title longer than 200 characters or null content, clean that data before applying V2.
-V3 assumes the baseline `users`, `dogs`, `dog_images`, `verification_logs`, and `adoption_posts` tables already exist. V4 assumes V3 has run, then returns the final runtime app table set to the canonical 5-table model. Historical attempt rows are not promoted because active adoption post creation is now `dog_id` based.
+V3 assumes the baseline `users`, `dogs`, `dog_images`, `verification_logs`, and `adoption_posts` tables already exist. V4 assumes V3 has run, then removes the old auxiliary attempt table. V5 through V9 align the runtime schema with the current develop submission table set: 7 core/relationship tables plus 1 auth support table. Historical attempt rows are not promoted because active adoption post creation is `dog_id` based.
 
 Naming:
 
@@ -66,8 +71,10 @@ code change가 승인된 경우 가장 안전한 alignment path는 아래 순서
 
 1. `users`에 user profile field를 추가한다.
 2. registration result snapshot read를 `verification_logs` 기준으로 이동한다.
-3. removed dog snapshot column write를 중단한다.
-4. data migration과 rollback review 뒤에만 removed column/table을 drop한다.
-5. Qdrant point id는 `dogs.id`와 같게 유지한다. 별도 DB column을 추가하지 않는다.
+3. dog nose v2 reference metadata를 `dog_nose_references`에 저장한다.
+4. `password_reset_tokens`, `adoption_post_likes`, `adoption_posts.adopter_user_id`, `adopted_at`을 current develop scope로 반영한다.
+5. removed dog snapshot column write를 중단한다.
+6. data migration과 rollback review 뒤에만 removed column/table을 drop한다.
+7. Qdrant point id는 UUID이며 `dogs.id`와 같지 않다. point id와 metadata는 `dog_nose_references`가 추적한다.
 
 local dev에서만 canonical v2 clean schema로 clean rebuild하는 편이 빠를 수 있다. 단, destructive action이므로 명시적 승인이 필요하다.

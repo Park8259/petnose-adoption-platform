@@ -25,6 +25,27 @@ public interface AdoptionPostRepository extends JpaRepository<AdoptionPost, Long
             Pageable pageable
     );
 
+    @Query(
+            value = """
+                    select p
+                    from AdoptionPost p
+                    where p.adopterUserId = :adopterUserId
+                      and p.status = :status
+                    order by case when p.adoptedAt is null then 1 else 0 end, p.adoptedAt desc, p.id desc
+                    """,
+            countQuery = """
+                    select count(p)
+                    from AdoptionPost p
+                    where p.adopterUserId = :adopterUserId
+                      and p.status = :status
+                    """
+    )
+    Page<AdoptionPost> findAdoptedPageByAdopterUserIdAndStatus(
+            @Param("adopterUserId") Long adopterUserId,
+            @Param("status") AdoptionPostStatus status,
+            Pageable pageable
+    );
+
     List<AdoptionPost> findByDogIdInAndStatusInOrderByDogIdAscCreatedAtDescIdDesc(
             Collection<String> dogIds,
             Collection<AdoptionPostStatus> statuses

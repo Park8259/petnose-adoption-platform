@@ -3,6 +3,8 @@ package com.petnose.api.controller;
 import com.petnose.api.dto.adoption.AdoptionPostCreateRequest;
 import com.petnose.api.dto.adoption.AdoptionPostCreateResponse;
 import com.petnose.api.dto.adoption.AdoptionPostDetailResponse;
+import com.petnose.api.dto.adoption.AdoptionPostLikeResponse;
+import com.petnose.api.dto.adoption.AdoptionPostLikedListResponse;
 import com.petnose.api.dto.adoption.AdoptionPostListResponse;
 import com.petnose.api.dto.adoption.AdoptionPostOwnerListResponse;
 import com.petnose.api.dto.adoption.AdoptionPostStatusUpdateRequest;
@@ -27,11 +29,23 @@ public class AdoptionPostController {
 
     @GetMapping
     public AdoptionPostListResponse list(
+            @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorizationHeader,
             @RequestParam(value = "status", required = false) String status,
             @RequestParam(value = "page", required = false) String page,
             @RequestParam(value = "size", required = false) String size
     ) {
-        return adoptionPostService.findPublicPosts(status, page, size);
+        Long currentUserId = resolveOptionalCurrentUserId(authorizationHeader);
+        return adoptionPostService.findPublicPosts(status, page, size, currentUserId);
+    }
+
+    @GetMapping("/liked/me")
+    public AdoptionPostLikedListResponse listLikedMine(
+            @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorizationHeader,
+            @RequestParam(value = "page", required = false) String page,
+            @RequestParam(value = "size", required = false) String size
+    ) {
+        Long currentUserId = authService.currentActiveUserId(authorizationHeader);
+        return adoptionPostService.findLikedPosts(currentUserId, page, size);
     }
 
     @GetMapping("/me")
@@ -46,8 +60,30 @@ public class AdoptionPostController {
     }
 
     @GetMapping("/{post_id}")
-    public AdoptionPostDetailResponse detail(@PathVariable("post_id") Long postId) {
-        return adoptionPostService.findPublicPost(postId);
+    public AdoptionPostDetailResponse detail(
+            @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorizationHeader,
+            @PathVariable("post_id") Long postId
+    ) {
+        Long currentUserId = resolveOptionalCurrentUserId(authorizationHeader);
+        return adoptionPostService.findPublicPost(postId, currentUserId);
+    }
+
+    @PutMapping("/{post_id}/like")
+    public AdoptionPostLikeResponse like(
+            @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorizationHeader,
+            @PathVariable("post_id") Long postId
+    ) {
+        Long currentUserId = authService.currentActiveUserId(authorizationHeader);
+        return adoptionPostService.likePost(currentUserId, postId);
+    }
+
+    @DeleteMapping("/{post_id}/like")
+    public AdoptionPostLikeResponse unlike(
+            @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorizationHeader,
+            @PathVariable("post_id") Long postId
+    ) {
+        Long currentUserId = authService.currentActiveUserId(authorizationHeader);
+        return adoptionPostService.unlikePost(currentUserId, postId);
     }
 
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -79,5 +115,12 @@ public class AdoptionPostController {
     ) {
         Long currentUserId = authService.currentActiveUserId(authorizationHeader);
         return adoptionPostService.updateStatus(currentUserId, postId, request);
+    }
+
+    private Long resolveOptionalCurrentUserId(String authorizationHeader) {
+        if (authorizationHeader == null || authorizationHeader.isBlank()) {
+            return null;
+        }
+        return authService.currentActiveUserId(authorizationHeader);
     }
 }

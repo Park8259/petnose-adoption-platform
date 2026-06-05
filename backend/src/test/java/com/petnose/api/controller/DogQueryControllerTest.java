@@ -1,5 +1,6 @@
 package com.petnose.api.controller;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.petnose.api.domain.entity.AdoptionPost;
 import com.petnose.api.domain.entity.Dog;
@@ -21,6 +22,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -38,7 +40,9 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.Base64;
+import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -54,6 +58,23 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class DogQueryControllerTest {
 
     private static final String JWT_SECRET = "test-petnose-jwt-secret-change-me-32bytes";
+
+    private static final Set<String> ADOPTED_LIST_ITEM_FIELDS = Set.of(
+            "dog_id",
+            "post_id",
+            "post_title",
+            "dog_name",
+            "breed",
+            "gender",
+            "birth_date",
+            "description",
+            "status",
+            "profile_image_url",
+            "verification_status",
+            "adopted_at",
+            "created_at",
+            "updated_at"
+    );
 
     @Autowired
     private MockMvc mockMvc;
@@ -419,6 +440,225 @@ class DogQueryControllerTest {
                 .andExpect(jsonPath("$.details").value(nullValue()));
     }
 
+    @Test
+    void myAdoptedDogsReturnsCompletedPostsForCurrentAdopterWithComputedFields() throws Exception {
+        User author = saveUser("Author", true);
+        User adopter = saveUser("Adopter", true);
+        Dog dog = saveDog(author, "Choco", DogStatus.ADOPTED);
+        String profilePath = saveProfileImage(dog, "adopted-profile.jpg").getFilePath();
+        saveNoseImage(dog, "adopted-nose.jpg");
+        saveVerificationLog(author, dog, VerificationResult.PASSED);
+        LocalDateTime adoptedAt = LocalDateTime.of(2026, 6, 2, 10, 0);
+        AdoptionPost post = saveCompletedAdoptionPost(author, dog, adopter, "Choco found a family", adoptedAt);
+
+        MvcResult result = mockMvc.perform(get("/api/dogs/adopted/me")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenFor(adopter))
+                        .param("page", "0")
+                        .param("size", "20"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items", hasSize(1)))
+                .andExpect(jsonPath("$.page").value(0))
+                .andExpect(jsonPath("$.size").value(20))
+                .andExpect(jsonPath("$.total_count").value(1))
+                .andExpect(jsonPath("$.totalCount").doesNotExist())
+                .andExpect(jsonPath("$.items[0].dog_id").value(dog.getId()))
+                .andExpect(jsonPath("$.items[0].post_id").value(post.getId()))
+                .andExpect(jsonPath("$.items[0].post_title").value("Choco found a family"))
+                .andExpect(jsonPath("$.items[0].dog_name").value("Choco"))
+                .andExpect(jsonPath("$.items[0].breed").value("Maltese"))
+                .andExpect(jsonPath("$.items[0].gender").value("MALE"))
+                .andExpect(jsonPath("$.items[0].birth_date").value("2023-01-01"))
+                .andExpect(jsonPath("$.items[0].description").value("Likes people and walks."))
+                .andExpect(jsonPath("$.items[0].status").value("ADOPTED"))
+                .andExpect(jsonPath("$.items[0].profile_image_url").value("/files/" + profilePath))
+                .andExpect(jsonPath("$.items[0].verification_status").value("VERIFIED"))
+                .andExpect(jsonPath("$.items[0].adopted_at").value("2026-06-02T10:00:00"))
+                .andExpect(jsonPath("$.items[0].created_at").isNotEmpty())
+                .andExpect(jsonPath("$.items[0].updated_at").isNotEmpty())
+                .andExpect(jsonPath("$.items[0].nose_image_url").doesNotExist())
+                .andExpect(jsonPath("$.items[0].author_contact_phone").doesNotExist())
+                .andExpect(jsonPath("$.items[0].author_user_id").doesNotExist())
+                .andExpect(jsonPath("$.items[0].adopter_user_id").doesNotExist())
+                .andExpect(jsonPath("$.items[0].embedding_status").doesNotExist())
+                .andReturn();
+
+        assertAdoptedListItemFields(result);
+        assertThat(dogRepository.findById(dog.getId()).orElseThrow().getOwnerUserId()).isEqualTo(author.getId());
+        assertThat(responseBody(result)).doesNotContain(
+                "nose_image_url",
+                "author_contact_phone",
+                "author_user_id",
+                "adopter_user_id",
+                "embedding_status",
+                "postTitle",
+                "dogName",
+                "profileImageUrl",
+                "verificationStatus",
+                "adoptedAt"
+        );
+    }
+
+    @Test
+    void myAdoptedDogsDoesNotUseDogOwnerUserIdAsAdopterCriterion() throws Exception {
+        User author = saveUser("Author", true);
+        User adopter = saveUser("Adopter", true);
+        Dog dog = saveDog(author, "OwnerStillAuthorDog", DogStatus.ADOPTED);
+        saveCompletedAdoptionPost(author, dog, adopter, "Completed by adopter", LocalDateTime.of(2026, 6, 2, 10, 0));
+
+        mockMvc.perform(get("/api/dogs/adopted/me")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenFor(author)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items", hasSize(0)))
+                .andExpect(jsonPath("$.total_count").value(0));
+
+        assertThat(dogRepository.findById(dog.getId()).orElseThrow().getOwnerUserId()).isEqualTo(author.getId());
+    }
+
+    @Test
+    void myAdoptedDogsExcludesPostsCompletedByAnotherAdopter() throws Exception {
+        User author = saveUser("Author", true);
+        User adopterA = saveUser("AdopterA", true);
+        User adopterB = saveUser("AdopterB", true);
+        Dog dog = saveDog(author, "PrivateAdoptedDog", DogStatus.ADOPTED);
+        saveCompletedAdoptionPost(author, dog, adopterA, "Only adopter A", LocalDateTime.of(2026, 6, 2, 10, 0));
+
+        mockMvc.perform(get("/api/dogs/adopted/me")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenFor(adopterB)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items", hasSize(0)))
+                .andExpect(jsonPath("$.total_count").value(0));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"DRAFT", "OPEN", "RESERVED", "CLOSED"})
+    void myAdoptedDogsExcludesNonCompletedPostsEvenWhenAdopterUserIdIsPresent(String statusValue) throws Exception {
+        User author = saveUser("Author", true);
+        User adopter = saveUser("Adopter", true);
+        Dog dog = saveDog(author, statusValue + "Dog", DogStatus.ADOPTED);
+        saveAdoptionPostWithAdopter(
+                author,
+                dog,
+                AdoptionPostStatus.valueOf(statusValue),
+                adopter,
+                LocalDateTime.of(2026, 6, 2, 10, 0)
+        );
+
+        mockMvc.perform(get("/api/dogs/adopted/me")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenFor(adopter)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items", hasSize(0)))
+                .andExpect(jsonPath("$.total_count").value(0));
+    }
+
+    @Test
+    void myAdoptedDogsOrdersByAdoptedAtDescThenIdDesc() throws Exception {
+        User author = saveUser("Author", true);
+        User adopter = saveUser("Adopter", true);
+        AdoptionPost olderPost = saveCompletedAdoptionPost(
+                author,
+                saveDog(author, "OlderDog", DogStatus.ADOPTED),
+                adopter,
+                "Older",
+                LocalDateTime.of(2026, 6, 1, 10, 0)
+        );
+        LocalDateTime tieAdoptedAt = LocalDateTime.of(2026, 6, 2, 10, 0);
+        AdoptionPost lowerIdTiePost = saveCompletedAdoptionPost(
+                author,
+                saveDog(author, "LowerTieDog", DogStatus.ADOPTED),
+                adopter,
+                "Lower tie",
+                tieAdoptedAt
+        );
+        AdoptionPost higherIdTiePost = saveCompletedAdoptionPost(
+                author,
+                saveDog(author, "HigherTieDog", DogStatus.ADOPTED),
+                adopter,
+                "Higher tie",
+                tieAdoptedAt
+        );
+
+        mockMvc.perform(get("/api/dogs/adopted/me")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenFor(adopter)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items", hasSize(3)))
+                .andExpect(jsonPath("$.items[0].post_id").value(higherIdTiePost.getId()))
+                .andExpect(jsonPath("$.items[1].post_id").value(lowerIdTiePost.getId()))
+                .andExpect(jsonPath("$.items[2].post_id").value(olderPost.getId()));
+    }
+
+    @Test
+    void myAdoptedDogsSupportsPaginationWithTotalCount() throws Exception {
+        User author = saveUser("Author", true);
+        User adopter = saveUser("Adopter", true);
+        AdoptionPost olderPost = saveCompletedAdoptionPost(
+                author,
+                saveDog(author, "PageOlderDog", DogStatus.ADOPTED),
+                adopter,
+                "Older page item",
+                LocalDateTime.of(2026, 6, 1, 10, 0)
+        );
+        AdoptionPost newerPost = saveCompletedAdoptionPost(
+                author,
+                saveDog(author, "PageNewerDog", DogStatus.ADOPTED),
+                adopter,
+                "Newer page item",
+                LocalDateTime.of(2026, 6, 2, 10, 0)
+        );
+
+        mockMvc.perform(get("/api/dogs/adopted/me")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenFor(adopter))
+                        .param("page", "0")
+                        .param("size", "1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items", hasSize(1)))
+                .andExpect(jsonPath("$.total_count").value(2))
+                .andExpect(jsonPath("$.items[0].post_id").value(newerPost.getId()));
+
+        mockMvc.perform(get("/api/dogs/adopted/me")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenFor(adopter))
+                        .param("page", "1")
+                        .param("size", "1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items", hasSize(1)))
+                .andExpect(jsonPath("$.total_count").value(2))
+                .andExpect(jsonPath("$.items[0].post_id").value(olderPost.getId()));
+    }
+
+    @Test
+    void myAdoptedDogsRequiresAuthorization() throws Exception {
+        mockMvc.perform(get("/api/dogs/adopted/me"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.error_code").value("UNAUTHORIZED"));
+    }
+
+    @Test
+    void myAdoptedDogsRejectsInactiveCurrentUser() throws Exception {
+        User inactiveAdopter = saveUser("InactiveAdopter", false);
+
+        mockMvc.perform(get("/api/dogs/adopted/me")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenFor(inactiveAdopter)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error_code").value("USER_INACTIVE"));
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+            "-1,20",
+            "0,0",
+            "0,101"
+    })
+    void myAdoptedDogsRejectsInvalidPageRequest(int page, int size) throws Exception {
+        User adopter = saveUser("Adopter", true);
+
+        mockMvc.perform(get("/api/dogs/adopted/me")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenFor(adopter))
+                        .param("page", String.valueOf(page))
+                        .param("size", String.valueOf(size)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error_code").value("INVALID_PAGE_REQUEST"))
+                .andExpect(jsonPath("$.details").value(nullValue()));
+    }
+
     private User saveUser(String displayName, boolean active) {
         User user = new User();
         user.setEmail("dog-query-%d@example.com".formatted(++sequence));
@@ -500,6 +740,51 @@ class DogQueryControllerTest {
         return adoptionPostRepository.saveAndFlush(post);
     }
 
+    private AdoptionPost saveCompletedAdoptionPost(
+            User author,
+            Dog dog,
+            User adopter,
+            String title,
+            LocalDateTime adoptedAt
+    ) {
+        return saveAdoptionPostWithAdopter(author, dog, AdoptionPostStatus.COMPLETED, adopter, adoptedAt, title);
+    }
+
+    private AdoptionPost saveAdoptionPostWithAdopter(
+            User author,
+            Dog dog,
+            AdoptionPostStatus status,
+            User adopter,
+            LocalDateTime adoptedAt
+    ) {
+        return saveAdoptionPostWithAdopter(author, dog, status, adopter, adoptedAt, status + " adoption post");
+    }
+
+    private AdoptionPost saveAdoptionPostWithAdopter(
+            User author,
+            Dog dog,
+            AdoptionPostStatus status,
+            User adopter,
+            LocalDateTime adoptedAt,
+            String title
+    ) {
+        AdoptionPost post = new AdoptionPost();
+        post.setAuthorUserId(author.getId());
+        post.setAdopterUserId(adopter.getId());
+        post.setDogId(dog.getId());
+        post.setTitle(title);
+        post.setContent("Friendly dog looking for a family.");
+        post.setStatus(status);
+        if (status == AdoptionPostStatus.OPEN || status == AdoptionPostStatus.RESERVED || status == AdoptionPostStatus.COMPLETED) {
+            post.setPublishedAt(adoptedAt.minusDays(1));
+        }
+        if (status == AdoptionPostStatus.CLOSED || status == AdoptionPostStatus.COMPLETED) {
+            post.setClosedAt(adoptedAt);
+        }
+        post.setAdoptedAt(adoptedAt);
+        return adoptionPostRepository.saveAndFlush(post);
+    }
+
     private void setAdoptionPostCreatedAt(AdoptionPost post, LocalDateTime createdAt) {
         jdbcTemplate.update(
                 "update adoption_posts set created_at = ? where id = ?",
@@ -535,5 +820,16 @@ class DogQueryControllerTest {
 
     private String responseBody(MvcResult result) {
         return new String(result.getResponse().getContentAsByteArray(), StandardCharsets.UTF_8);
+    }
+
+    private void assertAdoptedListItemFields(MvcResult result) throws Exception {
+        JsonNode item = objectMapper.readTree(responseBody(result)).path("items").get(0);
+        assertThat(fieldNames(item)).containsExactlyInAnyOrderElementsOf(ADOPTED_LIST_ITEM_FIELDS);
+    }
+
+    private Set<String> fieldNames(JsonNode node) {
+        Set<String> names = new LinkedHashSet<>();
+        node.fieldNames().forEachRemaining(names::add);
+        return names;
     }
 }

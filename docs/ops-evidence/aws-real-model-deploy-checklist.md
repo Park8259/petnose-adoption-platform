@@ -36,7 +36,7 @@ Use this checklist for the latest `main` real-model AWS deployment path.
       `/opt/petnose/models/dog_nose_identification2/logs/s101_224/model_final.pth`.
 - [ ] `DOG_NOSE_MODEL_DIR_HOST=/opt/petnose/models/dog_nose_identification2`.
 - [ ] `PYTHON_EMBED_IMAGE` uses `petnose-python-embed-real`.
-- [ ] `QDRANT_COLLECTION=dog_nose_embeddings_real_v1`.
+- [ ] `QDRANT_COLLECTION=dog_nose_embeddings_real_v2`.
 - [ ] `QDRANT_VECTOR_DIM=2048`.
 
 ## Deployment Validation

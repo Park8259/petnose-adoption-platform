@@ -6,7 +6,7 @@
 
 Base URL: `http://<host>/api`
 
-이 문서는 current backend implementation에 맞춘 Flutter MVP flow를 기록한다. Firebase chat/push는 MySQL source of truth를 대체하지 않는 optional communication layer로만 다룬다. expanded profile table, report API, refresh token, non-canonical role concept은 추가하지 않는다.
+이 문서는 current backend implementation에 맞춘 Flutter MVP flow를 기록한다. Firebase chat/push는 MySQL source of truth를 대체하지 않는 optional communication layer로만 다룬다. expanded profile table, report/admin API, refresh token, reservation/payment/contract, post-adoption periodic verification, non-canonical role concept은 추가하지 않는다.
 
 ## Canonical Response Rules
 
@@ -24,7 +24,8 @@ Base URL: `http://<host>/api`
 ```
 
 - MVP role은 `USER`와 `ADMIN`만 사용한다.
-- `users`가 `display_name`, `contact_phone`, `region`, `is_active`를 직접 가진다.
+- develop 제출 기준 MySQL table은 7개 core/relationship table과 1개 auth support table(`password_reset_tokens`)을 합쳐 총 8개다.
+- `users`가 `display_name`, `contact_phone`, `region`, optional `profile_image_*`, `is_active`를 직접 가진다.
 - MySQL은 source of truth다. Qdrant는 nose embedding vector index일 뿐이다.
 - `dog_images.file_path`는 upload root 기준 상대 경로를 저장한다.
 - `qdrant_point_id`, `verification_status`, `embedding_status`는 API-calculated field이며 DB column이 아니다.
@@ -45,7 +46,7 @@ Base URL: `http://<host>/api`
 | 4 | `PATCH /api/users/me/profile` | 구현됨 | 누락된 `display_name`과 선택적 phone/region을 채운다. |
 | 5 | `POST /api/dogs/register` | 구현됨 | dog identity 등록, 비문 embedding, Qdrant duplicate search, Qdrant upsert의 유일한 진입점이다. |
 | 6 | `registration_allowed=false` | 구현됨 | duplicate suspected 화면으로 분기하고 post creation을 막는다. Qdrant upsert는 수행하지 않는다. |
-| 7 | `registration_allowed=true` | 구현됨 | response `dog_id`를 분양글 작성 form state에 저장한다. Qdrant point id도 같은 `dog_id`다. |
+| 7 | `registration_allowed=true` | 구현됨 | response `dog_id`를 분양글 작성 form state에 저장한다. dog nose v2의 `qdrant_point_id` response field는 `null`이며 Qdrant point ids는 `dog_nose_references`가 추적한다. |
 | 8 | `POST /api/adoption-posts` | 구현됨 | 이미 등록된 `dog_id`, title, content, status, required `profile_image`로 `DRAFT` 또는 `OPEN` post를 만든다. |
 | 9 | `GET /api/dogs/me` | 구현됨 | current user의 dog 목록과 post 생성 가능 여부를 읽는다. |
 | 10 | `GET /api/dogs/{dog_id}` | 구현됨 | owner detail 또는 public dog detail을 렌더링한다. |
@@ -53,9 +54,408 @@ Base URL: `http://<host>/api`
 | 12 | `GET /api/adoption-posts/{post_id}` | 구현됨 | nose image 없이 public post detail을 렌더링한다. |
 | 13 | `GET /api/adoption-posts/me` | 구현됨 | current user의 post만 나열한다. |
 | 14 | `PATCH /api/adoption-posts/{post_id}/status` | 구현됨 | owner-only post status management를 수행한다. |
-| 15 | `POST /api/adoption-posts/{post_id}/handover-verifications` | 구현됨 | `post_id -> adoption_posts.dog_id -> Qdrant point id = dog_id`로 1:1 identity check를 수행한다. |
+| 15 | `POST /api/adoption-posts/{post_id}/handover-verifications` | 구현됨 | `post_id -> adoption_posts.dog_id -> dog_nose_references/Qdrant expected reference set`으로 1:1 identity check를 수행한다. |
+| 16 | `PATCH /api/users/me/password` | 구현됨 | current password 검증 후 새 비밀번호를 저장한다. |
+| 17 | `POST /api/auth/password-reset/request`, `POST /api/auth/password-reset/confirm` | 구현됨 | reset token 기반 비밀번호 재설정을 수행한다. |
+| 18 | `PUT /api/adoption-posts/{post_id}/like` | 구현됨 | public visible post에 current user 좋아요를 idempotent하게 추가한다. |
+| 19 | `DELETE /api/adoption-posts/{post_id}/like` | 구현됨 | existing post의 current user 좋아요를 idempotent하게 삭제한다. |
+| 20 | `GET /api/adoption-posts/liked/me` | 구현됨 | current user가 좋아요한 public visible post 목록을 반환한다. |
+| 21 | `GET /api/dogs/adopted/me` | 구현됨 | current user가 입양 완료한 dog 목록을 `adoption_posts.adopter_user_id` 기준으로 반환한다. |
 
 handover verification endpoint는 MVP trust/safety flow의 일부다. 이 contract 밖의 더 넓은 API 확장은 follow-up scope로 남긴다.
+
+## App-Requested API Delta Plan
+
+이 섹션은 앱팀 추가 요청사항의 API/DB/PR 단위를 고정한 contract다. PR 3까지 profile image 흐름이 구현되었고, PR 4에서 password change/reset 흐름이 구현되었다. PR 5에서 좋아요/찜 흐름이 `adoption_post_likes` 관계 테이블로 구현되었다. PR 6에서는 입양 완료 시 adopter 저장을 구현했다. PR 7에서는 내가 입양한 강아지 목록 API를 구현했다.
+
+Implemented app-requested scope:
+
+- Firebase chat `FIREBASE_DISABLED` 대응은 runtime 설정/운영 확인으로 처리한다.
+- `POST /api/auth/register`는 `application/json`과 `multipart/form-data`를 모두 지원한다.
+- 회원가입 multipart field에는 optional `profile_image`가 있다.
+- 사용자 profile image 저장 및 변경 API를 제공한다.
+- 로그인 사용자 비밀번호 변경 API는 구현되어 있다.
+- 비밀번호 찾기는 비밀번호 조회가 아니라 reset token 기반 재설정 API로 구현되어 있다.
+- 좋아요/찜은 `users.liked` JSON/map이 아니라 `adoption_post_likes` 관계 테이블로 구현한다. MySQL `adoption_post_likes`가 좋아요 상태의 source of truth다.
+- 입양 완료 시 `adoption_posts.adopter_user_id`와 `adopted_at`을 저장한다.
+- 내가 입양한 강아지 목록 `GET /api/dogs/adopted/me`는 구현되어 있다.
+
+Excluded app-requested scope:
+
+- 입양 후 1주/3개월/6개월 비문 인증
+- `post_adoption_verifications` table
+- 입양 후 비문 인증 스케줄/기한/알림
+- 완료 후 자동 비문 재검증
+- `ADOPTER` role
+- `SHELTER` role
+- reports/admin dashboard
+- reservation/payment/contract
+- `dogs.owner_user_id`를 입양자로 변경하는 방식
+- Firebase로 MySQL domain data를 대체하는 구조
+
+Core policies:
+
+- `dogs.owner_user_id`는 기존 등록자/작성자 ownership으로 유지한다.
+- 입양자는 `adoption_posts.adopter_user_id`로 추적한다.
+- `adoption_posts.adopter_user_id`는 `users.id` reference이며 `ADOPTER` role이 아니다.
+- `COMPLETED` 처리 시 `dogs.status = ADOPTED`는 유지한다.
+- 내가 입양한 강아지 목록은 `adoption_posts.status = COMPLETED AND adoption_posts.adopter_user_id = current_user_id` 기준으로 조회한다.
+- 사용자 비밀번호는 절대 조회 API를 만들지 않는다.
+- `password_hash`는 절대 response에 노출하지 않는다.
+- `profile_image` multipart field는 사용자 프로필 이미지와 분양글 대표 이미지 양쪽에서 쓰일 수 있으므로 저장 위치와 DB column을 명확히 분리한다.
+- 사용자 프로필 이미지는 `users.profile_image_*` fields로 관리하고 `/files/{relative_path}` URL로 계산한다.
+- 분양글 대표 이미지는 기존 `dog_images.image_type=PROFILE` 정책을 유지한다.
+
+Final implemented app-requested endpoints:
+
+- Auth/User: `POST /api/auth/register` with `application/json`, `POST /api/auth/register` with `multipart/form-data`, optional multipart `profile_image`, `POST /api/auth/login`, `GET /api/users/me`, `PATCH /api/users/me/profile`, `PATCH /api/users/me/profile-image`, `PATCH /api/users/me/password`, `POST /api/auth/password-reset/request`, `POST /api/auth/password-reset/confirm`.
+- Firebase Chat: `POST /api/firebase/custom-token`, `PUT /api/users/me/fcm-token`, `POST /api/chat/rooms`, `GET /api/chat/rooms`, `POST /api/chat/rooms/{room_id}/messages`, `PATCH /api/chat/rooms/{room_id}/read`. `FIREBASE_DISABLED` is a normal disabled-runtime response after Spring authentication succeeds.
+- Adoption Posts: `POST /api/adoption-posts`, `GET /api/adoption-posts`, `GET /api/adoption-posts/{post_id}`, `GET /api/adoption-posts/me`, `PATCH /api/adoption-posts/{post_id}/status`, `PUT /api/adoption-posts/{post_id}/like`, `DELETE /api/adoption-posts/{post_id}/like`, `GET /api/adoption-posts/liked/me`.
+- Dogs: `POST /api/dogs/register`, `GET /api/dogs/me`, `GET /api/dogs/{dog_id}`, `GET /api/dogs/adopted/me`.
+- Handover: `POST /api/adoption-posts/{post_id}/handover-verifications` remains the existing handover-time verification API. It is not a post-adoption periodic verification API.
+
+### A. 회원가입 multipart
+
+```http
+POST /api/auth/register
+Content-Type: multipart/form-data
+```
+
+Fields:
+
+- `email`: string, required
+- `password`: string, required
+- `display_name`: string, required
+- `contact_phone`: string, required
+- `region`: string, required
+- `profile_image`: file, optional
+
+Notes:
+
+- 기존 `application/json` 회원가입은 호환을 위해 당장 제거하지 않는다.
+- response에는 `profile_image_url`을 포함할 수 있다.
+- `password_hash`는 response에 노출하지 않는다.
+
+### B. 사용자 프로필 이미지 변경
+
+```http
+PATCH /api/users/me/profile-image
+Authorization: Bearer <JWT>
+Content-Type: multipart/form-data
+```
+
+Fields:
+
+- `profile_image`: file, required
+
+Response `200`:
+
+```json
+{
+  "user_id": 101,
+  "profile_image_url": "/files/users/101/profile/profile.jpg"
+}
+```
+
+### C. 로그인 사용자 비밀번호 변경
+
+```http
+PATCH /api/users/me/password
+Authorization: Bearer <JWT>
+Content-Type: application/json
+```
+
+Request:
+
+```json
+{
+  "current_password": "...",
+  "new_password": "..."
+}
+```
+
+Response `200`:
+
+```json
+{
+  "changed": true
+}
+```
+
+Policy:
+
+- 현재 비밀번호는 검증용 input일 뿐 response에 포함하지 않는다.
+- `password_hash`는 response에 노출하지 않는다.
+
+### D. 비밀번호 재설정 요청
+
+```http
+POST /api/auth/password-reset/request
+Content-Type: application/json
+```
+
+Request:
+
+```json
+{
+  "email": "user@example.com"
+}
+```
+
+Response `200`:
+
+```json
+{
+  "requested": true
+}
+```
+
+Policy:
+
+- 이 API는 비밀번호를 조회하지 않는다.
+- active user email이면 reset token을 생성하고 DB에는 `password_reset_tokens.token_hash` SHA-256 hex hash만 저장한다.
+- 운영에서는 reset token 원문을 response에 노출하지 않는다.
+- email sending enabled runtime에서는 reset link를 가입 이메일로 발송한다.
+- reset link 이메일 발송은 token 저장 transaction commit 이후 비동기로 수행한다.
+- email이 존재하지 않거나 inactive user여도 `requested=true`로 동일하게 응답한다.
+- dev/test 환경에서는 `AUTH_PASSWORD_RESET_EXPOSE_TOKEN_IN_RESPONSE=true`로 token을 response에 노출할 수 있지만 운영에서는 사용하지 않는다.
+- reset token은 로그인 token/password가 아니며, `POST /api/auth/password-reset/confirm`에서 새 비밀번호 설정에만 사용된다.
+
+### E. 비밀번호 재설정 확정
+
+```http
+POST /api/auth/password-reset/confirm
+Content-Type: application/json
+```
+
+Request:
+
+```json
+{
+  "reset_token": "...",
+  "new_password": "..."
+}
+```
+
+Response `200`:
+
+```json
+{
+  "reset": true
+}
+```
+
+Policy:
+
+- request의 `reset_token`은 이메일 링크 또는 dev/test response에서 받은 token이다.
+- token은 SHA-256 hash lookup으로 검증한다.
+- token이 만료/사용됨/존재하지 않으면 비밀번호를 변경하지 않는다.
+- 성공 시 새 `password_hash`를 저장하고 token `used_at`을 기록한다.
+- 성공 후 사용자는 새 비밀번호로 login API를 호출한다.
+
+### F. 좋아요 추가
+
+```http
+PUT /api/adoption-posts/{post_id}/like
+Authorization: Bearer <JWT>
+```
+
+Response `200` draft:
+
+```json
+{
+  "post_id": 123,
+  "liked": true
+}
+```
+
+Notes:
+
+- Bearer JWT가 필요하다.
+- current active user만 호출할 수 있다.
+- 같은 user/post에 반복 호출해도 row는 1개만 유지하고 `liked=true`를 반환한다.
+- 좋아요 추가 대상은 `OPEN`, `RESERVED`, `COMPLETED` public visible post다.
+- missing post는 `POST_NOT_FOUND`를 반환한다.
+- `DRAFT` 또는 `CLOSED` post는 `POST_NOT_PUBLIC`를 반환한다.
+- 중복 row는 `UNIQUE(user_id, post_id)`로 DB에서도 방어한다.
+- `users.liked` JSON/map은 사용하지 않는다.
+
+### G. 좋아요 취소
+
+```http
+DELETE /api/adoption-posts/{post_id}/like
+Authorization: Bearer <JWT>
+```
+
+Response `200`:
+
+```json
+{
+  "post_id": 123,
+  "liked": false
+}
+```
+
+Notes:
+
+- Bearer JWT가 필요하다.
+- 같은 user/post에 반복 호출해도 `liked=false`를 반환한다.
+- 취소는 post가 존재하면 허용한다. 기존 좋아요 대상 post가 이후 `DRAFT` 또는 `CLOSED`가 되어도 사용자가 좋아요를 정리할 수 있다.
+- missing post는 `POST_NOT_FOUND`를 반환한다.
+
+### H. 내가 좋아요한 게시글 목록
+
+```http
+GET /api/adoption-posts/liked/me?page=0&size=20
+Authorization: Bearer <JWT>
+```
+
+Response `200`:
+
+```json
+{
+  "items": [
+    {
+      "post_id": 123,
+      "dog_id": "uuid",
+      "title": "말티즈 가족을 찾습니다",
+      "status": "OPEN",
+      "dog_name": "초코",
+      "breed": "말티즈",
+      "gender": "MALE",
+      "birth_date": "2024-01-01",
+      "profile_image_url": "/files/dogs/{uuid}/profile/profile.jpg",
+      "verification_status": "VERIFIED",
+      "author_display_name": "초코 보호자",
+      "author_region": "서울",
+      "published_at": "2026-05-13T10:00:00",
+      "created_at": "2026-05-13T10:00:00",
+      "liked": true,
+      "liked_at": "2026-06-02T10:00:00"
+    }
+  ],
+  "page": 0,
+  "size": 20,
+  "total_count": 1
+}
+```
+
+Notes:
+
+- Response item은 기존 public adoption post list item과 최대한 맞춘다.
+- `liked=true`와 `liked_at`을 추가한다.
+- `liked_at`은 `adoption_post_likes.created_at`이다.
+- 정렬은 `adoption_post_likes.created_at DESC, adoption_post_likes.id DESC`다.
+- 목록과 `total_count`는 public visible status인 `OPEN`, `RESERVED`, `COMPLETED` post 기준이다.
+- 좋아요한 post가 `DRAFT` 또는 `CLOSED`가 되면 목록에서 숨긴다.
+- `nose_image_url`은 노출하지 않는다.
+
+### I. 입양 완료 status update 확장
+
+```http
+PATCH /api/adoption-posts/{post_id}/status
+Authorization: Bearer <JWT>
+Content-Type: application/json
+```
+
+Request when completing:
+
+```json
+{
+  "status": "COMPLETED",
+  "adopter_user_id": 45
+}
+```
+
+Policy:
+
+- `COMPLETED` 전이에서 `adopter_user_id`는 required다.
+- `adopter_user_id`는 active user여야 한다.
+- `adopter_user_id`는 `author_user_id`와 같으면 안 된다.
+- `adopter_user_id`는 `users.id` reference이며 `ADOPTER` role이 아니다.
+- `COMPLETED` 외 status request에 `adopter_user_id`가 포함되면 `ADOPTER_NOT_ALLOWED_FOR_STATUS`를 반환한다.
+- `dogs.status = ADOPTED`는 유지한다.
+- `dogs.owner_user_id`는 변경하지 않는다.
+- `adoption_posts.adopter_user_id`로 입양자를 저장한다.
+- `adoption_posts.adopted_at`은 완료 처리 시각이다.
+
+Errors:
+
+- `ADOPTER_REQUIRED`: `COMPLETED` 전이에 `adopter_user_id`가 없다.
+- `ADOPTER_NOT_FOUND`: `adopter_user_id`가 존재하지 않는다.
+- `ADOPTER_INACTIVE`: adopter user가 inactive다.
+- `ADOPTER_SELF_NOT_ALLOWED`: adopter가 post author와 같다.
+- `ADOPTER_NOT_ALLOWED_FOR_STATUS`: `COMPLETED` 외 status에 `adopter_user_id`가 포함되었다.
+
+### J. 내가 입양한 강아지 목록
+
+이 endpoint는 PR 7에서 구현된 adopter-scoped private list API다. PR 6에서 저장한 `adoption_posts.adopter_user_id`와 `adopted_at`을 조회 기준으로 사용한다.
+
+```http
+GET /api/dogs/adopted/me?page=0&size=20
+Authorization: Bearer <JWT>
+```
+
+Query parameters:
+
+- `page`: optional, zero-based page number, 기본값은 `0`.
+- `size`: optional page size, 기본값은 `20`, 허용 범위는 `1..100`.
+
+Query criteria:
+
+- `adoption_posts.status = COMPLETED`
+- `adoption_posts.adopter_user_id = current_user_id`
+- 정렬은 `adoption_posts.adopted_at DESC, adoption_posts.id DESC`다.
+
+Response `200`:
+
+```json
+{
+  "items": [
+    {
+      "dog_id": "uuid",
+      "post_id": 123,
+      "post_title": "말티즈 가족을 찾습니다",
+      "dog_name": "초코",
+      "breed": "말티즈",
+      "gender": "MALE",
+      "birth_date": "2023-01-01",
+      "description": "사람을 좋아합니다.",
+      "status": "ADOPTED",
+      "profile_image_url": "/files/dogs/{dog_id}/profile/profile.jpg",
+      "verification_status": "VERIFIED",
+      "adopted_at": "2026-06-02T10:00:00",
+      "created_at": "2026-05-20T10:00:00Z",
+      "updated_at": "2026-06-02T10:00:00Z"
+    }
+  ],
+  "page": 0,
+  "size": 20,
+  "total_count": 1
+}
+```
+
+Contract notes:
+
+- Bearer JWT authorization이 필요하다.
+- current active user만 조회 가능하다.
+- 조회 기준은 dog ownership이 아니라 `adoption_posts.adopter_user_id`다.
+- `dogs.owner_user_id`는 입양 후에도 기존 등록자/작성자 ownership으로 유지된다.
+- response `status`는 `dogs.status`를 반환한다. 정상 completed flow에서는 `ADOPTED`다.
+- `profile_image_url`은 최신 `dog_images.image_type=PROFILE` row에서 계산한다.
+- `verification_status`는 latest `verification_logs.result` 정책을 재사용한다.
+- `nose_image_url`은 노출하지 않는다.
+- `author_contact_phone`은 이 목록 API에 포함하지 않는다.
+- `author_user_id`와 `adopter_user_id`는 이 목록 API에 포함하지 않는다.
+- `embedding_status`는 이 목록 API에 포함하지 않는다.
+- 입양 후 1주/3개월/6개월 인증 관련 field는 넣지 않는다.
+
+Error codes:
+
+- `UNAUTHORIZED`
+- `USER_NOT_FOUND`
+- `USER_INACTIVE`
+- `INVALID_PAGE_REQUEST`
 
 ## Auth
 
@@ -88,15 +488,38 @@ Response `201`:
   "display_name": "초코 보호자",
   "contact_phone": "01012341234",
   "region": "서울",
+  "profile_image_url": null,
   "is_active": true
 }
 ```
+
+Multipart request:
+
+```http
+POST /api/auth/register
+Content-Type: multipart/form-data
+```
+
+Fields:
+
+- `email`: string, required
+- `password`: string, required
+- `display_name`: string, required
+- `contact_phone`: string, required
+- `region`: string, required
+- `profile_image`: file, optional
+
+Multipart response `201` uses the same `UserMeResponse` shape. If `profile_image` is omitted, `profile_image_url` is `null`; if present, the file is stored under `users/{user_id}/profile` and `profile_image_url` is returned as `/files/{relative_path}`.
 
 Contract notes:
 
 - public signup은 항상 `role=USER`를 생성한다.
 - public signup으로 `ADMIN`을 생성하지 않는다. request body에 `role`이 포함되어도 current implementation은 무시하고 `USER`를 저장한다.
 - `password_hash`는 DB에 저장하지만 API response에는 노출하지 않는다.
+- `profile_image_url`은 nullable이며 `users.profile_image_path`가 있으면 `/files/{relative_path}`로 반환한다.
+- `application/json` 회원가입은 profile image file part를 받지 않으므로 신규 JSON signup 응답은 일반적으로 `profile_image_url: null`이다.
+- `multipart/form-data` 회원가입은 JSON 회원가입과 동일한 validation, email normalize, password policy, public `USER` role policy를 사용한다.
+- multipart `profile_image`는 optional이다. 포함하면 `users.profile_image_path`, `users.profile_image_mime_type`, `users.profile_image_file_size`, `users.profile_image_sha256`에 저장 결과를 기록한다.
 - email은 trim 후 lowercase로 normalize한다.
 - password는 trim 후 8자 이상이어야 한다.
 - `display_name`, `contact_phone`, `region`은 signup에서 필수값이다.
@@ -108,6 +531,11 @@ Error codes:
 
 - `VALIDATION_FAILED`
 - `EMAIL_ALREADY_EXISTS`
+- `INVALID_IMAGE`
+- `INVALID_IMAGE_EXTENSION`
+- `INVALID_CONTENT_TYPE`
+- `INVALID_IMAGE_TYPE`
+- `FILE_STORE_FAILED`
 
 ### 로그인
 
@@ -139,6 +567,7 @@ Response `200`:
     "display_name": "초코 보호자",
     "contact_phone": "01012341234",
     "region": "서울",
+    "profile_image_url": null,
     "is_active": true
   }
 }
@@ -149,12 +578,109 @@ Contract notes:
 - email은 signup과 동일하게 trim 후 lowercase로 normalize한다.
 - `expires_in`은 current default configuration 기준 `3600`초다.
 - response `user`는 `UserMeResponse`와 같은 shape다.
+- `user.profile_image_url`은 nullable이며 저장된 `users.profile_image_path`에서 계산한다.
 - inactive user는 token을 발급하지 않고 HTTP `403`과 `USER_INACTIVE`를 반환한다.
 
 Error codes:
 
 - `VALIDATION_FAILED`
 - `INVALID_CREDENTIALS`
+- `USER_INACTIVE`
+
+### 비밀번호 재설정 요청
+
+```http
+POST /api/auth/password-reset/request
+Content-Type: application/json
+```
+
+Request body:
+
+```json
+{
+  "email": "user@example.com"
+}
+```
+
+Default response `200`:
+
+```json
+{
+  "requested": true
+}
+```
+
+Dev/test expose response `200` when `AUTH_PASSWORD_RESET_EXPOSE_TOKEN_IN_RESPONSE=true` and the email maps to an active user:
+
+```json
+{
+  "requested": true,
+  "reset_token": "<dev-test-reset-token>",
+  "expires_in": 1800
+}
+```
+
+Contract notes:
+
+- email은 signup/login과 동일하게 trim 후 lowercase로 normalize한다.
+- 이 API는 비밀번호를 조회하지 않는다.
+- 존재하지 않는 email 또는 inactive user여도 `requested=true`를 반환한다.
+- email 존재 여부를 status code, error code, message, default response field로 구분해 노출하지 않는다.
+- active user email이면 reset token을 생성한다.
+- reset token 원문은 DB에 저장하지 않고 `password_reset_tokens.token_hash`에 SHA-256 hex hash만 저장한다.
+- 기본 설정은 `AUTH_PASSWORD_RESET_EXPOSE_TOKEN_IN_RESPONSE=false`이며, 이때 response에는 `reset_token`과 `expires_in`을 포함하지 않는다.
+- `AUTH_PASSWORD_RESET_EXPOSE_TOKEN_IN_RESPONSE=true`는 shared dev/test 편의용이다. 이 값이 true이고 active user email인 경우에만 reset token을 응답에 임시 포함할 수 있다.
+- email sending enabled runtime에서는 reset link를 가입 이메일로 발송한다.
+- reset link 이메일 발송은 token 저장 transaction commit 이후 비동기로 수행한다.
+- reset token은 로그인 token/password가 아니며, `POST /api/auth/password-reset/confirm`에서 새 비밀번호 설정에만 사용된다.
+- reset token은 service account/token/secret과 동일하게 로그, PR 본문, 스크린샷에 남기지 않는다.
+- 비밀번호 조회 API는 없다.
+
+Error codes:
+
+- `VALIDATION_FAILED`
+
+### 비밀번호 재설정 확정
+
+```http
+POST /api/auth/password-reset/confirm
+Content-Type: application/json
+```
+
+Request body:
+
+```json
+{
+  "reset_token": "<reset-token>",
+  "new_password": "new-password123"
+}
+```
+
+Response `200`:
+
+```json
+{
+  "reset": true
+}
+```
+
+Contract notes:
+
+- `reset_token`은 이메일 링크 또는 dev/test response에서 받은 token이며 required다.
+- `new_password`는 trim 후 8자 이상, 255자 이하이어야 한다.
+- request token을 SHA-256 hex hash로 바꾼 뒤 DB lookup을 수행한다.
+- token이 없거나 이미 사용되었거나 만료되었으면 비밀번호를 변경하지 않는다.
+- 성공 시 `users.password_hash`를 새 BCrypt hash로 갱신하고 reset token `used_at`을 기록한다.
+- 성공 시 같은 user의 다른 unused reset token도 사용 처리한다.
+- 성공 후 사용자는 새 비밀번호로 `POST /api/auth/login`을 호출한다.
+- response에는 `reset=true`만 반환하고 `password` 또는 `password_hash`를 노출하지 않는다.
+
+Error codes:
+
+- `VALIDATION_FAILED`
+- `INVALID_RESET_TOKEN`
+- `RESET_TOKEN_EXPIRED`
+- `RESET_TOKEN_ALREADY_USED`
 - `USER_INACTIVE`
 
 ## Users
@@ -176,6 +702,7 @@ Response `200`:
   "display_name": "초코 보호자",
   "contact_phone": "01012341234",
   "region": "서울",
+  "profile_image_url": "/files/users/101/profile/20260602_profile.jpg",
   "is_active": true
 }
 ```
@@ -188,14 +715,16 @@ Flutter-required fields:
 - `display_name`
 - `contact_phone`
 - `region`
+- `profile_image_url`
 - `is_active`
 
-`display_name`, `contact_phone`, `region`은 `null`일 수 있지만 field name 자체는 response contract에 포함된다. `created_at`은 current `GET /api/users/me` response에 포함하지 않는다.
+`display_name`, `contact_phone`, `region`, `profile_image_url`은 `null`일 수 있지만 field name 자체는 response contract에 포함된다. `created_at`은 current `GET /api/users/me` response에 포함하지 않는다.
 
 Contract notes:
 
 - Bearer JWT authorization이 필요하다.
 - `password_hash`는 API response에 노출하지 않는다.
+- `profile_image_url`은 `users.profile_image_path`가 null/blank이면 `null`, 값이 있으면 slash-normalized `/files/{relative_path}`로 반환한다.
 - valid token의 subject가 inactive user로 resolve되면 HTTP `403`과 `USER_INACTIVE`를 반환한다.
 - token subject가 existing user로 resolve되지 않으면 `USER_NOT_FOUND`를 반환한다.
 
@@ -230,7 +759,8 @@ Response `200`:
   "user_id": 101,
   "display_name": "초코보호자",
   "contact_phone": "01012345678",
-  "region": "대구시 달서구"
+  "region": "대구시 달서구",
+  "profile_image_url": "/files/users/101/profile/20260602_profile.jpg"
 }
 ```
 
@@ -238,6 +768,7 @@ Contract notes:
 
 - Bearer JWT authorization이 필요하다.
 - 이 endpoint는 `display_name`, `contact_phone`, `region`만 수정한다.
+- 이 endpoint는 profile image를 변경하지 않지만, 앱이 profile state를 갱신하기 쉽도록 현재 `profile_image_url`을 함께 반환한다.
 - `email`, `role`, `is_active`, `password_hash`는 이 endpoint로 변경하지 않는다.
 - `password_hash`는 API response에 노출하지 않는다.
 - `display_name`, `contact_phone`, `region` 중 하나 이상은 있어야 한다.
@@ -255,9 +786,98 @@ Error codes:
 - `USER_INACTIVE`
 - `VALIDATION_FAILED`
 
+### 프로필 이미지 변경
+
+```http
+PATCH /api/users/me/profile-image
+Authorization: Bearer <JWT>
+Content-Type: multipart/form-data
+```
+
+Fields:
+
+- `profile_image`: file, required
+
+Response `200`:
+
+```json
+{
+  "user_id": 101,
+  "profile_image_url": "/files/users/101/profile/20260602_profile.jpg"
+}
+```
+
+Contract notes:
+
+- Bearer JWT authorization이 필요하다.
+- current active user의 profile image만 변경할 수 있다.
+- `profile_image`가 missing 또는 empty이면 `INVALID_IMAGE`를 반환한다.
+- 허용 확장자는 `jpg`, `jpeg`, `png`다.
+- 허용 Content-Type은 `image/jpeg`, `image/jpg`, `image/png`다.
+- 저장 후 `users.profile_image_path`, `users.profile_image_mime_type`, `users.profile_image_file_size`, `users.profile_image_sha256`를 갱신한다.
+- response는 새 `profile_image_url`만 반환하며 `password_hash`는 노출하지 않는다.
+- 이전 이미지 파일은 이 API에서 삭제하지 않는다. 앱은 최신 `profile_image_url`만 사용하고, 이전 파일 orphan cleanup은 운영 hardening scope로 둔다.
+
+Error codes:
+
+- `UNAUTHORIZED`
+- `USER_NOT_FOUND`
+- `USER_INACTIVE`
+- `INVALID_IMAGE`
+- `INVALID_IMAGE_EXTENSION`
+- `INVALID_CONTENT_TYPE`
+- `INVALID_IMAGE_TYPE`
+- `FILE_STORE_FAILED`
+
+### 비밀번호 변경
+
+```http
+PATCH /api/users/me/password
+Authorization: Bearer <JWT>
+Content-Type: application/json
+```
+
+Request body:
+
+```json
+{
+  "current_password": "old-password",
+  "new_password": "new-password123"
+}
+```
+
+Response `200`:
+
+```json
+{
+  "changed": true
+}
+```
+
+Contract notes:
+
+- Bearer JWT authorization이 필요하다.
+- current active user의 비밀번호만 변경할 수 있다.
+- `current_password`와 `new_password`는 required다.
+- `new_password`는 trim 후 8자 이상, 255자 이하이어야 한다.
+- `current_password`가 현재 `password_hash`와 match되지 않으면 `INVALID_CURRENT_PASSWORD`를 반환한다.
+- `new_password`가 현재 비밀번호와 동일하면 `PASSWORD_REUSE_NOT_ALLOWED`를 반환한다.
+- 성공 시 `users.password_hash`를 새 BCrypt hash로 갱신한다.
+- response에는 `changed=true`만 반환하고 `password` 또는 `password_hash`를 노출하지 않는다.
+- 비밀번호 조회 API는 없다.
+
+Error codes:
+
+- `UNAUTHORIZED`
+- `USER_NOT_FOUND`
+- `USER_INACTIVE`
+- `VALIDATION_FAILED`
+- `INVALID_CURRENT_PASSWORD`
+- `PASSWORD_REUSE_NOT_ALLOWED`
+
 ## Dog Registration
 
-### Nose Image로 Dog 등록
+### Nose Images로 Dog 등록
 
 ```http
 POST /api/dogs/register
@@ -283,7 +903,20 @@ Form fields:
 - `gender`: required, `MALE`, `FEMALE`, or `UNKNOWN`
 - `birth_date`: `YYYY-MM-DD`, optional
 - `description`: string, optional
-- `nose_image`: file, required
+- `nose_images`: file[], required, exactly `5`
+
+Dog nose v2 active contract:
+
+- `nose_image` 단건 field는 v2 active registration contract가 아니다.
+- Client는 close-up cropped dog nose image를 정확히 5장 제출해야 한다.
+- Backend는 crop/detection/alignment를 수행하지 않는다.
+- Registration embedding은 Python Embed `/embed-batch`를 1회 호출한다.
+- Python Embed `/embed-batch`는 내부 endpoint로서 1~5장 batch 입력을 허용하지만, dog registration API는 정확히 5장만 허용한다.
+- Backend는 등록 전에 5장 reference 간 pairwise quality diagnostics를 수행한다. 5장 기준 unique pair는 10개이며, 계산은 O(n^2)이지만 registration 입력이 5장으로 고정되어 고정 비용이다.
+- Quality verdict는 `ACCEPTED`, `WARN_ACCEPTED`, `RETAKE_ONE`, `RETAKE_ALL` 중 하나다. `WARN_ACCEPTED`는 등록을 막지 않고 `verification_logs.score_breakdown_json.reference_quality`에 warning summary를 남긴다.
+- Normal registration은 Qdrant `REFERENCE` point 5개와 `CENTROID` point 1개를 upsert한다.
+- Qdrant point id는 UUID이며 dog id와 같지 않다.
+- API response의 `qdrant_point_id`는 v2에서 `null`이다.
 
 Response `201`, normal registration:
 
@@ -294,13 +927,30 @@ Response `201`, normal registration:
   "status": "REGISTERED",
   "verification_status": "VERIFIED",
   "embedding_status": "COMPLETED",
-  "qdrant_point_id": "uuid",
+  "qdrant_point_id": null,
   "model": "dog-nose-identification2:s101_224",
   "dimension": 2048,
   "max_similarity_score": 0.41,
-  "nose_image_url": "/files/dogs/{uuid}/nose/20260508_010203_nose.jpg",
+  "nose_image_url": "/files/dogs/{uuid}/nose/20260508_010203_nose_1.jpg",
   "profile_image_url": null,
   "top_match": null,
+  "embedding_mode": "MULTI_REFERENCE",
+  "reference_count": 5,
+  "score_breakdown": {
+    "final_score": 0.41,
+    "max_reference_score": 0.43,
+    "top2_average_score": 0.40,
+    "centroid_score": 0.39,
+    "hit_count": 1,
+    "reference_consistency_score": 0.82
+  },
+  "nose_image_urls": [
+    "/files/dogs/{uuid}/nose/20260508_010203_nose_1.jpg",
+    "/files/dogs/{uuid}/nose/20260508_010204_nose_2.jpg",
+    "/files/dogs/{uuid}/nose/20260508_010205_nose_3.jpg",
+    "/files/dogs/{uuid}/nose/20260508_010206_nose_4.jpg",
+    "/files/dogs/{uuid}/nose/20260508_010207_nose_5.jpg"
+  ],
   "message": "중복 의심 개체가 없어 등록이 완료되었습니다."
 }
 ```
@@ -312,6 +962,12 @@ Normal registration fields:
 - `status`
 - `verification_status`
 - `embedding_status`
+- `qdrant_point_id` (`null`)
+- `embedding_mode` (`MULTI_REFERENCE`)
+- `reference_count`
+- `score_breakdown`
+- `nose_image_url` (대표 첫 reference image URL)
+- `nose_image_urls` (전체 reference image URL list)
 - `profile_image_url` (`null`)
 - `top_match`
 - `message`
@@ -321,7 +977,7 @@ App integration notes:
 - Flutter adoption-post creation uses the returned `dog_id` when `registration_allowed=true`.
 - Dog registration does not accept or store `profile_image`; dog profile image is uploaded later through `POST /api/adoption-posts` and stored as `dog_images.image_type=PROFILE`.
 - Clients should use `dog_id`, `registration_allowed`, `status`, `verification_status`, `embedding_status`, `top_match`, and `message` for the active registration UI flow.
-- Current response also includes diagnostic fields such as `qdrant_point_id`, `model`, `dimension`, `max_similarity_score`, and owner-scoped `nose_image_url`; app screens should not require these for normal flow rendering.
+- Current response also includes diagnostic fields such as `model`, `dimension`, `max_similarity_score`, `score_breakdown`, and owner-scoped `nose_image_url`/`nose_image_urls`; app screens should not require these for normal flow rendering.
 
 Response `200`, duplicate suspected:
 
@@ -343,6 +999,23 @@ Response `200`, duplicate suspected:
     "similarity_score": 0.99782,
     "breed": "말티즈"
   },
+  "embedding_mode": "MULTI_REFERENCE",
+  "reference_count": 5,
+  "score_breakdown": {
+    "final_score": 0.99782,
+    "max_reference_score": 0.99812,
+    "top2_average_score": 0.99721,
+    "centroid_score": 0.99687,
+    "hit_count": 4,
+    "reference_consistency_score": 0.84
+  },
+  "nose_image_urls": [
+    "/files/dogs/new-dog-id/nose/..._1.jpg",
+    "/files/dogs/new-dog-id/nose/..._2.jpg",
+    "/files/dogs/new-dog-id/nose/..._3.jpg",
+    "/files/dogs/new-dog-id/nose/..._4.jpg",
+    "/files/dogs/new-dog-id/nose/..._5.jpg"
+  ],
   "message": "기존 등록견과 동일 개체로 의심되어 등록이 제한됩니다."
 }
 ```
@@ -355,6 +1028,7 @@ Duplicate suspected contract:
 - `embedding_status`는 `SKIPPED_DUPLICATE`다.
 - `qdrant_point_id`는 `null`이다.
 - `max_similarity_score`는 반환된 match 중 가장 높은 score다.
+- `score_breakdown`을 포함한다.
 - `top_match`는 `dog_id`, `similarity_score`, `breed`만 포함한다.
 - `top_match`는 `nose_image_url`을 포함하지 않는다.
 - top-level `nose_image_url`은 owner-scoped registration response에서 새로 제출한 dog image이며 public exposure가 아니다.
@@ -362,29 +1036,91 @@ Duplicate suspected contract:
 - `breed`와 `gender`는 DB-level flexibility와 별개로 dog registration API request에서는 required다.
 - `UNKNOWN`은 client가 명시적으로 제출할 수 있는 gender 값이며 DB default로 자동 적용되는 값이 아니다.
 
+Response `200`, review required compatibility state:
+
+`REVIEW_REQUIRED` is retained for enum/API compatibility and historical evidence, but active dog nose v2 normal registration no longer returns it. Under the active binary policy, the example score below `0.65` is treated as `PASSED / REGISTERED`.
+
+```json
+{
+  "dog_id": "new-dog-id",
+  "registration_allowed": false,
+  "status": "REVIEW_REQUIRED",
+  "verification_status": "REVIEW_REQUIRED",
+  "embedding_status": "SKIPPED_REVIEW",
+  "qdrant_point_id": null,
+  "model": "dog-nose-identification2:s101_224",
+  "dimension": 2048,
+  "max_similarity_score": 0.64123,
+  "nose_image_url": "/files/dogs/new-dog-id/nose/...",
+  "profile_image_url": null,
+  "top_match": {
+    "dog_id": "existing-dog-id",
+    "similarity_score": 0.64123,
+    "breed": "말티즈"
+  },
+  "embedding_mode": "MULTI_REFERENCE",
+  "reference_count": 5,
+  "score_breakdown": {
+    "final_score": 0.64123,
+    "max_reference_score": 0.63211,
+    "top2_average_score": 0.62654,
+    "centroid_score": 0.64123,
+    "hit_count": 2,
+    "reference_consistency_score": 0.81
+  },
+  "nose_image_urls": [
+    "/files/dogs/new-dog-id/nose/..._1.jpg",
+    "/files/dogs/new-dog-id/nose/..._2.jpg",
+    "/files/dogs/new-dog-id/nose/..._3.jpg",
+    "/files/dogs/new-dog-id/nose/..._4.jpg",
+    "/files/dogs/new-dog-id/nose/..._5.jpg"
+  ],
+  "message": "기존 등록견과 유사도가 애매해 검토가 필요합니다."
+}
+```
+
+Review required compatibility contract:
+
+- `REVIEW_REQUIRED` enum/status/response mapping은 호환성을 위해 유지한다.
+- active dog nose v2 normal registration decision에서는 `REVIEW_REQUIRED`를 반환하지 않는다.
+
 Duplicate threshold policy:
 
 - dog registration duplicate detection uses Qdrant cosine search score.
-- current MVP duplicate threshold is `0.70`.
-- duplicate if Qdrant score `>= 0.70`.
-- not duplicate if Qdrant score `< 0.70`.
-- Qdrant candidate search threshold default is `0.70`.
-- Spring duplicate decision threshold default is `0.70`.
+- Qdrant candidate search threshold default is `0.55`.
+- Spring duplicate decision threshold default is `0.65`.
+- Spring review lower bound default is `0.65`.
+- reference quality pairwise threshold default is `0.55`.
+- reference outlier improvement threshold default is `0.04`.
+- `final_score = max(max_reference_score, centroid_score)`.
+- duplicate if final score `>= 0.65`.
+- pass if final score `< 0.65`.
+- `REVIEW_REQUIRED` is not used by active normal registration decision.
+- Qdrant candidate search threshold `0.55` is an internal pre-filter, not a review band.
 - threshold values are runtime configuration, not DB fields.
-- Qdrant threshold and Spring threshold must stay aligned because Qdrant filters candidates before Spring makes the final duplicate decision.
 - duplicate suspected response remains HTTP `200` with `registration_allowed=false`.
 - normal registration response remains HTTP `201` with `registration_allowed=true`.
 - `top_match` privacy is unchanged and does not expose raw `nose_image_url`.
-- handover verification is a separate stateless flow, but current MVP aligns the same/different threshold to the same Qdrant cosine score `0.70` standard for simplicity.
-- In normal registration, `max_similarity_score=0.0` can mean no Qdrant candidate was returned above `score_threshold=0.70`; it is not necessarily a literal model similarity score of zero.
+- In normal registration, `max_similarity_score=0.0` can mean no Qdrant candidate was returned above `score_threshold=0.55`; it is not necessarily a literal model similarity score of zero.
 
 Calculation policy:
 
-- `qdrant_point_id`는 normal registration에서 `dog_id`, duplicate suspected registration에서 `null`로 계산한다.
+- `qdrant_point_id`는 dog nose v2 response에서 `null`로 계산한다.
 - `verification_status`는 latest verification result에서 계산한다.
 - `embedding_status`는 latest verification result에서 계산한다.
 - similarity, duplicate candidate, model, dimension, failure metadata는 verification history에 저장한다.
+- `score_breakdown`은 response에 포함하며 persistence에서는 `verification_logs.score_breakdown_json`으로 저장할 수 있다.
+- `score_breakdown`은 `max_reference_score`와 `centroid_score`를 분리 제공하며, `final_score`는 두 값 중 높은 값을 사용한다.
+- `verification_logs.score_breakdown_json.reference_quality`에는 verdict, weakest image index, best leave-one-out subset, improvement, recommendation summary를 저장한다.
+- Leave-one-out subset은 진단용으로만 계산한다. Reference subset 자동 선택, outlier reference 자동 제외, 5장 중 일부만 저장하는 동작은 현재 contract에 포함하지 않는다.
 - embedding vector는 Qdrant에만 저장한다.
+
+Side-effect policy:
+
+- reference quality failure(`RETAKE_ONE`, `RETAKE_ALL`)는 HTTP `400`이다.
+- reference quality failure 시 file/DB/Qdrant side effect가 없어야 한다.
+- `DUPLICATE_SUSPECTED`는 file/DB/log evidence를 남길 수 있지만 Qdrant upsert는 수행하지 않는다.
+- `PASSED`만 Qdrant upsert와 `dog_nose_references` 생성을 수행한다.
 
 Error codes:
 
@@ -393,7 +1129,9 @@ Error codes:
 - `USER_INACTIVE`: JWT subject가 inactive user로 resolve됨
 - `NAME_REQUIRED`: `name`이 missing 또는 blank
 - `BREED_REQUIRED`: `breed`가 missing 또는 blank
-- `NOSE_IMAGE_REQUIRED`: `nose_image` field가 없거나 비어 있음
+- `NOSE_IMAGES_REQUIRED`: `nose_images` field가 없거나 비어 있음
+- `NOSE_IMAGES_COUNT_INVALID`: `nose_images` 개수가 정확히 5장이 아님. `details.expected_count=5`, `details.actual_count=<submitted count>`를 포함한다.
+- `NOSE_REFERENCE_INCONSISTENT`: 제출된 reference image quality verdict가 `RETAKE_ONE` 또는 `RETAKE_ALL`임. `details.quality_verdict`, `weakest_image_index`, `best_subset_indexes`, `recommendation`, `pairwise_scores`를 포함한다.
 - `VALIDATION_FAILED`: malformed request field 또는 invalid `gender`
 - `INVALID_BIRTH_DATE`: `birth_date`가 `YYYY-MM-DD` 형식이 아님
 - `INVALID_NOSE_IMAGE`: nose image를 처리할 수 없음
@@ -459,6 +1197,66 @@ Contract notes:
   - `dogs.status == REGISTERED`
   - latest verification result가 `PASSED`
   - active post가 없음
+
+Error codes:
+
+- `UNAUTHORIZED`
+- `USER_NOT_FOUND`
+- `USER_INACTIVE`
+- `INVALID_PAGE_REQUEST`
+
+### 내가 입양한 강아지 목록
+
+```http
+GET /api/dogs/adopted/me?page=0&size=20
+Authorization: Bearer <JWT>
+```
+
+Query parameters:
+
+- `page`: optional, zero-based page number, 기본값은 `0`.
+- `size`: optional page size, 기본값은 `20`, 허용 범위는 `1..100`.
+
+Response `200`:
+
+```json
+{
+  "items": [
+    {
+      "dog_id": "uuid",
+      "post_id": 123,
+      "post_title": "말티즈 가족을 찾습니다",
+      "dog_name": "초코",
+      "breed": "말티즈",
+      "gender": "MALE",
+      "birth_date": "2023-01-01",
+      "description": "사람을 좋아합니다.",
+      "status": "ADOPTED",
+      "profile_image_url": "/files/dogs/{dog_id}/profile/profile.jpg",
+      "verification_status": "VERIFIED",
+      "adopted_at": "2026-06-02T10:00:00",
+      "created_at": "2026-05-20T10:00:00Z",
+      "updated_at": "2026-06-02T10:00:00Z"
+    }
+  ],
+  "page": 0,
+  "size": 20,
+  "total_count": 1
+}
+```
+
+Contract notes:
+
+- Bearer JWT authorization이 필요하다.
+- current active user가 입양 완료한 dog만 반환한다.
+- 조회 기준은 `adoption_posts.status = COMPLETED AND adoption_posts.adopter_user_id = current_user_id`다.
+- 정렬은 `adoption_posts.adopted_at DESC, adoption_posts.id DESC`다.
+- `dogs.owner_user_id`는 조회 기준으로 사용하지 않는다.
+- `status`는 `dogs.status`를 반환한다.
+- `profile_image_url`은 최신 `dog_images.image_type=PROFILE` row에서 계산한다.
+- `verification_status`는 latest `verification_logs.result`에서 계산한다.
+- `nose_image_url`, `author_contact_phone`, `author_user_id`, `adopter_user_id`, `embedding_status`는 노출하지 않는다.
+- 입양 후 1주/3개월/6개월 비문 인증 UI/API는 이 endpoint 범위가 아니다.
 
 Error codes:
 
@@ -605,6 +1403,7 @@ Contract notes:
 
 ```http
 GET /api/adoption-posts?status=OPEN&page=0&size=20
+Authorization: Bearer <JWT> # optional
 ```
 
 Query parameters:
@@ -637,6 +1436,7 @@ Response `200`:
       "verification_status": "VERIFIED",
       "author_display_name": "초코 보호자",
       "author_region": "서울",
+      "liked": false,
       "published_at": "2026-05-13T10:00:00",
       "created_at": "2026-05-13T10:00:00"
     }
@@ -655,6 +1455,10 @@ Contract notes:
 - `verification_status`는 Flutter display를 위해 포함한다.
 - `profile_image_url`은 노출할 수 있다.
 - `nose_image_url`은 노출하지 않는다.
+- Authorization header가 없으면 `liked=false`다.
+- Authorization header가 있으면 current user 기준 `liked`를 계산한다.
+- Authorization header가 malformed/invalid이면 `UNAUTHORIZED`를 반환한다.
+- inactive user token이면 `USER_INACTIVE`를 반환한다.
 - invalid `status`는 `INVALID_POST_STATUS`를 반환한다.
 - invalid `page` 또는 `size`는 `INVALID_PAGE_REQUEST`를 반환한다.
 
@@ -662,6 +1466,7 @@ Contract notes:
 
 ```http
 GET /api/adoption-posts/{post_id}
+Authorization: Bearer <JWT> # optional
 ```
 
 Response `200`:
@@ -683,6 +1488,7 @@ Response `200`:
   "author_display_name": "초코 보호자",
   "author_contact_phone": "01012341234",
   "author_region": "서울",
+  "liked": false,
   "published_at": "2026-05-13T10:00:00",
   "created_at": "2026-05-13T10:00:00",
   "updated_at": "2026-05-13T10:00:00"
@@ -695,6 +1501,10 @@ Contract notes:
 - `verification_status`는 Flutter display를 위해 포함한다.
 - `profile_image_url`은 노출할 수 있다.
 - `nose_image_url`은 노출하지 않는다.
+- Authorization header가 없으면 `liked=false`다.
+- Authorization header가 있으면 current user 기준 `liked`를 계산한다.
+- Authorization header가 malformed/invalid이면 `UNAUTHORIZED`를 반환한다.
+- inactive user token이면 `USER_INACTIVE`를 반환한다.
 - missing post는 `POST_NOT_FOUND`를 반환한다.
 - non-public post는 `POST_NOT_PUBLIC`을 반환한다.
 
@@ -765,6 +1575,24 @@ Request body:
 }
 ```
 
+Request body for `OPEN -> COMPLETED`:
+
+```json
+{
+  "status": "COMPLETED",
+  "adopter_user_id": 45
+}
+```
+
+Request body for `RESERVED -> COMPLETED`:
+
+```json
+{
+  "status": "COMPLETED",
+  "adopter_user_id": 45
+}
+```
+
 Response `200`:
 
 ```json
@@ -776,8 +1604,28 @@ Response `200`:
   "status": "RESERVED",
   "published_at": "2026-05-13T10:00:00",
   "closed_at": null,
+  "adopter_user_id": null,
+  "adopted_at": null,
   "created_at": "2026-05-13T10:00:00",
   "updated_at": "2026-05-13T10:05:00"
+}
+```
+
+Response `200` for `COMPLETED`:
+
+```json
+{
+  "post_id": 501,
+  "dog_id": "uuid",
+  "title": "말티즈 가족을 찾습니다",
+  "content": "상세 내용...",
+  "status": "COMPLETED",
+  "published_at": "2026-05-13T10:00:00",
+  "closed_at": "2026-06-02T10:30:00",
+  "adopter_user_id": 45,
+  "adopted_at": "2026-06-02T10:30:00",
+  "created_at": "2026-05-13T10:00:00",
+  "updated_at": "2026-06-02T10:30:00"
 }
 ```
 
@@ -797,14 +1645,24 @@ Contract notes:
 - Bearer JWT authorization이 필요하다.
 - post owner만 status를 수정할 수 있다.
 - `COMPLETED`와 `CLOSED`는 terminal state다.
-- `COMPLETED`는 `dogs.status`를 `ADOPTED`로 설정한다.
+- `COMPLETED` request에는 `adopter_user_id`가 required이며, active `users.id`여야 한다.
+- `adopter_user_id`는 `ADOPTER` role이 아니라 `users.id` reference다.
+- `adopter_user_id`는 post `author_user_id`와 같을 수 없다.
+- `COMPLETED`는 `adoption_posts.adopter_user_id`와 `adopted_at`을 저장하고 `dogs.status`를 `ADOPTED`로 설정한다.
+- `COMPLETED`는 `dogs.owner_user_id`를 변경하지 않는다.
 - `CLOSED`는 `dogs.status`를 `ADOPTED`로 설정하지 않는다.
-- same-status PATCH는 no-op으로 구현되어 현재 post status response를 반환한다.
+- `CLOSED`는 `adopter_user_id`를 요구하지 않으며 `adopter_user_id`/`adopted_at`을 저장하지 않는다.
+- `COMPLETED` 외 status request에 `adopter_user_id`가 포함되면 `ADOPTER_NOT_ALLOWED_FOR_STATUS`를 반환한다.
+- same-status PATCH는 no-op으로 구현되어 현재 post status response를 반환한다. 이미 `COMPLETED`인 post에 다른 `adopter_user_id`를 보내도 기존 adopter를 rewrite하지 않는다.
 - `DRAFT` -> `OPEN`은 post creation과 같은 publish eligibility를 검증한다.
 - missing post는 `POST_NOT_FOUND`를 반환한다.
 - non-owner update는 `POST_OWNER_MISMATCH`를 반환한다.
 - invalid `status`는 `INVALID_POST_STATUS`를 반환한다.
 - invalid transition은 `INVALID_STATUS_TRANSITION`을 반환한다.
+- missing completion adopter는 `ADOPTER_REQUIRED`를 반환한다.
+- unknown completion adopter는 `ADOPTER_NOT_FOUND`를 반환한다.
+- inactive completion adopter는 `ADOPTER_INACTIVE`를 반환한다.
+- self adopter는 `ADOPTER_SELF_NOT_ALLOWED`를 반환한다.
 - missing, malformed, invalid, or expired JWT는 `UNAUTHORIZED`를 반환한다.
 
 ### 인도 시점 비문 확인(Handover-Time Dog Nose Verification)
@@ -823,6 +1681,8 @@ Purpose:
 
 - stateless handover-time identity verification이다.
 - 새로 촬영한 dog nose image가 `adoption_posts.dog_id`에 연결된 dog와 일치하는지 확인한다.
+- Python Embed 호출은 `/embed` 단건 endpoint를 사용한다.
+- Qdrant 비교 대상은 expected dog의 active `REFERENCE`/`CENTROID` point set이다.
 - persistent record를 만들거나 수정하지 않는다.
 - handover image를 저장하지 않는다.
 - dog를 생성하지 않는다.
@@ -852,7 +1712,7 @@ Expected dog policy:
 
 - `expected_dog_id`는 `adoption_posts.dog_id`다.
 - `post_id`는 `adoption_posts.id`다.
-- `expected_dog_id`는 `dogs.id`와 같고 Qdrant point id와도 같다.
+- Qdrant point id는 `expected_dog_id`와 같지 않다. expected dog의 active Qdrant point ids는 `dog_nose_references`가 추적한다.
 - expected dog가 존재하지 않으면 `DOG_NOT_FOUND`를 반환한다.
 - expected dog는 `REGISTERED`여야 한다.
 - expected dog가 `REGISTERED`가 아니면 `DOG_NOT_VERIFIED`를 반환한다.
@@ -863,7 +1723,7 @@ Default MVP `200` decision values:
 - `NOT_MATCHED`
 - `NO_MATCH_CANDIDATE`
 
-`AMBIGUOUS` enum value는 response compatibility를 위해 남아 있지만 direct expected-dog MVP runtime에서는 기본적으로 반환하지 않는다.
+`AMBIGUOUS` is retained for response compatibility, but active dog nose v2 normal handover decision does not return it.
 
 Response `200`, matched:
 
@@ -874,12 +1734,46 @@ Response `200`, matched:
   "matched": true,
   "decision": "MATCHED",
   "similarity_score": 0.80631,
-  "threshold": 0.70,
-  "ambiguous_threshold": 0.70,
+  "threshold": 0.65,
+  "ambiguous_threshold": 0.65,
   "top_match_is_expected": true,
   "model": "dog-nose-identification2:s101_224",
   "dimension": 2048,
-  "message": "분양글에 등록된 강아지와 일치합니다."
+  "message": "분양글에 등록된 강아지와 일치합니다.",
+  "score_breakdown": {
+    "final_score": 0.80631,
+    "max_reference_score": 0.81234,
+    "top2_average_score": 0.80111,
+    "centroid_score": 0.79012,
+    "hit_count": 4
+  }
+}
+```
+
+Response `200`, ambiguous compatibility state:
+
+`AMBIGUOUS` is retained for enum/API compatibility and historical evidence, but active dog nose v2 normal handover no longer returns it because `ambiguous_threshold` is equal to `threshold`.
+
+```json
+{
+  "post_id": 501,
+  "expected_dog_id": "dog-uuid",
+  "matched": false,
+  "decision": "AMBIGUOUS",
+  "similarity_score": 0.64211,
+  "threshold": 0.65,
+  "ambiguous_threshold": 0.60,
+  "top_match_is_expected": true,
+  "model": "dog-nose-identification2:s101_224",
+  "dimension": 2048,
+  "message": "유사도가 기준에 근접하지만 확정하기 어렵습니다. 비문 이미지를 다시 촬영해주세요.",
+  "score_breakdown": {
+    "final_score": 0.64211,
+    "max_reference_score": 0.63211,
+    "top2_average_score": 0.65102,
+    "centroid_score": 0.64211,
+    "hit_count": 2
+  }
 }
 ```
 
@@ -891,12 +1785,19 @@ Response `200`, not matched:
   "expected_dog_id": "dog-uuid",
   "matched": false,
   "decision": "NOT_MATCHED",
-  "similarity_score": 0.69999,
-  "threshold": 0.70,
-  "ambiguous_threshold": 0.70,
+  "similarity_score": 0.59999,
+  "threshold": 0.65,
+  "ambiguous_threshold": 0.65,
   "top_match_is_expected": true,
   "model": "dog-nose-identification2:s101_224",
   "dimension": 2048,
+  "score_breakdown": {
+    "final_score": 0.59999,
+    "max_reference_score": 0.59999,
+    "top2_average_score": 0.57123,
+    "centroid_score": 0.55234,
+    "hit_count": 1
+  },
   "message": "분양글에 등록된 강아지와 일치하지 않습니다. 거래 전 확인이 필요합니다."
 }
 ```
@@ -910,11 +1811,18 @@ Response `200`, no match candidate:
   "matched": false,
   "decision": "NO_MATCH_CANDIDATE",
   "similarity_score": null,
-  "threshold": 0.70,
-  "ambiguous_threshold": 0.70,
+  "threshold": 0.65,
+  "ambiguous_threshold": 0.65,
   "top_match_is_expected": false,
   "model": "dog-nose-identification2:s101_224",
   "dimension": 2048,
+  "score_breakdown": {
+    "final_score": null,
+    "max_reference_score": null,
+    "top2_average_score": null,
+    "centroid_score": null,
+    "hit_count": 0
+  },
   "message": "일치 후보를 찾지 못했습니다. 비문 이미지를 다시 촬영해주세요."
 }
 ```
@@ -922,13 +1830,14 @@ Response `200`, no match candidate:
 Decision algorithm:
 
 - `expected_dog_id = adoption_posts.dog_id`
-- Qdrant point id는 `expected_dog_id`와 같은 `dog_id`다. `post_id`를 Qdrant id로 사용하지 않는다.
-- Lookup path는 `post_id -> adoption_posts.dog_id -> Qdrant point id = dog_id`다.
+- Qdrant point id는 `expected_dog_id`와 같지 않다. `post_id`를 Qdrant id로 사용하지 않는다.
+- Lookup path는 `post_id -> adoption_posts.dog_id -> dog_nose_references/Qdrant expected reference set`이다.
 - Python Embed는 handover image에서 `vector`, `dimension`, `model`만 반환한다.
 - Qdrant가 cosine similarity `score`를 생성하고 Spring이 threshold policy를 적용한다.
-- Spring은 handover image embedding vector로 Qdrant search를 수행하되, query filter를 `is_active=true`와 `dog_id=expected_dog_id`로 제한한다.
-- 이 direct expected-dog query에는 `score_threshold`를 보내지 않는다. expected dog point가 존재하지만 `0.70` 미만인 경우에도 Spring이 score를 받아 `NOT_MATCHED`로 판단해야 하기 때문이다.
-- default MVP handover policy uses Qdrant cosine score `0.70` as the same-dog threshold.
+- Spring은 handover image embedding vector로 Qdrant search를 수행하되, query filter를 `is_active=true`, `dog_id=expected_dog_id`, `embedding_kind=REFERENCE` 또는 `CENTROID`로 제한한다.
+- Reference 결과와 centroid 결과를 expected dog 기준으로 aggregate하고 `score_breakdown`을 만든다.
+- `final_score = max(max_reference_score, centroid_score)`이며 decision threshold는 `final_score`에 적용한다.
+- default MVP handover match threshold는 `0.65`, ambiguous threshold는 `0.65`다.
 - `matched`가 canonical yes/no result이고 `decision`은 reason code다.
 
 Expected dog candidate가 반환되지 않는 경우:
@@ -938,29 +1847,27 @@ Expected dog candidate가 반환되지 않는 경우:
 - `similarity_score = null`
 - `top_match_is_expected = false`
 
-Expected dog candidate가 반환되고 `candidate.dog_id == expected_dog_id`이며 `score >= 0.70`인 경우:
+Expected dog candidate가 반환되고 `candidate.dog_id == expected_dog_id`이며 decision score가 `0.65` 이상인 경우:
 
 - `decision = MATCHED`
 - `matched = true`
-- `similarity_score = score`
+- `similarity_score = final_score`
 - `top_match_is_expected = true`
 
-Expected dog candidate가 반환되고 `candidate.dog_id == expected_dog_id`이며 `score < 0.70`인 경우:
+Expected dog candidate가 반환되고 `candidate.dog_id == expected_dog_id`이며 decision score가 `0.65` 미만인 경우:
 
 - `decision = NOT_MATCHED`
 - `matched = false`
-- `similarity_score = score`
+- `similarity_score = final_score`
 - `top_match_is_expected = true`
 
 Defensive case에서 filtered query가 `candidate.dog_id != expected_dog_id`를 반환하는 경우:
 
 - `decision = NOT_MATCHED`
 - `matched = false`
-- `similarity_score = score`
+- `similarity_score = null`
 - `top_match_is_expected = false`
 - 다른 dog id 또는 Qdrant payload details는 response에 노출하지 않는다.
-
-`AMBIGUOUS`는 legacy/custom compatibility enum으로 남아 있지만 default MVP direct expected-dog handover runtime에서는 기대하지 않는다.
 
 Privacy rules:
 
@@ -970,14 +1877,14 @@ Privacy rules:
 - handover verification response는 Qdrant payload details를 노출하지 않는다.
 - handover verification response는 `author_user_id`를 노출하지 않는다.
 - `expected_dog_id`는 adoption post workflow가 이미 dog를 참조하므로 노출할 수 있다.
-- current response에는 diagnostic field인 `similarity_score`, `threshold`, `ambiguous_threshold`, `model`, `dimension`, `top_match_is_expected`가 포함된다. Flutter 화면 분기와 사용자 안내는 `matched`, `decision`, `message`를 우선 사용하고 model/dimension 같은 내부 진단값에 의존하지 않는다.
+- current response에는 diagnostic field인 `similarity_score`, `threshold`, `ambiguous_threshold`, `model`, `dimension`, `top_match_is_expected`, `score_breakdown`이 포함된다. Flutter 화면 분기와 사용자 안내는 `matched`, `decision`, `message`를 우선 사용하고 model/dimension 같은 내부 진단값에 의존하지 않는다.
 
 Config defaults:
 
-- `match_threshold = 0.70`
-- `ambiguous_threshold = 0.70`
+- `match_threshold = 0.65`
+- `ambiguous_threshold = 0.65`
 - `top_k = 5`
-- 이 값들은 runtime configuration이며 DB field가 아니다. Direct expected-dog Qdrant query itself uses `limit=1`.
+- 이 값들은 runtime configuration이며 DB field가 아니다.
 
 Failure behavior:
 
@@ -1003,6 +1910,11 @@ Failure behavior:
 - `PROFILE_IMAGE_REQUIRED`: adoption post 생성 multipart request에 `profile_image`가 없거나 비어 있다.
 - `INVALID_POST_STATUS`: 지원하지 않거나 malformed status value다.
 - `INVALID_STATUS_TRANSITION`: 요청한 status transition이 허용되지 않는다.
+- `ADOPTER_REQUIRED`: `COMPLETED` 전이에 `adopter_user_id`가 없다.
+- `ADOPTER_NOT_FOUND`: `adopter_user_id`가 existing user로 매핑되지 않는다.
+- `ADOPTER_INACTIVE`: `adopter_user_id`가 inactive user로 매핑된다.
+- `ADOPTER_SELF_NOT_ALLOWED`: adopter가 post author와 같다.
+- `ADOPTER_NOT_ALLOWED_FOR_STATUS`: `COMPLETED` 외 status request에 `adopter_user_id`가 포함되었다.
 - `INVALID_PAGE_REQUEST`: page 또는 size parameter가 supported range 밖이다.
 - `NOSE_IMAGE_REQUIRED`: handover nose image multipart field가 없거나 비어 있다.
 - `INVALID_NOSE_IMAGE`: handover nose image를 처리할 수 없다.
@@ -1013,6 +1925,11 @@ Failure behavior:
 - `UNAUTHORIZED`: JWT authorization이 missing, malformed, invalid, or expired 상태다.
 - `USER_NOT_FOUND`: JWT subject가 existing user로 매핑되지 않는다.
 - `USER_INACTIVE`: JWT subject가 inactive user로 매핑된다.
+- `INVALID_CURRENT_PASSWORD`: 비밀번호 변경 요청의 `current_password`가 현재 비밀번호와 일치하지 않는다.
+- `PASSWORD_REUSE_NOT_ALLOWED`: 새 비밀번호가 현재 비밀번호와 동일하다.
+- `INVALID_RESET_TOKEN`: reset token이 없거나 유효하지 않다.
+- `RESET_TOKEN_EXPIRED`: reset token이 만료되었다.
+- `RESET_TOKEN_ALREADY_USED`: reset token이 이미 사용되었다.
 
 ### Local Verification Examples
 
@@ -1040,7 +1957,11 @@ curl -X POST "http://localhost/api/dogs/register" \
   -F "name=초코" \
   -F "breed=말티즈" \
   -F "gender=MALE" \
-  -F "nose_image=@/path/to/nose.jpg"
+  -F "nose_images=@/path/to/nose-1.jpg" \
+  -F "nose_images=@/path/to/nose-2.jpg" \
+  -F "nose_images=@/path/to/nose-3.jpg" \
+  -F "nose_images=@/path/to/nose-4.jpg" \
+  -F "nose_images=@/path/to/nose-5.jpg"
 
 curl -X POST "http://localhost/api/adoption-posts" \
   -H "Authorization: Bearer <JWT>" \
@@ -1063,6 +1984,18 @@ curl "http://localhost/api/adoption-posts?status=RESERVED&page=0&size=20"
 curl "http://localhost/api/adoption-posts?status=COMPLETED&page=0&size=20"
 
 curl -H "Authorization: Bearer <JWT>" \
+  "http://localhost/api/adoption-posts?status=OPEN&page=0&size=20"
+
+curl -X PUT "http://localhost/api/adoption-posts/<post_id>/like" \
+  -H "Authorization: Bearer <JWT>"
+
+curl -X DELETE "http://localhost/api/adoption-posts/<post_id>/like" \
+  -H "Authorization: Bearer <JWT>"
+
+curl -H "Authorization: Bearer <JWT>" \
+  "http://localhost/api/adoption-posts/liked/me?page=0&size=20"
+
+curl -H "Authorization: Bearer <JWT>" \
   "http://localhost/api/adoption-posts/me?page=0&size=20"
 
 curl -X PATCH "http://localhost/api/adoption-posts/<post_id>/status" \
@@ -1073,7 +2006,7 @@ curl -X PATCH "http://localhost/api/adoption-posts/<post_id>/status" \
 curl -X PATCH "http://localhost/api/adoption-posts/<post_id>/status" \
   -H "Authorization: Bearer <JWT>" \
   -H "Content-Type: application/json" \
-  -d '{"status":"COMPLETED"}'
+  -d '{"status":"COMPLETED","adopter_user_id":45}'
 
 curl -X POST "http://localhost/api/adoption-posts/<post_id>/handover-verifications" \
   -H "Authorization: Bearer <JWT>" \
@@ -1082,11 +2015,17 @@ curl -X POST "http://localhost/api/adoption-posts/<post_id>/handover-verificatio
 
 ## Firebase Chat API (Optional)
 
-Firebase chat/push is an optional communication layer. It does not change the canonical 5-table MySQL schema and does not replace MySQL as the source of truth.
+Firebase chat/push is an optional communication layer. It does not change the active MySQL domain/auth schema and does not replace MySQL as the source of truth.
 
-All endpoints in this section require a Spring Bearer token. When Firebase is disabled, authenticated requests return `503` with `FIREBASE_DISABLED`.
+All endpoints in this section require a Spring Bearer token. When Firebase is disabled, authenticated requests return `503` with `FIREBASE_DISABLED`. Disabled mode is a normal runtime mode for local/dev environments where Firebase chat is intentionally not wired.
 
 Firestore documents are realtime snapshots for chat UI/runtime state only. Spring Boot remains authoritative for room creation, message sending, FCM token registration, read marking, and post-status-based chat permission decisions. Flutter may read Firestore through realtime listeners, but must not write chat messages directly to Firestore.
+
+Enabled-mode backend testing requires `FIREBASE_ENABLED=true`, `FIREBASE_PROJECT_ID`, a service account JSON stored outside the repository, `FIREBASE_CREDENTIALS_HOST_PATH` pointing to that host file, and explicit inclusion of `infra/docker/compose.firebase.yaml` so the container sees `/run/secrets/firebase-service-account.json`.
+
+App developers who call only a shared dev server do not receive the service account JSON. They need the API base URL, Spring credential/JWT, Firebase client app configuration, and the Firebase sign-in flow using `POST /api/firebase/custom-token`.
+
+These APIs do not add MySQL chat tables, do not change Flyway migrations, and do not change the canonical MySQL domain schema.
 
 Status policy:
 

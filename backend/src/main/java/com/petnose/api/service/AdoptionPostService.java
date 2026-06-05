@@ -1,6 +1,7 @@
 package com.petnose.api.service;
 
 import com.petnose.api.domain.entity.AdoptionPost;
+import com.petnose.api.domain.entity.AdoptionPostLike;
 import com.petnose.api.domain.entity.Dog;
 import com.petnose.api.domain.entity.DogImage;
 import com.petnose.api.domain.entity.User;
@@ -12,6 +13,9 @@ import com.petnose.api.domain.enums.VerificationResult;
 import com.petnose.api.dto.adoption.AdoptionPostCreateRequest;
 import com.petnose.api.dto.adoption.AdoptionPostCreateResponse;
 import com.petnose.api.dto.adoption.AdoptionPostDetailResponse;
+import com.petnose.api.dto.adoption.AdoptionPostLikeResponse;
+import com.petnose.api.dto.adoption.AdoptionPostLikedListItemResponse;
+import com.petnose.api.dto.adoption.AdoptionPostLikedListResponse;
 import com.petnose.api.dto.adoption.AdoptionPostListItemResponse;
 import com.petnose.api.dto.adoption.AdoptionPostListResponse;
 import com.petnose.api.dto.adoption.AdoptionPostOwnerListItemResponse;
@@ -19,6 +23,7 @@ import com.petnose.api.dto.adoption.AdoptionPostOwnerListResponse;
 import com.petnose.api.dto.adoption.AdoptionPostStatusUpdateRequest;
 import com.petnose.api.dto.adoption.AdoptionPostStatusUpdateResponse;
 import com.petnose.api.exception.ApiException;
+import com.petnose.api.repository.AdoptionPostLikeRepository;
 import com.petnose.api.repository.AdoptionPostRepository;
 import com.petnose.api.repository.DogImageRepository;
 import com.petnose.api.repository.DogRepository;
@@ -26,6 +31,7 @@ import com.petnose.api.repository.UserRepository;
 import com.petnose.api.repository.VerificationLogRepository;
 import com.petnose.api.service.chat.ChatRoomPostStatusSyncService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
@@ -57,24 +63,45 @@ public class AdoptionPostService {
             AdoptionPostStatus.OPEN,
             AdoptionPostStatus.RESERVED
     );
+    private static final List<AdoptionPostStatus> PUBLIC_VISIBLE_STATUSES = List.of(
+            AdoptionPostStatus.OPEN,
+            AdoptionPostStatus.RESERVED,
+            AdoptionPostStatus.COMPLETED
+    );
 
     private final UserRepository userRepository;
     private final DogRepository dogRepository;
     private final VerificationLogRepository verificationLogRepository;
     private final DogImageRepository dogImageRepository;
     private final AdoptionPostRepository adoptionPostRepository;
+    private final AdoptionPostLikeRepository adoptionPostLikeRepository;
     private final FileStorageService fileStorageService;
     private final ChatRoomPostStatusSyncService chatRoomPostStatusSyncService;
 
     @Transactional(readOnly = true)
     public AdoptionPostListResponse findPublicPosts(String statusParam, String pageParam, String sizeParam) {
+        return findPublicPosts(statusParam, pageParam, sizeParam, null);
+    }
+
+    @Transactional(readOnly = true)
+    public AdoptionPostListResponse findPublicPosts(
+            String statusParam,
+            String pageParam,
+            String sizeParam,
+            Long currentUserId
+    ) {
         int page = parsePageParameter(pageParam, DEFAULT_PUBLIC_PAGE);
         int size = parsePageParameter(sizeParam, DEFAULT_PUBLIC_PAGE_SIZE);
-        return findPublicPosts(statusParam, page, size);
+        return findPublicPosts(statusParam, page, size, currentUserId);
     }
 
     @Transactional(readOnly = true)
     public AdoptionPostListResponse findPublicPosts(String statusParam, int page, int size) {
+        return findPublicPosts(statusParam, page, size, null);
+    }
+
+    @Transactional(readOnly = true)
+    public AdoptionPostListResponse findPublicPosts(String statusParam, int page, int size, Long currentUserId) {
         validatePageRequest(page, size);
         AdoptionPostStatus status = AdoptionPostStatus.fromPublicQuery(statusParam);
 
@@ -82,7 +109,7 @@ public class AdoptionPostService {
                 status,
                 PageRequest.of(page, size)
         );
-        PublicPostContext context = loadPublicPostContext(posts.getContent());
+        PublicPostContext context = loadPublicPostContext(posts.getContent(), currentUserId);
         List<AdoptionPostListItemResponse> items = posts.getContent().stream()
                 .map(post -> toListItemResponse(post, context))
                 .toList();
@@ -126,14 +153,83 @@ public class AdoptionPostService {
 
     @Transactional(readOnly = true)
     public AdoptionPostDetailResponse findPublicPost(Long postId) {
+        return findPublicPost(postId, null);
+    }
+
+    @Transactional(readOnly = true)
+    public AdoptionPostDetailResponse findPublicPost(Long postId, Long currentUserId) {
         AdoptionPost post = adoptionPostRepository.findById(postId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "POST_NOT_FOUND", "Adoption post was not found."));
         if (!post.getStatus().isPublicVisible()) {
             throw new ApiException(HttpStatus.NOT_FOUND, "POST_NOT_PUBLIC", "Adoption post is not public.");
         }
 
-        PublicPostContext context = loadPublicPostContext(List.of(post));
+        PublicPostContext context = loadPublicPostContext(List.of(post), currentUserId);
         return toDetailResponse(post, context);
+    }
+
+    @Transactional
+    public AdoptionPostLikeResponse likePost(Long currentUserId, Long postId) {
+        AdoptionPost post = adoptionPostRepository.findById(postId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "POST_NOT_FOUND", "Adoption post was not found."));
+        if (!post.getStatus().isPublicVisible()) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "POST_NOT_PUBLIC", "Adoption post is not public.");
+        }
+
+        if (adoptionPostLikeRepository.existsByUserIdAndPostId(currentUserId, postId)) {
+            return new AdoptionPostLikeResponse(postId, true);
+        }
+
+        AdoptionPostLike like = new AdoptionPostLike();
+        like.setUserId(currentUserId);
+        like.setPostId(postId);
+        try {
+            adoptionPostLikeRepository.saveAndFlush(like);
+        } catch (DataIntegrityViolationException ignored) {
+            return new AdoptionPostLikeResponse(postId, true);
+        }
+        return new AdoptionPostLikeResponse(postId, true);
+    }
+
+    @Transactional
+    public AdoptionPostLikeResponse unlikePost(Long currentUserId, Long postId) {
+        if (!adoptionPostRepository.existsById(postId)) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "POST_NOT_FOUND", "Adoption post was not found.");
+        }
+        adoptionPostLikeRepository.deleteByUserIdAndPostId(currentUserId, postId);
+        return new AdoptionPostLikeResponse(postId, false);
+    }
+
+    @Transactional(readOnly = true)
+    public AdoptionPostLikedListResponse findLikedPosts(Long currentUserId, String pageParam, String sizeParam) {
+        int page = parsePageParameter(pageParam, DEFAULT_PUBLIC_PAGE);
+        int size = parsePageParameter(sizeParam, DEFAULT_PUBLIC_PAGE_SIZE);
+        return findLikedPosts(currentUserId, page, size);
+    }
+
+    @Transactional(readOnly = true)
+    public AdoptionPostLikedListResponse findLikedPosts(Long currentUserId, int page, int size) {
+        validatePageRequest(page, size);
+        Page<AdoptionPostLike> likes = adoptionPostLikeRepository.findVisibleLikedPosts(
+                currentUserId,
+                PUBLIC_VISIBLE_STATUSES,
+                PageRequest.of(page, size)
+        );
+        Set<Long> postIds = likes.getContent().stream()
+                .map(AdoptionPostLike::getPostId)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        Map<Long, AdoptionPost> postsById = adoptionPostRepository.findAllById(postIds).stream()
+                .collect(Collectors.toMap(AdoptionPost::getId, Function.identity()));
+        List<AdoptionPost> posts = likes.getContent().stream()
+                .map(like -> requiredPost(like, postsById))
+                .toList();
+
+        PublicPostContext context = loadPublicPostContext(posts, currentUserId);
+        List<AdoptionPostLikedListItemResponse> items = likes.getContent().stream()
+                .map(like -> toLikedListItemResponse(like, requiredPost(like, postsById), context))
+                .toList();
+
+        return new AdoptionPostLikedListResponse(items, page, size, likes.getTotalElements());
     }
 
     @Transactional
@@ -191,14 +287,20 @@ public class AdoptionPostService {
         }
 
         AdoptionPostStatus targetStatus = parseStatusUpdateRequest(request);
+        Long adopterUserId = adopterUserId(request);
+        validateAdopterUsageForTargetStatus(targetStatus, adopterUserId);
+
         AdoptionPostStatus currentStatus = post.getStatus();
         if (currentStatus == targetStatus) {
             return toStatusUpdateResponse(post);
         }
         validateStatusTransition(currentStatus, targetStatus);
+        if (targetStatus == AdoptionPostStatus.COMPLETED) {
+            validateCompletionAdopter(post, adopterUserId);
+        }
 
         LocalDateTime now = LocalDateTime.now();
-        applyStatusTransition(currentUserId, post, currentStatus, targetStatus, now);
+        applyStatusTransition(currentUserId, post, currentStatus, targetStatus, adopterUserId, now);
         adoptionPostRepository.flush();
         scheduleChatRoomStatusSync(post.getId(), post.getStatus());
         return toStatusUpdateResponse(post);
@@ -276,6 +378,7 @@ public class AdoptionPostService {
 
     private void saveRequiredProfileImage(String dogId, MultipartFile profileImage) {
         FileStorageService.StoredFile stored = fileStorageService.storeProfileImage(dogId, profileImage);
+        fileStorageService.deleteOnTransactionRollback(stored);
         DogImage image = new DogImage();
         image.setDogId(dogId);
         image.setImageType(DogImageType.PROFILE);
@@ -288,6 +391,20 @@ public class AdoptionPostService {
 
     private AdoptionPostStatus parseStatusUpdateRequest(AdoptionPostStatusUpdateRequest request) {
         return AdoptionPostStatus.fromStatusUpdateRequest(request == null ? null : request.status());
+    }
+
+    private Long adopterUserId(AdoptionPostStatusUpdateRequest request) {
+        return request == null ? null : request.adopterUserId();
+    }
+
+    private void validateAdopterUsageForTargetStatus(AdoptionPostStatus targetStatus, Long adopterUserId) {
+        if (targetStatus != AdoptionPostStatus.COMPLETED && adopterUserId != null) {
+            throw new ApiException(
+                    HttpStatus.BAD_REQUEST,
+                    "ADOPTER_NOT_ALLOWED_FOR_STATUS",
+                    "adopter_user_id는 COMPLETED 상태 전이에만 사용할 수 있습니다."
+            );
+        }
     }
 
     private void validateStatusTransition(AdoptionPostStatus currentStatus, AdoptionPostStatus targetStatus) {
@@ -311,11 +428,39 @@ public class AdoptionPostService {
         }
     }
 
+    private void validateCompletionAdopter(AdoptionPost post, Long adopterUserId) {
+        if (adopterUserId == null) {
+            throw new ApiException(
+                    HttpStatus.BAD_REQUEST,
+                    "ADOPTER_REQUIRED",
+                    "COMPLETED 상태 전이에는 adopter_user_id가 필요합니다."
+            );
+        }
+
+        User adopter = userRepository.findById(adopterUserId)
+                .orElseThrow(() -> new ApiException(
+                        HttpStatus.NOT_FOUND,
+                        "ADOPTER_NOT_FOUND",
+                        "입양자를 찾을 수 없습니다."
+                ));
+        if (!adopter.isActive()) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "ADOPTER_INACTIVE", "비활성 입양자입니다.");
+        }
+        if (adopter.getId().equals(post.getAuthorUserId())) {
+            throw new ApiException(
+                    HttpStatus.BAD_REQUEST,
+                    "ADOPTER_SELF_NOT_ALLOWED",
+                    "작성자는 자신의 분양글의 입양자로 지정될 수 없습니다."
+            );
+        }
+    }
+
     private void applyStatusTransition(
             Long currentUserId,
             AdoptionPost post,
             AdoptionPostStatus currentStatus,
             AdoptionPostStatus targetStatus,
+            Long adopterUserId,
             LocalDateTime now
     ) {
         if (currentStatus == AdoptionPostStatus.DRAFT && targetStatus == AdoptionPostStatus.OPEN) {
@@ -346,6 +491,8 @@ public class AdoptionPostService {
         if (targetStatus == AdoptionPostStatus.COMPLETED) {
             post.setStatus(AdoptionPostStatus.COMPLETED);
             post.setClosedAt(now);
+            post.setAdopterUserId(adopterUserId);
+            post.setAdoptedAt(now);
             markDogAdopted(post.getDogId());
             return;
         }
@@ -423,6 +570,10 @@ public class AdoptionPostService {
     }
 
     private PublicPostContext loadPublicPostContext(List<AdoptionPost> posts) {
+        return loadPublicPostContext(posts, null);
+    }
+
+    private PublicPostContext loadPublicPostContext(List<AdoptionPost> posts, Long currentUserId) {
         Set<String> dogIds = posts.stream()
                 .map(AdoptionPost::getDogId)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
@@ -439,7 +590,8 @@ public class AdoptionPostService {
                 dogsById,
                 authorsById,
                 loadProfileImageUrlsByDogId(dogIds),
-                loadVerificationStatusesByDogId(dogIds)
+                loadVerificationStatusesByDogId(dogIds),
+                loadLikedPostIds(currentUserId, posts)
         );
     }
 
@@ -480,6 +632,19 @@ public class AdoptionPostService {
         return statusesByDogId;
     }
 
+    private Set<Long> loadLikedPostIds(Long currentUserId, List<AdoptionPost> posts) {
+        if (currentUserId == null || posts.isEmpty()) {
+            return Set.of();
+        }
+
+        Set<Long> postIds = posts.stream()
+                .map(AdoptionPost::getId)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        return adoptionPostLikeRepository.findByUserIdAndPostIdIn(currentUserId, postIds).stream()
+                .map(AdoptionPostLike::getPostId)
+                .collect(Collectors.toSet());
+    }
+
     private AdoptionPostListItemResponse toListItemResponse(AdoptionPost post, PublicPostContext context) {
         Dog dog = requiredDog(post, context);
         User author = requiredAuthor(post, context);
@@ -497,6 +662,7 @@ public class AdoptionPostService {
                 context.verificationStatusesByDogId().getOrDefault(dog.getId(), "PENDING"),
                 author.getDisplayName(),
                 author.getRegion(),
+                context.likedPostIds().contains(post.getId()),
                 post.getPublishedAt(),
                 post.getCreatedAt()
         );
@@ -532,6 +698,8 @@ public class AdoptionPostService {
                 post.getStatus().name(),
                 post.getPublishedAt(),
                 post.getClosedAt(),
+                post.getAdopterUserId(),
+                post.getAdoptedAt(),
                 post.getCreatedAt(),
                 post.getUpdatedAt()
         );
@@ -557,9 +725,38 @@ public class AdoptionPostService {
                 author.getDisplayName(),
                 author.getContactPhone(),
                 author.getRegion(),
+                context.likedPostIds().contains(post.getId()),
                 post.getPublishedAt(),
                 post.getCreatedAt(),
                 post.getUpdatedAt()
+        );
+    }
+
+    private AdoptionPostLikedListItemResponse toLikedListItemResponse(
+            AdoptionPostLike like,
+            AdoptionPost post,
+            PublicPostContext context
+    ) {
+        Dog dog = requiredDog(post, context);
+        User author = requiredAuthor(post, context);
+
+        return new AdoptionPostLikedListItemResponse(
+                post.getId(),
+                dog.getId(),
+                post.getTitle(),
+                post.getStatus().name(),
+                dog.getName(),
+                dog.getBreed(),
+                dog.getGender() == null ? null : dog.getGender().name(),
+                dog.getBirthDate(),
+                context.profileImageUrlsByDogId().get(dog.getId()),
+                context.verificationStatusesByDogId().getOrDefault(dog.getId(), "PENDING"),
+                author.getDisplayName(),
+                author.getRegion(),
+                post.getPublishedAt(),
+                post.getCreatedAt(),
+                true,
+                like.getCreatedAt()
         );
     }
 
@@ -587,6 +784,14 @@ public class AdoptionPostService {
         return author;
     }
 
+    private AdoptionPost requiredPost(AdoptionPostLike like, Map<Long, AdoptionPost> postsById) {
+        AdoptionPost post = postsById.get(like.getPostId());
+        if (post == null) {
+            throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "POST_DATA_INTEGRITY_ERROR", "Liked post data is missing.");
+        }
+        return post;
+    }
+
     private String toFileUrl(String filePath) {
         if (filePath == null || filePath.isBlank()) {
             return null;
@@ -612,6 +817,7 @@ public class AdoptionPostService {
         return switch (result) {
             case PASSED -> "VERIFIED";
             case DUPLICATE_SUSPECTED -> "DUPLICATE_SUSPECTED";
+            case REVIEW_REQUIRED -> "REVIEW_REQUIRED";
             case PENDING -> "PENDING";
             case EMBED_FAILED, QDRANT_SEARCH_FAILED, QDRANT_UPSERT_FAILED -> "FAILED";
         };
@@ -621,7 +827,8 @@ public class AdoptionPostService {
             Map<String, Dog> dogsById,
             Map<Long, User> authorsById,
             Map<String, String> profileImageUrlsByDogId,
-            Map<String, String> verificationStatusesByDogId
+            Map<String, String> verificationStatusesByDogId,
+            Set<Long> likedPostIds
     ) {
     }
 

@@ -60,6 +60,21 @@ htmlcov/
 *.safetensors
 saved_model/
 
+# ── Model analysis generated outputs ─────────────────────────────────────────
+docs/model-analysis/*.csv
+docs/model-analysis/outputs/
+docs/model-analysis/raw/
+docs/model-analysis/generated/
+docs/model-analysis/*.parquet
+docs/model-analysis/*.npy
+docs/model-analysis/*.npz
+
+# ── Ops evidence raw/local outputs (sanitized summaries remain tracked) ──────
+docs/ops-evidence/submission-real-model-e2e-local/
+docs/ops-evidence/manual-full-feature-smoke-local/
+docs/ops-evidence/**/raw/
+docs/ops-evidence/**/*raw*.json
+
 # ── Node ─────────────────────────────────────────────────────────────────────
 node_modules/
 

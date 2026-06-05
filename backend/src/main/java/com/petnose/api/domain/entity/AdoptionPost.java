@@ -22,6 +22,9 @@ public class AdoptionPost {
     @Column(name = "author_user_id", nullable = false)
     private Long authorUserId;
 
+    @Column(name = "adopter_user_id")
+    private Long adopterUserId;
+
     @Column(name = "dog_id", nullable = false, length = 36)
     private String dogId;
 
@@ -40,6 +43,9 @@ public class AdoptionPost {
 
     @Column(name = "closed_at")
     private LocalDateTime closedAt;
+
+    @Column(name = "adopted_at")
+    private LocalDateTime adoptedAt;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;

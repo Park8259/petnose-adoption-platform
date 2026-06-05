@@ -29,7 +29,10 @@ flutter run
 
 - API base URL은 환경별로 분리하여 관리합니다. 하드코딩하지 않습니다.
 - 로컬 개발 시 백엔드는 `http://localhost` 또는 로컬 nginx/API 포트로 접속합니다.
-- `POST /api/dogs/register`의 `nose_image`와 `POST /api/adoption-posts`의 required `profile_image` 업로드는 `multipart/form-data`를 사용합니다.
+- `POST /api/dogs/register`는 `nose_images` multipart field로 비문 기준 사진을 정확히 5장 업로드합니다. Registration 단건 `nose_image`는 active contract가 아닙니다.
+- Handover verification은 registration과 다르게 `POST /api/adoption-posts/{post_id}/handover-verifications`에 단건 `nose_image`를 업로드합니다.
+- `POST /api/adoption-posts`의 required `profile_image` 업로드는 `multipart/form-data`를 사용합니다.
+- 현재 `app/`은 production Flutter 구현 전 단계이므로, registration UI 구현 시 backend v2 contract에 맞춰 5장 업로드 flow로 구현해야 합니다.
 - dev 전용 API(`/api/dev/*`)는 production 앱 기능 계약에 포함하지 않습니다.
 
 ---

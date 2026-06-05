@@ -2,7 +2,7 @@
 
 This is the official schema reference for the optional PetNose Firebase chat and push layer.
 
-MySQL remains the canonical domain store for `users`, `dogs`, `dog_images`, `verification_logs`, and `adoption_posts`. Firestore `chat_rooms`, `messages`, and `user_devices` are not MySQL canonical domain tables and must not be treated as the source of truth.
+MySQL remains the source of truth for the PetNose canonical schema: 7 core/relationship tables (`users`, `dogs`, `dog_images`, `dog_nose_references`, `verification_logs`, `adoption_posts`, `adoption_post_likes`) plus the auth support table `password_reset_tokens`. Firestore `chat_rooms`, `messages`, and `user_devices` are not MySQL canonical domain tables and must not be treated as the source of truth.
 
 Flutter may read Firestore through realtime listeners, but message writes, room creation, FCM token registration, and read marking must go through the Spring Boot API.
 

@@ -445,7 +445,7 @@ Implemented behavior:
 - Firebase-disabled endpoint coverage is expanded across custom token issue, FCM token registration, room creation, room listing, message send, and read marking.
 - A manual Firebase chat smoke script is added for disabled-mode safety checks and enabled-mode runtime verification.
 - A Firebase chat operations runbook is added for enablement, verification, rollback, and security guardrails.
-- MySQL remains the source of truth and the canonical 5-table schema remains unchanged.
+- MySQL remains the source of truth and the current canonical schema remains unchanged: 7 core/relationship tables plus the `password_reset_tokens` auth support table.
 
 Explicit non-goals for this PR:
 

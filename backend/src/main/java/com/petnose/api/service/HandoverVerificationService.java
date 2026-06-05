@@ -2,17 +2,21 @@ package com.petnose.api.service;
 
 import com.petnose.api.client.EmbedClient;
 import com.petnose.api.client.QdrantDogVectorClient;
+import com.petnose.api.client.QdrantDogVectorClient.QdrantVectorSearchResult;
 import com.petnose.api.config.HandoverVerificationProperties;
 import com.petnose.api.domain.entity.AdoptionPost;
 import com.petnose.api.domain.entity.Dog;
 import com.petnose.api.domain.enums.AdoptionPostStatus;
 import com.petnose.api.domain.enums.DogStatus;
 import com.petnose.api.domain.enums.HandoverVerificationDecision;
+import com.petnose.api.dto.adoption.HandoverScoreBreakdownResponse;
 import com.petnose.api.dto.adoption.HandoverVerificationResponse;
-import com.petnose.api.dto.registration.QdrantSearchResult;
 import com.petnose.api.exception.ApiException;
 import com.petnose.api.repository.AdoptionPostRepository;
 import com.petnose.api.repository.DogRepository;
+import com.petnose.api.service.nose.DogNoseCandidateAggregator;
+import com.petnose.api.service.nose.DogNoseCandidateAggregator.DogNoseAggregationResult;
+import com.petnose.api.service.nose.DogNoseCandidateAggregator.DogNoseCandidateScore;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -22,6 +26,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 
 @Slf4j
@@ -34,6 +39,7 @@ public class HandoverVerificationService {
     private final EmbedClient embedClient;
     private final QdrantDogVectorClient qdrantDogVectorClient;
     private final HandoverVerificationProperties properties;
+    private final DogNoseCandidateAggregator dogNoseCandidateAggregator = new DogNoseCandidateAggregator();
 
     @Value("${qdrant.vector-dimension}")
     private int expectedVectorDimension;
@@ -51,7 +57,7 @@ public class HandoverVerificationService {
         EmbedClient.EmbedResponse embedResponse = requestEmbeddingOrFail(postId, noseImage);
         validateEmbeddingDimensionOrFail(embedResponse);
 
-        List<QdrantSearchResult> searchResults = searchExpectedDogFromQdrantOrFail(
+        HandoverQdrantSearchResults searchResults = searchExpectedDogReferenceSetFromQdrantOrFail(
                 postId,
                 embedResponse,
                 expectedDog.getId()
@@ -109,13 +115,22 @@ public class HandoverVerificationService {
         }
     }
 
-    private List<QdrantSearchResult> searchExpectedDogFromQdrantOrFail(
+    private HandoverQdrantSearchResults searchExpectedDogReferenceSetFromQdrantOrFail(
             Long postId,
             EmbedClient.EmbedResponse embedResponse,
             String expectedDogId
     ) {
         try {
-            return qdrantDogVectorClient.searchExpectedDog(embedResponse.vector(), expectedDogId);
+            List<QdrantVectorSearchResult> referenceResults = qdrantDogVectorClient.searchExpectedDogReferences(
+                    embedResponse.vector(),
+                    expectedDogId,
+                    properties.effectiveTopK()
+            );
+            List<QdrantVectorSearchResult> centroidResults = qdrantDogVectorClient.searchExpectedDogCentroid(
+                    embedResponse.vector(),
+                    expectedDogId
+            );
+            return new HandoverQdrantSearchResults(referenceResults, centroidResults);
         } catch (QdrantDogVectorClient.QdrantClientException e) {
             log.warn("[HandoverVerification] qdrant search 실패: postId={}, status={}, message={}",
                     postId, e.getUpstreamStatus(), e.getMessage());
@@ -127,34 +142,69 @@ public class HandoverVerificationService {
             Long postId,
             String expectedDogId,
             EmbedClient.EmbedResponse embedResponse,
-            List<QdrantSearchResult> searchResults
+            HandoverQdrantSearchResults searchResults
     ) {
-        if (searchResults == null || searchResults.isEmpty()) {
+        validateThresholdsOrFail();
+
+        List<QdrantVectorSearchResult> referenceResults = filterExpectedDogResults(
+                postId,
+                expectedDogId,
+                searchResults.referenceResults(),
+                "REFERENCE"
+        );
+        List<QdrantVectorSearchResult> centroidResults = filterExpectedDogResults(
+                postId,
+                expectedDogId,
+                searchResults.centroidResults(),
+                "CENTROID"
+        );
+        DogNoseAggregationResult aggregationResult = dogNoseCandidateAggregator.aggregate(
+                referenceResults,
+                centroidResults,
+                properties.getAmbiguousThreshold()
+        );
+        DogNoseCandidateScore candidate = aggregationResult.topCandidate();
+
+        if (candidate == null) {
             return response(
                     postId,
                     expectedDogId,
                     HandoverVerificationDecision.NO_MATCH_CANDIDATE,
                     null,
                     false,
-                    embedResponse
+                    embedResponse,
+                    noCandidateScoreBreakdown(centroidResults)
             );
         }
 
-        QdrantSearchResult topResult = searchResults.getFirst();
-        boolean topMatchIsExpected = expectedDogId.equals(topResult.dogId());
-        double score = topResult.score();
+        boolean topMatchIsExpected = expectedDogId.equals(candidate.dogId());
         if (!topMatchIsExpected) {
             log.warn(
-                    "[HandoverVerification] expected-dog filtered search returned a different dog: postId={}, expectedDogId={}",
+                    "[HandoverVerification] expected-dog reference aggregation returned a different dog: postId={}, expectedDogId={}",
                     postId,
                     expectedDogId
             );
+            return response(
+                    postId,
+                    expectedDogId,
+                    HandoverVerificationDecision.NOT_MATCHED,
+                    null,
+                    false,
+                    embedResponse,
+                    noCandidateScoreBreakdown(centroidResults)
+            );
         }
-        HandoverVerificationDecision decision = topMatchIsExpected && score >= properties.getMatchThreshold()
-                ? HandoverVerificationDecision.MATCHED
-                : HandoverVerificationDecision.NOT_MATCHED;
 
-        return response(postId, expectedDogId, decision, score, topMatchIsExpected, embedResponse);
+        HandoverVerificationDecision decision = decide(candidate.finalScore());
+        return response(
+                postId,
+                expectedDogId,
+                decision,
+                candidate.finalScore(),
+                true,
+                embedResponse,
+                scoreBreakdown(candidate)
+        );
     }
 
     private HandoverVerificationResponse response(
@@ -163,7 +213,8 @@ public class HandoverVerificationService {
             HandoverVerificationDecision decision,
             Double similarityScore,
             boolean topMatchIsExpected,
-            EmbedClient.EmbedResponse embedResponse
+            EmbedClient.EmbedResponse embedResponse,
+            HandoverScoreBreakdownResponse scoreBreakdown
     ) {
         return new HandoverVerificationResponse(
                 postId,
@@ -176,8 +227,106 @@ public class HandoverVerificationService {
                 topMatchIsExpected,
                 embedResponse.model(),
                 embedResponse.dimension(),
-                message(decision)
+                message(decision),
+                scoreBreakdown
         );
+    }
+
+    private HandoverVerificationDecision decide(double finalScore) {
+        if (finalScore >= properties.getMatchThreshold()) {
+            return HandoverVerificationDecision.MATCHED;
+        }
+        if (finalScore >= properties.getAmbiguousThreshold()) {
+            return HandoverVerificationDecision.AMBIGUOUS;
+        }
+        return HandoverVerificationDecision.NOT_MATCHED;
+    }
+
+    private List<QdrantVectorSearchResult> filterExpectedDogResults(
+            Long postId,
+            String expectedDogId,
+            List<QdrantVectorSearchResult> results,
+            String embeddingKind
+    ) {
+        if (results == null || results.isEmpty()) {
+            return List.of();
+        }
+
+        List<QdrantVectorSearchResult> expectedResults = new ArrayList<>();
+        int skippedCount = 0;
+        for (QdrantVectorSearchResult result : results) {
+            if (result == null) {
+                continue;
+            }
+            if (expectedDogId.equals(result.dogId())) {
+                expectedResults.add(result);
+            } else {
+                skippedCount++;
+            }
+        }
+
+        if (skippedCount > 0) {
+            log.warn(
+                    "[HandoverVerification] expected-dog {} search returned non-expected results: postId={}, expectedDogId={}, skippedCount={}",
+                    embeddingKind,
+                    postId,
+                    expectedDogId,
+                    skippedCount
+            );
+        }
+        return expectedResults;
+    }
+
+    private HandoverScoreBreakdownResponse scoreBreakdown(DogNoseCandidateScore candidate) {
+        return new HandoverScoreBreakdownResponse(
+                candidate.finalScore(),
+                candidate.maxReferenceScore(),
+                candidate.top2AverageScore(),
+                candidate.centroidScore(),
+                candidate.hitCount()
+        );
+    }
+
+    private HandoverScoreBreakdownResponse noCandidateScoreBreakdown(List<QdrantVectorSearchResult> centroidResults) {
+        return new HandoverScoreBreakdownResponse(
+                null,
+                null,
+                null,
+                maxCentroidScore(centroidResults),
+                0
+        );
+    }
+
+    private Double maxCentroidScore(List<QdrantVectorSearchResult> centroidResults) {
+        if (centroidResults == null || centroidResults.isEmpty()) {
+            return null;
+        }
+
+        Double maxScore = null;
+        for (QdrantVectorSearchResult result : centroidResults) {
+            if (result == null) {
+                continue;
+            }
+            if (maxScore == null || result.score() > maxScore) {
+                maxScore = result.score();
+            }
+        }
+        return maxScore;
+    }
+
+    private void validateThresholdsOrFail() {
+        double matchThreshold = properties.getMatchThreshold();
+        double ambiguousThreshold = properties.getAmbiguousThreshold();
+        if (!Double.isFinite(matchThreshold) || !Double.isFinite(ambiguousThreshold)
+                || ambiguousThreshold > matchThreshold
+                || ambiguousThreshold < 0.0
+                || matchThreshold > 1.0) {
+            throw new ApiException(
+                    HttpStatus.INTERNAL_SERVER_ERROR,
+                    "INVALID_HANDOVER_VERIFICATION_THRESHOLD",
+                    "인계 비문 확인 기준값 설정이 올바르지 않습니다."
+            );
+        }
     }
 
     private String message(HandoverVerificationDecision decision) {
@@ -197,5 +346,11 @@ public class HandoverVerificationService {
     private String contentTypeOrDefault(MultipartFile noseImage) {
         String contentType = noseImage.getContentType();
         return contentType == null || contentType.isBlank() ? MediaType.APPLICATION_OCTET_STREAM_VALUE : contentType;
+    }
+
+    private record HandoverQdrantSearchResults(
+            List<QdrantVectorSearchResult> referenceResults,
+            List<QdrantVectorSearchResult> centroidResults
+    ) {
     }
 }

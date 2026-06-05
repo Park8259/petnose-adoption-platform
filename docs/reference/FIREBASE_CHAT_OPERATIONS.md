@@ -26,6 +26,104 @@ The container credential path is:
 /run/secrets/firebase-service-account.json
 ```
 
+## FIREBASE_DISABLED Troubleshooting
+
+Symptoms:
+
+- `POST /api/firebase/custom-token`
+- `POST /api/chat/rooms`
+- `GET /api/chat/rooms`
+- `POST /api/chat/rooms/{room_id}/messages`
+- `PATCH /api/chat/rooms/{room_id}/read`
+- `PUT /api/users/me/fcm-token`
+
+When these endpoints return `503` with `FIREBASE_DISABLED` after authentication, the request reached Spring Boot and Spring authentication passed, but Firebase Admin SDK runtime wiring is off. This is a server runtime configuration result, not an app-code problem and not evidence that the route is missing.
+
+Most common causes:
+
+- `infra/docker/compose.firebase.yaml` was not included in the compose command.
+- `FIREBASE_ENABLED=true` is missing from the running container.
+- `FIREBASE_PROJECT_ID` is missing.
+- `FIREBASE_CREDENTIALS_HOST_PATH` is missing.
+- The service account JSON does not exist at the host path.
+- The host path is mounted to the wrong container path.
+- `FIREBASE_CREDENTIALS_PATH` inside the container is not `/run/secrets/firebase-service-account.json`.
+
+Firebase chat/push is an optional communication layer. MySQL remains the source of truth, and Firestore stores only chat room, message, and device token runtime snapshots. Spring Boot remains authoritative for custom token issue, chat room creation, message send, read marking, FCM token registration, and post-status permission checks.
+
+## Shared dev server policy for app developers
+
+App developers do not receive the Firebase service account JSON when they call only the shared dev server API.
+
+The service account JSON stays with the server operator and is placed only on the server secret path. App developers need:
+
+- API base URL
+- Spring login credential or Spring JWT
+- Firebase client app configuration
+- The Firebase sign-in flow that uses the result of `POST /api/firebase/custom-token`
+
+Do not put Firebase custom tokens or service account JSON in logs, screenshots, issue comments, or PR descriptions.
+
+## Local backend Firebase test policy
+
+App developers need Firebase server credentials only when they run the backend locally and need to test real Firebase chat connectivity from that local backend.
+
+Required local backend values:
+
+- `FIREBASE_PROJECT_ID`
+- `FIREBASE_CREDENTIALS_HOST_PATH`
+- `firebase-service-account.json`
+- explicit inclusion of `infra/docker/compose.firebase.yaml`
+
+Store the service account JSON outside the repository.
+
+Example host paths:
+
+- `/opt/petnose/secrets/firebase-service-account.json`
+- `C:/Dev/petnose-secrets/firebase-service-account.json`
+
+## Runtime verification commands
+
+Start a Firebase-enabled dev runtime:
+
+```bash
+docker compose \
+  --env-file infra/docker/.env \
+  -f infra/docker/compose.yaml \
+  -f infra/docker/compose.dev.yaml \
+  -f infra/docker/compose.firebase.yaml \
+  up -d --build
+```
+
+Check Firebase-related container environment variables:
+
+```bash
+docker compose \
+  --env-file infra/docker/.env \
+  -f infra/docker/compose.yaml \
+  -f infra/docker/compose.dev.yaml \
+  -f infra/docker/compose.firebase.yaml \
+  exec spring-api printenv | grep FIREBASE
+```
+
+Check the credential mount:
+
+```bash
+docker compose \
+  --env-file infra/docker/.env \
+  -f infra/docker/compose.yaml \
+  -f infra/docker/compose.dev.yaml \
+  -f infra/docker/compose.firebase.yaml \
+  exec spring-api ls -l /run/secrets/firebase-service-account.json
+```
+
+Smoke test examples:
+
+```powershell
+./scripts/verify-firebase-chat-smoke.ps1 -Mode disabled -BaseUrl http://localhost:8080 -BearerToken "<jwt>"
+./scripts/verify-firebase-chat-smoke.ps1 -Mode enabled -BaseUrl http://localhost:8080 -BearerToken "<jwt>" -PostId 123
+```
+
 ## Dev Run Command
 
 ```bash
@@ -146,21 +244,13 @@ The fixture helper creates:
 
 Required image inputs:
 
-- a nose image for dog registration
+- five close-up cropped dog nose images for active dog nose v2 registration
 - a profile image for adoption post creation
 
 The generated output env file contains a Spring JWT for the inquirer user. Treat it as sensitive, keep it outside the repository, and do not commit it.
 By default, the output env file is written under the current user's temp directory. The helper rejects output env file paths inside the repository before creating any parent directory.
 
-Local example:
-
-```powershell
-.\scripts\prepare-firebase-chat-smoke-fixture.ps1 `
-  -BaseUrl "http://localhost:8080" `
-  -NoseImagePath "C:\Dev\sample\nose_test1.jpg" `
-  -ProfileImagePath "C:\Dev\sample\profile3.jpg" `
-  -RunSmoke
-```
+Local fixture creation should follow `docs/ops-evidence/dog-nose-v2-smoke-plan.md`: create a registered dog through `POST /api/dogs/register` with exactly five `nose_images`, then create the `OPEN` adoption post with a required `profile_image`.
 
 If dog registration returns `registration_allowed=false`, reset the disposable dev runtime/Qdrant data or use a different nose image before retrying. The author and inquirer are generated as different users, so the created `OPEN` post is owned by a different user than the smoke JWT holder. The helper does not query MySQL or Firestore directly; it only uses the public Spring APIs and lets the running backend own Firebase connectivity.
 

@@ -19,6 +19,10 @@ public record AdoptionPostStatusUpdateResponse(
         LocalDateTime publishedAt,
         @JsonProperty("closed_at")
         LocalDateTime closedAt,
+        @JsonProperty("adopter_user_id")
+        Long adopterUserId,
+        @JsonProperty("adopted_at")
+        LocalDateTime adoptedAt,
         @JsonProperty("created_at")
         LocalDateTime createdAt,
         @JsonProperty("updated_at")

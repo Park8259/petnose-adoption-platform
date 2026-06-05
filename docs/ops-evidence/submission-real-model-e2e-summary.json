@@ -1,0 +1,180 @@
+{
+  "checked_at": "2026-06-03T17:05:17+09:00",
+  "branch": "test/submission-real-model-e2e-evidence",
+  "commit_sha": "2f94897b156a863d7bbda9f1d10f76fb50b892fb",
+  "base_develop_sha": "2f94897b156a863d7bbda9f1d10f76fb50b892fb",
+  "environment": {
+    "compose_files": [
+      "infra/docker/compose.yaml",
+      "infra/docker/compose.dev.yaml",
+      "infra/docker/compose.real-model.yaml"
+    ],
+    "runtime_mode": "real-model",
+    "base_url": "http://localhost",
+    "api_base_url": "http://localhost/api",
+    "qdrant_url": "http://localhost:6333",
+    "python_embed_url": "http://localhost:8000",
+    "output_dir": "docs/ops-evidence/submission-real-model-e2e-local",
+    "redaction_policy": "JWT/password/reset token/Firebase token/FCM token/service account/raw images/raw vectors/full Qdrant payloads are not written."
+  },
+  "fixture": {
+    "nose_images": {
+      "count": 5,
+      "files": [
+        {
+          "basename": "1801_A__YPdTqbfLSwAAAAAAAAAAAAAAQAAAQ-0.jpg",
+          "size_bytes": 18564,
+          "sha256": "0d5c74e3525fb5725ff432227c5bf536385782ffd5052a926a389163913ee9e1"
+        },
+        {
+          "basename": "1801_A__YPdTqbfLSwAAAAAAAAAAAAAAQAAAQ.jpg",
+          "size_bytes": 19751,
+          "sha256": "58e0ae557cff2f61dbdfcde142b5870d8f5e1d36095217b74ff40f51147ba5ec"
+        },
+        {
+          "basename": "1801_A_2sNJT55svD4AAAAAAAAAAAAAAQAAAQ-0.jpg",
+          "size_bytes": 12981,
+          "sha256": "f03fc8c57e560ac21af873c193be8599c8257ce8ca6e88d06eafb2d76340f11e"
+        },
+        {
+          "basename": "1801_A_2sNJT55svD4AAAAAAAAAAAAAAQAAAQ.jpg",
+          "size_bytes": 18364,
+          "sha256": "f696fce403a45b25b86969ad72bf3e7ea030355d8fc128ef8f23bd4892f1c212"
+        },
+        {
+          "basename": "1801_A_5Ar-QbMNMQsAAAAAAAAAAAAAAQAAAQ-0.jpg",
+          "size_bytes": 17862,
+          "sha256": "df23be04e62b16a253a4fa03f66145cbd59e741853e9e08dba5ae6ca96bb27a5"
+        }
+      ]
+    },
+    "profile_image": {
+      "basename": "profile1.jpg",
+      "size_bytes": 72700,
+      "sha256": "92a34b1eb7c671cd885af3806bcc6b2e1feb114b84f03d290e9cd65a5a94dda0"
+    }
+  },
+  "runtime": {
+    "spring_health": "UP",
+    "python_model_loaded": true,
+    "python_model": "dog-nose-identification2:s101_224",
+    "python_vector_dim": 2048,
+    "qdrant_collection": "dog_nose_embeddings_real_v2",
+    "qdrant_vector_size": 2048,
+    "qdrant_distance": "Cosine"
+  },
+  "preflight": {
+    "spring_health_result": "PASS",
+    "python_health_result": "PASS",
+    "python_model_loaded_result": "PASS",
+    "python_vector_dim_result": "PASS",
+    "qdrant_collection_result": "PASS",
+    "qdrant_dimension_result": "PASS",
+    "qdrant_distance_result": "PASS",
+    "db_migrated_result": "PASS",
+    "db_migration_summary": "flyway_max_version=9"
+  },
+  "scenarios": {
+    "auth": "PASS",
+    "dog_registration_normal": "PASS",
+    "dog_registration_duplicate": "PASS",
+    "adoption_post_create": "PASS",
+    "public_privacy": "PASS",
+    "dog_query": "PASS",
+    "handover_verification": "PASS",
+    "adoption_completion": "PASS",
+    "my_adopted_dogs": "PASS",
+    "file_serving": "PASS",
+    "reconciliation": "PASS"
+  },
+  "scenario_notes": {},
+  "counts": {
+    "owner_user_id_fixture": "<redacted-fixture-user-id-present>",
+    "adopter_user_id_fixture": "<redacted-fixture-user-id-present>",
+    "normal_nose_images": 5,
+    "normal_references_total": 6,
+    "normal_references_reference": 5,
+    "normal_references_centroid": 1,
+    "qdrant_active_point_count_after_normal": 6,
+    "normal_latest_verification_result": "PASSED",
+    "normal_dog_status": "REGISTERED",
+    "duplicate_nose_images": 5,
+    "duplicate_references_total": 0,
+    "duplicate_latest_verification_result": "DUPLICATE_SUSPECTED",
+    "qdrant_active_point_count_after_duplicate": 6,
+    "qdrant_duplicate_unchanged": true,
+    "profile_images_after_post": 1,
+    "qdrant_after_post_unchanged": true,
+    "handover_created_dog_images": 0,
+    "handover_created_verification_logs": 0,
+    "handover_post_status_unchanged": true,
+    "handover_dog_status_unchanged": true,
+    "adoption_posts_status": "COMPLETED",
+    "adoption_posts_adopter_user_id_matches": true,
+    "adoption_posts_adopted_at_present": true,
+    "dogs_status_after_completion": "ADOPTED",
+    "dogs_owner_user_id_unchanged": true,
+    "profile_image_file_serving_http_status": 200,
+    "owner_nose_image_file_serving_http_status": 200
+  },
+  "reconciliation": {
+    "consistent": true,
+    "missing_in_qdrant_count": 0,
+    "orphan_in_qdrant_count": 0,
+    "payload_mismatch_count": 0,
+    "output_json_path": "docs/ops-evidence/submission-real-model-e2e-local/reconciliation-summary.json"
+  },
+  "redaction": {
+    "tokens_redacted": true,
+    "raw_vectors_committed": false,
+    "raw_images_committed": false,
+    "model_checkpoint_committed": false,
+    "env_committed": false
+  },
+  "validation_commands": [
+    {
+      "command": "GET /actuator/health",
+      "result": "PASS"
+    },
+    {
+      "command": "GET /health (Python Embed)",
+      "result": "PASS"
+    },
+    {
+      "command": "GET /collections/dog_nose_embeddings_real_v2",
+      "result": "PASS"
+    },
+    {
+      "command": "MySQL flyway/table preflight",
+      "result": "PASS"
+    },
+    {
+      "command": "pwsh ./scripts/check-qdrant-reference-consistency.ps1 -FailOnDrift -OutputPath <local-output-json>",
+      "result": "PASS"
+    },
+    {
+      "command": "git diff --check",
+      "result": "PASS"
+    },
+    {
+      "command": "pwsh -NoProfile -File ./scripts/verify-submission-real-model-e2e.ps1 -Help",
+      "result": "PASS"
+    },
+    {
+      "command": "pwsh -NoProfile -Command scriptblock parse",
+      "result": "PASS"
+    },
+    {
+      "command": "docker compose --env-file infra/docker/.env -f infra/docker/compose.yaml -f infra/docker/compose.dev.yaml -f infra/docker/compose.real-model.yaml config",
+      "result": "PASS"
+    },
+    {
+      "command": "gradle test",
+      "result": "PASS"
+    },
+    {
+      "command": "secret/redaction grep",
+      "result": "PASS; field-name-only hits for access_token/reset_token, existing ignore/doc marker for firebase-adminsdk"
+    }
+  ]
+}

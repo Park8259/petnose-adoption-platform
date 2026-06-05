@@ -1,0 +1,347 @@
+# App-Requested API PR Plan
+
+## Purpose
+
+This document fixes the PR split for app-team follow-up API requests before implementation begins. PR 0 is documentation-only and must not change Java code, Flyway migrations, DB runtime state, or backend tests.
+
+Canonical endpoint drafts live in `../PETNOSE_MVP_API_CONTRACT.md`. App connection order lives in `../PETNOSE_APP_API_HANDOFF.md`.
+
+`docs/db/petnose_mvp_schema.dbml` 및 `docs/db/V20260508__mvp_canonical_schema.sql`은 backend canonical schema tests의 입력이므로 planned schema는 여기에 기록하지 않고, 실제 Flyway/entity/test 구현 PR에서 함께 갱신한다.
+
+## Global Scope Rules
+
+Included follow-up scope:
+
+- Firebase chat disabled-mode handling through runtime/ops verification.
+- Multipart signup with optional user `profile_image`.
+- User profile image storage and replacement.
+- Logged-in user password change.
+- Reset-token-based password reset request/confirm.
+- Adoption post likes through `adoption_post_likes`, not `users.liked` JSON/map.
+- Adoption completion with `adoption_posts.adopter_user_id`.
+- My adopted dogs list through `GET /api/dogs/adopted/me`.
+
+Excluded follow-up scope:
+
+- Post-adoption 1-week/3-month/6-month nose verification.
+- `post_adoption_verifications` table.
+- Post-adoption verification schedule, deadline, notification, or automatic re-verification.
+- Reassigning `dogs.owner_user_id` to the adopter.
+- Replacing MySQL domain data with Firebase.
+
+Core policy:
+
+- `dogs.owner_user_id` remains original registrant/author ownership.
+- Adopter identity is tracked by `adoption_posts.adopter_user_id`.
+- `COMPLETED` still sets `dogs.status = ADOPTED`.
+- `ADOPTER` role/enum must not be added.
+- User password lookup APIs must not exist.
+- `password_hash` must never be exposed in responses.
+- User profile images use `users.profile_image_*` fields once PR 2 lands.
+- Adoption post representative images continue to use `dog_images.image_type=PROFILE`.
+
+Final status:
+
+- PR 0 docs/app-api-delta-plan: completed.
+- PR 1 chore/firebase-chat-runtime-check: completed.
+- PR 2 feat/user-profile-image-storage: completed.
+- PR 3 feat/auth-register-multipart-profile-image: completed.
+- PR 4 feat/user-password-apis: completed.
+- PR 5 feat/adoption-post-likes: completed.
+- PR 6 feat/adoption-completion-adopter: completed.
+- PR 7 feat/my-adopted-dogs-api: completed.
+- PR 8 test/app-api-regression-and-handoff: current.
+
+Final excluded scope:
+
+- post-adoption periodic nose verification is excluded.
+- `post_adoption_verifications` table was not added.
+- `ADOPTER` role was not added.
+- `dogs.owner_user_id` reassignment was not implemented.
+- Firebase remains optional chat/push layer only.
+
+## PR 0 docs/app-api-delta-plan
+
+Status:
+
+- Completed.
+
+Purpose:
+
+- Freeze the API, schema delta, excluded scope, and PR split before backend implementation.
+
+Included files:
+
+- `docs/README.md`
+- `docs/PROJECT_KNOWLEDGE_INDEX.md`
+- `docs/PETNOSE_MVP_API_CONTRACT.md`
+- `docs/PETNOSE_APP_API_HANDOFF.md`
+- `docs/db/petnose_mvp_schema.dbml`
+- `docs/db/V20260508__mvp_canonical_schema.sql`
+- `docs/reference/FIREBASE_CHAT_OPERATIONS.md`
+- `docs/reference/APP_REQUESTED_API_PR_PLAN.md`
+
+Excluded scope:
+
+- Java code, Flyway migration, backend tests, runtime config changes.
+
+Acceptance criteria:
+
+- API delta endpoints A-J are documented as planned.
+- Included/excluded scope and core ownership/password/profile-image policies are explicit.
+- Schema docs contain planned-change notes only.
+- PR body states that tests are unnecessary because this is docs-only.
+
+## PR 1 chore/firebase-chat-runtime-check
+
+Status:
+
+- Completed.
+
+Purpose:
+
+- Confirm and document shared/local Firebase runtime behavior for app-team testing.
+
+Included files:
+
+- Firebase runtime/ops docs.
+- Smoke evidence docs, if a sanitized runtime check is executed.
+- Optional script notes only if existing script behavior needs clarification.
+
+Excluded scope:
+
+- No service account JSON in repo.
+- No Firebase replacement for MySQL domain data.
+- No Flutter UI implementation.
+
+Acceptance criteria:
+
+- Disabled runtime returns `FIREBASE_DISABLED` after Spring auth.
+- Shared dev-server testing does not require app developers to receive service account JSON.
+- Local Firebase-enabled testing documents required env values and external credential path.
+
+## PR 2 feat/user-profile-image-storage
+
+Status:
+
+- Completed.
+
+Purpose:
+
+- Add the backend users profile image storage foundation.
+
+Included files:
+
+- User entity/schema migration for `users.profile_image_*` fields.
+- User profile image storage service method and user payload `profile_image_url` response mapping.
+- Active `docs/db` schema docs updated with the implemented columns in the same PR.
+- File-storage policy docs, if needed.
+
+Excluded scope:
+
+- No signup multipart handling yet.
+- No `PATCH /api/users/me/profile-image` endpoint yet.
+- No adoption post representative image policy changes.
+
+Acceptance criteria:
+
+- `users.profile_image_*` columns exist in Flyway runtime migration, entity, DBML, and canonical SQL.
+- `FileStorageService` can store user profile images under `users/{user_id}/profile`.
+- `GET /api/users/me`, login/current-user payloads, and profile update responses can expose nullable `profile_image_url` without exposing internal file paths.
+- `password_hash` remains hidden.
+
+## PR 3 feat/auth-register-multipart-profile-image
+
+Status:
+
+- Implemented in this PR.
+
+Purpose:
+
+- Add multipart signup and user profile image update wiring while preserving existing JSON signup compatibility.
+
+Included files:
+
+- Auth controller/service request handling.
+- Optional multipart signup storage reuse from PR 2.
+- `PATCH /api/users/me/profile-image` endpoint/service wiring that stores and replaces the current user's profile image.
+- Auth API tests.
+
+Excluded scope:
+
+- No removal of `application/json` signup.
+- No adoption post image behavior changes.
+
+Acceptance criteria:
+
+- [x] `POST /api/auth/register` accepts multipart fields `email`, `password`, `display_name`, `contact_phone`, `region`, optional `profile_image`.
+- [x] Existing JSON signup still works.
+- [x] Response can include `profile_image_url`.
+- [x] `PATCH /api/users/me/profile-image` stores and replaces the current user's image.
+
+## PR 4 feat/user-password-apis
+
+Status:
+
+- Implemented in this PR.
+
+Purpose:
+
+- Add logged-in password change and reset-token-based password reset APIs.
+
+Included files:
+
+- Auth/user password controller/service code.
+- Reset token schema/migration.
+- Password API tests.
+
+Excluded scope:
+
+- No password lookup endpoint.
+- No password hash exposure.
+- No real email/SMS provider integration. Delivery provider wiring is a follow-up operating hardening scope.
+
+Acceptance criteria:
+
+- [x] `PATCH /api/users/me/password` validates `current_password` and updates to `new_password`.
+- [x] `POST /api/auth/password-reset/request` does not expose whether email exists in the default response.
+- [x] `POST /api/auth/password-reset/confirm` resets via valid token.
+- [x] reset token 원문은 DB에 저장하지 않고 SHA-256 hash만 저장한다.
+- [x] `password_hash` is never serialized.
+
+## PR 5 feat/adoption-post-likes
+
+Status:
+
+- Implemented in this PR.
+
+Purpose:
+
+- Follow PR 4 by adding like/unlike and my-liked adoption post list.
+
+Included files:
+
+- `adoption_post_likes` migration/entity/repository.
+- Adoption post like APIs and tests.
+- Public adoption post list/detail response mapping for current-user `liked`.
+- My-liked list response mapping for `liked=true` and `liked_at`.
+- API contract, app handoff, active DBML, and canonical SQL updates.
+
+Excluded scope:
+
+- No `users.liked` JSON/map implementation.
+- No recommendation/ranking system.
+- No `adoption_posts.adopter_user_id` or `adopted_at`.
+- No my-adopted-dogs API.
+
+Acceptance criteria:
+
+- [x] `PUT /api/adoption-posts/{post_id}/like` is idempotent and returns `liked=true`.
+- [x] `DELETE /api/adoption-posts/{post_id}/like` is idempotent and returns `liked=false`.
+- [x] `GET /api/adoption-posts/liked/me` returns list items aligned with public adoption post list plus `liked=true` and `liked_at`.
+- [x] `GET /api/adoption-posts` and `GET /api/adoption-posts/{post_id}` include `liked=false` for anonymous users.
+- [x] Public list/detail with valid Authorization computes `liked` for the current user.
+- [x] Liked list excludes `DRAFT` and `CLOSED` posts from both items and `total_count`.
+
+Follow-up:
+
+- PR 6 follows with adoption completion adopter storage.
+
+## PR 6 feat/adoption-completion-adopter
+
+Status:
+
+- Implemented in this PR.
+
+Purpose:
+
+- Store adopter identity during adoption completion.
+
+Included files:
+
+- `adoption_posts.adopter_user_id` and `adopted_at` migration/entity fields.
+- Status transition service validation.
+- Adoption status API tests.
+- API contract, app handoff, active DBML, and canonical SQL updates.
+
+Excluded scope:
+
+- No `dogs.owner_user_id` reassignment.
+- No post-adoption verification table or schedule.
+
+Acceptance criteria:
+
+- `COMPLETED` transition requires `adopter_user_id`.
+- `adopter_user_id` must be an active user and must not equal `author_user_id`.
+- `dogs.status = ADOPTED` remains unchanged behavior.
+- `adoption_posts.adopter_user_id` stores the adopter.
+
+Follow-up:
+
+- PR 7 remains my adopted dogs API.
+
+## PR 7 feat/my-adopted-dogs-api
+
+Status:
+
+- Implemented in this PR.
+
+Purpose:
+
+- Add current user's adopted dogs list.
+
+Included files:
+
+- Dog/adoption query repository or service.
+- `GET /api/dogs/adopted/me` controller and tests.
+- Adopted dog list response DTOs.
+- Response mapping docs/tests.
+
+Excluded scope:
+
+- No `nose_image_url` exposure.
+- No `author_contact_phone` in this list response.
+- No `author_user_id`, `adopter_user_id`, or `embedding_status` in this list response.
+- No post-adoption periodic verification fields.
+
+Acceptance criteria:
+
+- [x] Query uses `adoption_posts.status = COMPLETED AND adoption_posts.adopter_user_id = current_user_id`.
+- [x] Response includes dog/post summary and `adopted_at`.
+- [x] Response excludes nose image, author contact phone, author id, adopter id, and embedding status.
+- [x] `dogs.owner_user_id` remains original registrant/author ownership and is not used as the adopted-list criterion.
+
+Follow-up:
+
+- PR 8 is final regression and app handoff cleanup.
+
+## PR 8 test/app-api-regression-and-handoff
+
+Status:
+
+- Current.
+
+Purpose:
+
+- Run focused regression after app-requested API implementation PRs land.
+
+Included files:
+
+- Updated API contract, handoff, final checklist, knowledge index, PR plan, and sanitized regression evidence docs.
+- No Java business logic, backend tests, Flyway migration, active `docs/db` schema, GitHub Actions workflow, or runtime secret changes.
+
+Excluded scope:
+
+- No new product features beyond PRs 1-7.
+- No post-adoption periodic nose verification.
+- No `post_adoption_verifications` table.
+- No `ADOPTER` role.
+- No `dogs.owner_user_id` reassignment.
+- No Firebase service account JSON, JWT, reset token, `.env`, or other secret material.
+
+Acceptance criteria:
+
+- Existing MVP signup/login/dog registration/adoption post/handover flow still passes.
+- New profile image, password, likes, adopter completion, and adopted dogs APIs pass regression checks.
+- App handoff doc matches implemented endpoint behavior.
+- Regression evidence records local automated tests, static diff checks, excluded-scope scan, secret scan, and any runtime smoke PASS/NOT_RUN status without sensitive values.

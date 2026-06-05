@@ -3,6 +3,7 @@
 ## 역할
 - Spring Boot에서만 호출되는 비문 임베딩 생성 서비스
 - `/embed` 응답 계약 유지: `status`, `vector`, `dimension`, `model`
+- `/embed-batch`는 여러 이미지를 한 요청에서 임베딩하되, backend 연동 전용 API로 유지
 - Flutter는 직접 호출하지 않음
 
 ## 지원 모드
@@ -21,6 +22,8 @@
 - `DOG_NOSE_MODEL_DIR` (기본 `/models/dog_nose_identification2`)
 - `DOG_NOSE_MODEL_PATH` (선택, checkpoint 직접 지정)
 - `MAX_IMAGE_BYTES` (기본 20MB)
+- `MAX_BATCH_IMAGES` (`/embed-batch` 요청당 최대 이미지 수, 기본 5)
+- `MAX_BATCH_TOTAL_BYTES` (`/embed-batch` 요청 전체 이미지 크기 합계 제한, 기본 80MB)
 
 ## Health 응답
 기존 키(`status`, `model_loaded`, `model`, `vector_dim`)는 유지하며 디버깅 필드를 추가합니다.
@@ -53,6 +56,32 @@ curl -X POST http://localhost:8000/embed -F "image=@/path/to/nose.jpg"
 - `model=mock-v1`
 - `dimension=128`
 
+Batch 요청:
+
+```bash
+curl -X POST http://localhost:8000/embed-batch \
+  -F "images=@/path/to/nose-1.jpg" \
+  -F "images=@/path/to/nose-2.jpg"
+```
+
+응답:
+
+```json
+{
+  "status": "ok",
+  "model": "mock-v1",
+  "dimension": 128,
+  "count": 2,
+  "items": [
+    {
+      "index": 0,
+      "filename": "nose-1.jpg",
+      "vector": [0.01, -0.02]
+    }
+  ]
+}
+```
+
 ## 실제 모델 실행 (Docker)
 1. `infra/docker/.env` 설정
 - `EMBED_MODEL=dog-nose-identification2`
@@ -74,6 +103,9 @@ docker compose --env-file infra/docker/.env \
 ```bash
 curl http://localhost:8000/health
 curl -X POST http://localhost:8000/embed -F "image=@/path/to/nose.jpg"
+curl -X POST http://localhost:8000/embed-batch \
+  -F "images=@/path/to/nose-1.jpg" \
+  -F "images=@/path/to/nose-2.jpg"
 ```
 
 ## Qdrant 차원 주의

@@ -3,26 +3,100 @@ name: Runner Smoke
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   smoke:
     runs-on: [self-hosted, Linux, X64, petnose-dev]
+    timeout-minutes: 10
 
     steps:
-      - name: Show runner info
+      - name: Runner identity and capacity
+        shell: bash
         run: |
+          set -euo pipefail
           whoami
+          id
           hostname
           pwd
-          ls -la /opt/petnose
+          df -h /opt/petnose || true
 
-      - name: Check Docker
+      - name: Tool availability
+        shell: bash
         run: |
+          set -euo pipefail
           docker --version
           docker compose version
+          curl --version
+          if command -v pwsh > /dev/null 2>&1; then
+            pwsh -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+          else
+            echo "::warning::pwsh is not installed; reconciliation scripts cannot run on this runner."
+          fi
+          docker info --format 'Docker server: {{.ServerVersion}}'
 
-      - name: Check repo path
+      - name: Deployment root preflight
+        shell: bash
         run: |
+          set -euo pipefail
+          test -d /opt/petnose
           cd /opt/petnose
-          test -f infra/scripts/deploy.sh && echo OK_deploy_sh
-          test -f infra/docker/.env && echo OK_env
-          docker compose --env-file infra/docker/.env -f infra/docker/compose.yaml -f infra/docker/compose.prod.yaml config >/dev/null && echo OK_compose_config
+
+          test -f infra/scripts/deploy.sh
+          test -f infra/scripts/deploy-real-model.sh
+          test -f infra/docker/.env
+          test -f infra/docker/compose.yaml
+          test -f infra/docker/compose.prod.yaml
+          test -f infra/docker/compose.prod-real-model.yaml
+
+          grep -q '^SPRING_API_IMAGE=' infra/docker/.env
+          grep -q '^PYTHON_EMBED_IMAGE=' infra/docker/.env
+          grep -q '^PYTHON_EMBED_REAL_IMAGE=' infra/docker/.env
+          grep -q '^DOG_NOSE_MODEL_DIR_HOST=' infra/docker/.env
+
+      - name: Real-model path preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /opt/petnose
+
+          read_env_var() {
+            local key="$1"
+            local line
+            line="$(grep -m1 "^${key}=" infra/docker/.env || true)"
+            if [ -z "${line}" ]; then
+              return 0
+            fi
+            local value="${line#*=}"
+            value="${value%$'\r'}"
+            value="${value%\"}"
+            value="${value#\"}"
+            value="${value%\'}"
+            value="${value#\'}"
+            printf '%s' "${value}"
+          }
+
+          MODEL_DIR="$(read_env_var DOG_NOSE_MODEL_DIR_HOST)"
+          test -n "${MODEL_DIR}"
+          test -d "${MODEL_DIR}"
+          test -f "${MODEL_DIR%/}/logs/s101_224/model_final.pth"
+
+      - name: Compose config preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /opt/petnose
+
+          docker compose \
+            --env-file infra/docker/.env \
+            -f infra/docker/compose.yaml \
+            -f infra/docker/compose.prod.yaml \
+            config > /dev/null
+
+          docker compose \
+            --env-file infra/docker/.env \
+            -f infra/docker/compose.yaml \
+            -f infra/docker/compose.prod.yaml \
+            -f infra/docker/compose.prod-real-model.yaml \
+            config > /dev/null

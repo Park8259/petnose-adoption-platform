@@ -1,12 +1,16 @@
 package com.petnose.api.service;
 
 import com.petnose.api.exception.ApiException;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
+import java.nio.file.DirectoryNotEmptyException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -14,11 +18,13 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Collection;
 import java.util.HexFormat;
 import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
 
+@Slf4j
 @Service
 public class FileStorageService {
 
@@ -38,6 +44,10 @@ public class FileStorageService {
 
     public StoredFile storeProfileImage(String dogId, MultipartFile file) {
         return storeImageAt("dogs/%s/profile".formatted(dogId), file);
+    }
+
+    public StoredFile storeUserProfileImage(Long userId, MultipartFile file) {
+        return storeImageAt("users/%s/profile".formatted(userId), file);
     }
 
     private StoredFile storeImageAt(String relativeDirectory, MultipartFile file) {
@@ -81,6 +91,49 @@ public class FileStorageService {
 
     public String toPublicUrl(String relativePath) {
         return "/files/" + relativePath;
+    }
+
+    public void deleteStoredFileQuietly(StoredFile storedFile) {
+        if (storedFile == null) {
+            return;
+        }
+        deleteRelativePathQuietly(storedFile.relativePath());
+    }
+
+    public void deleteStoredFilesQuietly(Collection<StoredFile> storedFiles) {
+        if (storedFiles == null || storedFiles.isEmpty()) {
+            return;
+        }
+        storedFiles.forEach(this::deleteStoredFileQuietly);
+    }
+
+    public void deleteRelativePathQuietly(String relativePath) {
+        if (relativePath == null || relativePath.isBlank()) {
+            return;
+        }
+        try {
+            Path path = resolveSafePath(relativePath);
+            Files.deleteIfExists(path);
+            cleanupEmptyParentDirectories(path.getParent());
+        } catch (ApiException e) {
+            log.warn("[FileStorage] upload delete skipped for invalid relativePath={}", relativePath);
+        } catch (IOException | RuntimeException e) {
+            log.warn("[FileStorage] upload delete failed for relativePath={}, message={}", relativePath, e.getMessage());
+        }
+    }
+
+    public void deleteOnTransactionRollback(StoredFile storedFile) {
+        if (storedFile == null || !TransactionSynchronizationManager.isSynchronizationActive()) {
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                if (status == TransactionSynchronization.STATUS_ROLLED_BACK) {
+                    deleteStoredFileQuietly(storedFile);
+                }
+            }
+        });
     }
 
     public StoredFile readStoredImage(String relativePath, String mimeType, Long fileSize, String sha256) {
@@ -164,6 +217,18 @@ public class FileStorageService {
             throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_PATH", "유효하지 않은 파일 경로입니다.");
         }
         return resolved;
+    }
+
+    private void cleanupEmptyParentDirectories(Path parentDir) throws IOException {
+        Path current = parentDir;
+        while (current != null && !current.equals(uploadBasePath) && current.startsWith(uploadBasePath)) {
+            try {
+                Files.deleteIfExists(current);
+            } catch (DirectoryNotEmptyException e) {
+                return;
+            }
+            current = current.getParent();
+        }
     }
 
     private static Path resolveCollisionSafePath(Path requestedPath) {

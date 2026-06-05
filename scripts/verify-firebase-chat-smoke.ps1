@@ -1,5 +1,25 @@
 #Requires -Version 5.1
 
+<#
+.SYNOPSIS
+Verifies PetNose Firebase chat endpoints in disabled or enabled backend runtime mode.
+
+.DESCRIPTION
+Disabled mode expects authenticated Firebase chat endpoints to return HTTP 503 with
+FIREBASE_DISABLED. Enabled mode expects the backend to be started with Firebase runtime
+wiring, including compose.firebase.yaml, FIREBASE_PROJECT_ID, and a service account JSON
+mounted at /run/secrets/firebase-service-account.json.
+
+The script does not print BearerToken, Firebase custom tokens, service account JSON, or
+.env contents. Failure output is limited to HTTP status, request path, and error_code.
+
+.EXAMPLE
+./scripts/verify-firebase-chat-smoke.ps1 -Mode disabled -BaseUrl http://localhost:8080 -BearerToken "<jwt>"
+
+.EXAMPLE
+./scripts/verify-firebase-chat-smoke.ps1 -Mode enabled -BaseUrl http://localhost:8080 -BearerToken "<jwt>" -PostId 123
+#>
+
 [CmdletBinding()]
 param(
     [AllowNull()]
@@ -106,10 +126,19 @@ function Redact-ResponseBody {
     return $redacted
 }
 
+function Get-ResponseErrorCode {
+    param([Parameter(Mandatory = $true)]$Response)
+
+    if ($null -ne $Response.Json -and (Test-JsonField -Object $Response.Json -Name "error_code")) {
+        return $Response.Json.error_code
+    }
+    return "<none>"
+}
+
 function Format-ResponseSummary {
     param([Parameter(Mandatory = $true)]$Response)
 
-    return "HTTP $($Response.StatusCode) $($Response.Method) $($Response.Url) body=$(Redact-ResponseBody $Response.BodyText)"
+    return "HTTP $($Response.StatusCode) $($Response.Method) $($Response.Url) error_code=$(Get-ResponseErrorCode $Response)"
 }
 
 function Invoke-CurlRequest {

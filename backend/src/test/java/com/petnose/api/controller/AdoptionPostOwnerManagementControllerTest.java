@@ -92,6 +92,8 @@ class AdoptionPostOwnerManagementControllerTest {
             "status",
             "published_at",
             "closed_at",
+            "adopter_user_id",
+            "adopted_at",
             "created_at",
             "updated_at"
     );
@@ -379,6 +381,28 @@ class AdoptionPostOwnerManagementControllerTest {
                 .andExpect(jsonPath("$.error_code").value("POST_OWNER_MISMATCH"));
     }
 
+    @Test
+    void statusUpdateRejectsNonOwnerCompletionWithoutMutatingAdopterOrDog() throws Exception {
+        User owner = saveUser("Owner Complete", true);
+        User adopter = saveUser("Adopter Complete", true);
+        User other = saveUser("Other Complete", true);
+        Dog dog = saveDog(owner, "OwnerCompleteDog", DogStatus.REGISTERED);
+        AdoptionPost post = savePost(owner, dog, AdoptionPostStatus.OPEN, "Owner complete post");
+
+        statusPatchWithAdopter(tokenFor(other), post.getId(), "COMPLETED", adopter.getId())
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error_code").value("POST_OWNER_MISMATCH"));
+
+        AdoptionPost saved = adoptionPostRepository.findById(post.getId()).orElseThrow();
+        assertThat(saved.getStatus()).isEqualTo(AdoptionPostStatus.OPEN);
+        assertThat(saved.getAdopterUserId()).isNull();
+        assertThat(saved.getAdoptedAt()).isNull();
+        Dog savedDog = dogRepository.findById(dog.getId()).orElseThrow();
+        assertThat(savedDog.getStatus()).isEqualTo(DogStatus.REGISTERED);
+        assertThat(savedDog.getOwnerUserId()).isEqualTo(owner.getId());
+        verifyNoInteractions(chatRoomPostStatusSyncService);
+    }
+
     @ParameterizedTest
     @NullAndEmptySource
     @ValueSource(strings = {"   ", "UNKNOWN", "open", "Draft"})
@@ -419,6 +443,8 @@ class AdoptionPostOwnerManagementControllerTest {
                 .andExpect(jsonPath("$.status").value("OPEN"))
                 .andExpect(jsonPath("$.published_at").isNotEmpty())
                 .andExpect(jsonPath("$.closed_at").value(nullValue()))
+                .andExpect(jsonPath("$.adopter_user_id").value(nullValue()))
+                .andExpect(jsonPath("$.adopted_at").value(nullValue()))
                 .andExpect(jsonPath("$.created_at").isNotEmpty())
                 .andExpect(jsonPath("$.updated_at").isNotEmpty())
                 .andExpect(jsonPath("$.author_user_id").doesNotExist())
@@ -437,6 +463,8 @@ class AdoptionPostOwnerManagementControllerTest {
                 "dogId",
                 "publishedAt",
                 "closedAt",
+                "adopterUserId",
+                "adoptedAt",
                 "createdAt",
                 "updatedAt"
         );
@@ -557,6 +585,20 @@ class AdoptionPostOwnerManagementControllerTest {
     }
 
     @Test
+    void draftToCompletedWithAdopterRemainsInvalidTransition() throws Exception {
+        User user = saveUser("Draft Complete Owner", true);
+        User adopter = saveUser("Draft Complete Adopter", true);
+        Dog dog = saveDog(user, "DraftCompleteDog", DogStatus.REGISTERED);
+        AdoptionPost post = savePost(user, dog, AdoptionPostStatus.DRAFT, "Draft complete invalid");
+
+        statusPatchWithAdopter(tokenFor(user), post.getId(), "COMPLETED", adopter.getId())
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error_code").value("INVALID_STATUS_TRANSITION"));
+
+        assertPostAndDogUnchanged(post.getId(), dog.getId(), AdoptionPostStatus.DRAFT, DogStatus.REGISTERED);
+    }
+
+    @Test
     void openToReservedSucceeds() throws Exception {
         User user = saveUser("Reserve Owner", true);
         Dog dog = saveDog(user, "ReserveDog", DogStatus.REGISTERED);
@@ -567,7 +609,9 @@ class AdoptionPostOwnerManagementControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("RESERVED"))
                 .andExpect(jsonPath("$.published_at").value("2026-01-01T09:00:00"))
-                .andExpect(jsonPath("$.closed_at").value(nullValue()));
+                .andExpect(jsonPath("$.closed_at").value(nullValue()))
+                .andExpect(jsonPath("$.adopter_user_id").value(nullValue()))
+                .andExpect(jsonPath("$.adopted_at").value(nullValue()));
 
         verify(chatRoomPostStatusSyncService).syncPostStatus(post.getId(), AdoptionPostStatus.RESERVED);
     }
@@ -589,16 +633,93 @@ class AdoptionPostOwnerManagementControllerTest {
     @ValueSource(strings = {"OPEN", "RESERVED"})
     void activePostToCompletedSucceedsAndMarksDogAdopted(String currentStatusValue) throws Exception {
         User user = saveUser("Complete Owner", true);
+        User adopter = saveUser(currentStatusValue + " Adopter", true);
         Dog dog = saveDog(user, currentStatusValue + "CompleteDog", DogStatus.REGISTERED);
         AdoptionPost post = savePost(user, dog, AdoptionPostStatus.valueOf(currentStatusValue), "Complete post");
 
-        statusPatch(tokenFor(user), post.getId(), "COMPLETED")
+        statusPatchWithAdopter(tokenFor(user), post.getId(), "COMPLETED", adopter.getId())
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("COMPLETED"))
-                .andExpect(jsonPath("$.closed_at").isNotEmpty());
+                .andExpect(jsonPath("$.closed_at").isNotEmpty())
+                .andExpect(jsonPath("$.adopter_user_id").value(adopter.getId()))
+                .andExpect(jsonPath("$.adopted_at").isNotEmpty());
 
-        assertThat(dogRepository.findById(dog.getId()).orElseThrow().getStatus()).isEqualTo(DogStatus.ADOPTED);
+        AdoptionPost saved = adoptionPostRepository.findById(post.getId()).orElseThrow();
+        assertThat(saved.getStatus()).isEqualTo(AdoptionPostStatus.COMPLETED);
+        assertThat(saved.getAdopterUserId()).isEqualTo(adopter.getId());
+        assertThat(saved.getAdoptedAt()).isNotNull();
+        assertThat(saved.getClosedAt()).isNotNull();
+        Dog savedDog = dogRepository.findById(dog.getId()).orElseThrow();
+        assertThat(savedDog.getStatus()).isEqualTo(DogStatus.ADOPTED);
+        assertThat(savedDog.getOwnerUserId()).isEqualTo(user.getId());
         verify(chatRoomPostStatusSyncService).syncPostStatus(post.getId(), AdoptionPostStatus.COMPLETED);
+    }
+
+    @Test
+    void activePostToCompletedRejectsMissingAdopter() throws Exception {
+        User user = saveUser("Missing Adopter Owner", true);
+        Dog dog = saveDog(user, "MissingAdopterDog", DogStatus.REGISTERED);
+        AdoptionPost post = savePost(user, dog, AdoptionPostStatus.OPEN, "Missing adopter post");
+
+        statusPatch(tokenFor(user), post.getId(), "COMPLETED")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error_code").value("ADOPTER_REQUIRED"));
+
+        assertPostAndDogUnchanged(post.getId(), dog.getId(), AdoptionPostStatus.OPEN, DogStatus.REGISTERED);
+    }
+
+    @Test
+    void activePostToCompletedRejectsUnknownAdopter() throws Exception {
+        User user = saveUser("Unknown Adopter Owner", true);
+        Dog dog = saveDog(user, "UnknownAdopterDog", DogStatus.REGISTERED);
+        AdoptionPost post = savePost(user, dog, AdoptionPostStatus.OPEN, "Unknown adopter post");
+
+        statusPatchWithAdopter(tokenFor(user), post.getId(), "COMPLETED", 999999L)
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error_code").value("ADOPTER_NOT_FOUND"));
+
+        assertPostAndDogUnchanged(post.getId(), dog.getId(), AdoptionPostStatus.OPEN, DogStatus.REGISTERED);
+    }
+
+    @Test
+    void activePostToCompletedRejectsInactiveAdopter() throws Exception {
+        User user = saveUser("Inactive Adopter Owner", true);
+        User adopter = saveUser("Inactive Adopter", false);
+        Dog dog = saveDog(user, "InactiveAdopterDog", DogStatus.REGISTERED);
+        AdoptionPost post = savePost(user, dog, AdoptionPostStatus.OPEN, "Inactive adopter post");
+
+        statusPatchWithAdopter(tokenFor(user), post.getId(), "COMPLETED", adopter.getId())
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error_code").value("ADOPTER_INACTIVE"));
+
+        assertPostAndDogUnchanged(post.getId(), dog.getId(), AdoptionPostStatus.OPEN, DogStatus.REGISTERED);
+    }
+
+    @Test
+    void activePostToCompletedRejectsSelfAdopter() throws Exception {
+        User user = saveUser("Self Adopter Owner", true);
+        Dog dog = saveDog(user, "SelfAdopterDog", DogStatus.REGISTERED);
+        AdoptionPost post = savePost(user, dog, AdoptionPostStatus.OPEN, "Self adopter post");
+
+        statusPatchWithAdopter(tokenFor(user), post.getId(), "COMPLETED", user.getId())
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error_code").value("ADOPTER_SELF_NOT_ALLOWED"));
+
+        assertPostAndDogUnchanged(post.getId(), dog.getId(), AdoptionPostStatus.OPEN, DogStatus.REGISTERED);
+    }
+
+    @Test
+    void nonCompletedStatusRejectsAdopterUserId() throws Exception {
+        User user = saveUser("Non Completed Owner", true);
+        User adopter = saveUser("Non Completed Adopter", true);
+        Dog dog = saveDog(user, "NonCompletedDog", DogStatus.REGISTERED);
+        AdoptionPost post = savePost(user, dog, AdoptionPostStatus.OPEN, "Non completed post");
+
+        statusPatchWithAdopter(tokenFor(user), post.getId(), "RESERVED", adopter.getId())
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error_code").value("ADOPTER_NOT_ALLOWED_FOR_STATUS"));
+
+        assertPostAndDogUnchanged(post.getId(), dog.getId(), AdoptionPostStatus.OPEN, DogStatus.REGISTERED);
     }
 
     @ParameterizedTest
@@ -611,8 +732,13 @@ class AdoptionPostOwnerManagementControllerTest {
         statusPatch(tokenFor(user), post.getId(), "CLOSED")
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("CLOSED"))
-                .andExpect(jsonPath("$.closed_at").isNotEmpty());
+                .andExpect(jsonPath("$.closed_at").isNotEmpty())
+                .andExpect(jsonPath("$.adopter_user_id").value(nullValue()))
+                .andExpect(jsonPath("$.adopted_at").value(nullValue()));
 
+        AdoptionPost saved = adoptionPostRepository.findById(post.getId()).orElseThrow();
+        assertThat(saved.getAdopterUserId()).isNull();
+        assertThat(saved.getAdoptedAt()).isNull();
         assertThat(dogRepository.findById(dog.getId()).orElseThrow().getStatus()).isEqualTo(DogStatus.REGISTERED);
     }
 
@@ -663,6 +789,8 @@ class AdoptionPostOwnerManagementControllerTest {
                 .andExpect(jsonPath("$.status").value("CLOSED"))
                 .andExpect(jsonPath("$.published_at").value("2026-01-01T09:00:00"))
                 .andExpect(jsonPath("$.closed_at").value("2026-01-02T09:00:00"))
+                .andExpect(jsonPath("$.adopter_user_id").value(nullValue()))
+                .andExpect(jsonPath("$.adopted_at").value(nullValue()))
                 .andExpect(jsonPath("$.created_at").isNotEmpty())
                 .andExpect(jsonPath("$.updated_at").isNotEmpty());
 
@@ -670,6 +798,36 @@ class AdoptionPostOwnerManagementControllerTest {
         assertThat(saved.getPublishedAt()).isEqualTo(publishedAt);
         assertThat(saved.getClosedAt()).isEqualTo(closedAt);
         assertThat(saved.getCreatedAt()).isEqualTo(createdAtBefore);
+        assertThat(saved.getUpdatedAt()).isEqualTo(updatedAtBefore);
+        verifyNoInteractions(chatRoomPostStatusSyncService);
+    }
+
+    @Test
+    void sameStatusCompletedNoOpDoesNotRewriteAdopter() throws Exception {
+        User user = saveUser("Completed Noop Owner", true);
+        User adopterA = saveUser("Completed Adopter A", true);
+        User adopterB = saveUser("Completed Adopter B", true);
+        Dog dog = saveDog(user, "CompletedNoopDog", DogStatus.ADOPTED);
+        LocalDateTime completedAt = LocalDateTime.of(2026, 1, 3, 9, 0);
+        AdoptionPost post = savePostWithAdopter(
+                user,
+                dog,
+                AdoptionPostStatus.COMPLETED,
+                "Completed noop post",
+                adopterA.getId(),
+                completedAt
+        );
+        LocalDateTime updatedAtBefore = adoptionPostRepository.findById(post.getId()).orElseThrow().getUpdatedAt();
+
+        statusPatchWithAdopter(tokenFor(user), post.getId(), "COMPLETED", adopterB.getId())
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("COMPLETED"))
+                .andExpect(jsonPath("$.adopter_user_id").value(adopterA.getId()))
+                .andExpect(jsonPath("$.adopted_at").value("2026-01-03T09:00:00"));
+
+        AdoptionPost saved = adoptionPostRepository.findById(post.getId()).orElseThrow();
+        assertThat(saved.getAdopterUserId()).isEqualTo(adopterA.getId());
+        assertThat(saved.getAdoptedAt()).isEqualTo(completedAt);
         assertThat(saved.getUpdatedAt()).isEqualTo(updatedAtBefore);
         verifyNoInteractions(chatRoomPostStatusSyncService);
     }
@@ -690,6 +848,18 @@ class AdoptionPostOwnerManagementControllerTest {
     private ResultActions statusPatch(String token, Long postId, String targetStatus) throws Exception {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("status", targetStatus);
+        return statusPatchBody(token, postId, body);
+    }
+
+    private ResultActions statusPatchWithAdopter(
+            String token,
+            Long postId,
+            String targetStatus,
+            Long adopterUserId
+    ) throws Exception {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("status", targetStatus);
+        body.put("adopter_user_id", adopterUserId);
         return statusPatchBody(token, postId, body);
     }
 
@@ -809,6 +979,21 @@ class AdoptionPostOwnerManagementControllerTest {
         return adoptionPostRepository.saveAndFlush(newPost(author, dogId, status, title, publishedAt, closedAt));
     }
 
+    private AdoptionPost savePostWithAdopter(
+            User author,
+            Dog dog,
+            AdoptionPostStatus status,
+            String title,
+            Long adopterUserId,
+            LocalDateTime adoptedAt
+    ) {
+        AdoptionPost post = newPost(author, dog.getId(), status, title, defaultPublishedAt(status), defaultClosedAt(status));
+        post.setAdopterUserId(adopterUserId);
+        post.setAdoptedAt(adoptedAt);
+        post.setClosedAt(adoptedAt);
+        return adoptionPostRepository.saveAndFlush(post);
+    }
+
     private AdoptionPost newPost(
             User author,
             String dogId,
@@ -846,6 +1031,20 @@ class AdoptionPostOwnerManagementControllerTest {
 
     private AdoptionPostStatus otherStatus(String statusValue) {
         return "DRAFT".equals(statusValue) ? AdoptionPostStatus.OPEN : AdoptionPostStatus.DRAFT;
+    }
+
+    private void assertPostAndDogUnchanged(
+            Long postId,
+            String dogId,
+            AdoptionPostStatus expectedPostStatus,
+            DogStatus expectedDogStatus
+    ) {
+        AdoptionPost saved = adoptionPostRepository.findById(postId).orElseThrow();
+        assertThat(saved.getStatus()).isEqualTo(expectedPostStatus);
+        assertThat(saved.getAdopterUserId()).isNull();
+        assertThat(saved.getAdoptedAt()).isNull();
+        assertThat(dogRepository.findById(dogId).orElseThrow().getStatus()).isEqualTo(expectedDogStatus);
+        verifyNoInteractions(chatRoomPostStatusSyncService);
     }
 
     private String tokenFor(User user) throws Exception {

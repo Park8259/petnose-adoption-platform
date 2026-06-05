@@ -2,6 +2,8 @@ package com.petnose.api.dto.registration;
 
 import org.springframework.web.multipart.MultipartFile;
 
+import java.util.List;
+
 public record DogRegisterRequest(
         Long userId,
         String name,
@@ -9,6 +11,6 @@ public record DogRegisterRequest(
         String gender,
         String birthDate,
         String description,
-        MultipartFile noseImage
+        List<MultipartFile> noseImages
 ) {
 }

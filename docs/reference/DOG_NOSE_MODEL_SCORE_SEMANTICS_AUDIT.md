@@ -197,13 +197,13 @@ Recommendation A를 적용한다.
 
 ## Follow-up threshold branch note
 
-This follow-up threshold branch applies the accepted team policy after the score semantics audit. `QDRANT_SEARCH_SCORE_THRESHOLD` and `NOSE_DUPLICATE_THRESHOLD` were aligned to `0.70`. The interpretation remains Qdrant cosine score `>= 0.70` for duplicate suspected registration. No model architecture change was made.
+Historical note: this follow-up threshold branch predates the active dog nose v2 binary policy. Current active registration and handover thresholds are documented in `docs/PETNOSE_MVP_API_CONTRACT.md`. This section remains as score-semantics audit history, not as current runtime contract.
 
 ## Follow-up handover comparison note
 
 The handover implementation was changed after the model-role / expected-dog comparison audit to compare the uploaded handover image directly against the expected dog linked to the adoption post.
 
-- Handover target id is `adoption_posts.dog_id`, which equals `dogs.id` and the Qdrant point id.
+- Handover target id is `adoption_posts.dog_id`. In active dog nose v2, Qdrant point ids are UUIDs tracked through `dog_nose_references` and are not equal to `dogs.id`.
 - Handover Qdrant search is filtered to the expected dog only and does not send `score_threshold`, so Spring can distinguish a missing expected candidate from an expected candidate scoring below `0.70`.
 - Registration remains a thresholded duplicate gate using Qdrant candidate filtering and Spring duplicate policy.
 - Python Embed still only returns embedding vector, dimension, and model.

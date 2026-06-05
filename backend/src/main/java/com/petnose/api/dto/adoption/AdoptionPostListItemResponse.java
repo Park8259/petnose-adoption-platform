@@ -30,6 +30,8 @@ public record AdoptionPostListItemResponse(
         String authorDisplayName,
         @JsonProperty("author_region")
         String authorRegion,
+        @JsonProperty("liked")
+        boolean liked,
         @JsonProperty("published_at")
         LocalDateTime publishedAt,
         @JsonProperty("created_at")

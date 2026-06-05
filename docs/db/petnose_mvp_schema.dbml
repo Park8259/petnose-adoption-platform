@@ -18,6 +18,7 @@ Enum dog_status {
   PENDING
   REGISTERED
   DUPLICATE_SUSPECTED
+  REVIEW_REQUIRED
   REJECTED
   ADOPTED
   INACTIVE
@@ -32,9 +33,21 @@ Enum verification_result {
   PENDING
   PASSED
   DUPLICATE_SUSPECTED
+  REVIEW_REQUIRED
   EMBED_FAILED
   QDRANT_SEARCH_FAILED
   QDRANT_UPSERT_FAILED
+}
+
+Enum dog_nose_embedding_kind {
+  REFERENCE
+  CENTROID
+}
+
+Enum nose_reference_quality_status {
+  ACCEPTED
+  REJECTED
+  NEEDS_REVIEW
 }
 
 Enum verification_purpose {
@@ -58,12 +71,31 @@ Table users {
   display_name varchar(150) [note: "Nullable. Required before adoption post creation."]
   contact_phone varchar(30)
   region varchar(100)
+  profile_image_path varchar(500) [note: "Nullable relative path under the upload root for the user profile image."]
+  profile_image_mime_type varchar(100)
+  profile_image_file_size bigint
+  profile_image_sha256 char(64)
   is_active boolean [not null, default: true]
   created_at timestamp [not null, default: `CURRENT_TIMESTAMP`]
 }
 
+Table password_reset_tokens {
+  id bigint [pk, increment]
+  user_id bigint [not null, ref: > users.id]
+  token_hash char(64) [not null, unique, note: "SHA-256 hex hash of the reset token. The raw token is never stored."]
+  expires_at timestamp [not null]
+  used_at timestamp
+  created_at timestamp [not null, default: `CURRENT_TIMESTAMP`]
+
+  Indexes {
+    user_id [name: "idx_password_reset_tokens_user_id"]
+    expires_at [name: "idx_password_reset_tokens_expires_at"]
+    (user_id, used_at) [name: "idx_password_reset_tokens_user_used"]
+  }
+}
+
 Table dogs {
-  id char(36) [pk, note: "UUID string. Also used as Qdrant point id."]
+  id char(36) [pk, note: "UUID string. Qdrant point ids are tracked separately in dog_nose_references."]
   owner_user_id bigint [not null, ref: > users.id]
   name varchar(100) [not null]
   breed varchar(100) [note: "DB nullable for operational/import flexibility. POST /api/dogs/register requires a non-blank breed."]
@@ -86,6 +118,28 @@ Table dog_images {
   uploaded_at timestamp [not null, default: `CURRENT_TIMESTAMP`]
 }
 
+Table dog_nose_references {
+  id char(36) [pk]
+  dog_id char(36) [not null, ref: > dogs.id]
+  dog_image_id bigint [ref: > dog_images.id]
+  qdrant_point_id char(36) [not null, unique]
+  embedding_kind dog_nose_embedding_kind [not null]
+  reference_index int
+  model varchar(100) [not null]
+  dimension int [not null]
+  preprocess_version varchar(100) [not null]
+  quality_status nose_reference_quality_status [not null, default: "ACCEPTED"]
+  quality_score decimal(6,5)
+  is_active boolean [not null, default: true]
+  created_at timestamp [not null, default: `CURRENT_TIMESTAMP`]
+
+  Indexes {
+    dog_id [name: "idx_dog_nose_references_dog_id"]
+    (dog_id, embedding_kind, is_active) [name: "idx_dog_nose_references_dog_kind_active"]
+    dog_image_id [name: "idx_dog_nose_references_image_id"]
+  }
+}
+
 Table verification_logs {
   id bigint [pk, increment]
   dog_id char(36) [not null, ref: > dogs.id]
@@ -98,6 +152,7 @@ Table verification_logs {
   result verification_result [not null]
   purpose verification_purpose [not null, default: "DOG_REGISTRATION"]
   similarity_score decimal(6,5)
+  score_breakdown_json text
   candidate_dog_id char(36) [ref: > dogs.id]
   model varchar(100)
   dimension int
@@ -108,12 +163,36 @@ Table verification_logs {
 Table adoption_posts {
   id bigint [pk, increment]
   author_user_id bigint [not null, ref: > users.id]
+  adopter_user_id bigint [ref: > users.id]
   dog_id char(36) [not null, ref: > dogs.id]
   title varchar(200) [not null]
   content text [not null]
   status adoption_post_status [not null, default: "DRAFT"]
   published_at timestamp
   closed_at timestamp
+  adopted_at timestamp
   created_at timestamp [not null, default: `CURRENT_TIMESTAMP`]
   updated_at timestamp [not null, default: `CURRENT_TIMESTAMP`]
+
+  Indexes {
+    author_user_id [name: "idx_adoption_posts_author_user_id"]
+    adopter_user_id [name: "idx_adoption_posts_adopter_user_id"]
+    (adopter_user_id, status, adopted_at) [name: "idx_adoption_posts_adopter_status_adopted_at"]
+    dog_id [name: "idx_adoption_posts_dog_id"]
+    status [name: "idx_adoption_posts_status"]
+    published_at [name: "idx_adoption_posts_published_at"]
+  }
+}
+
+Table adoption_post_likes {
+  id bigint [pk, increment]
+  user_id bigint [not null, ref: > users.id]
+  post_id bigint [not null, ref: > adoption_posts.id]
+  created_at timestamp [not null, default: `CURRENT_TIMESTAMP`]
+
+  Indexes {
+    (user_id, post_id) [unique, name: "uk_adoption_post_likes_user_post"]
+    (user_id, created_at) [name: "idx_adoption_post_likes_user_created_at"]
+    post_id [name: "idx_adoption_post_likes_post_id"]
+  }
 }

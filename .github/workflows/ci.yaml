@@ -6,151 +6,315 @@ on:
     branches:
       - develop
       - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   backend-test:
-    name: Spring Boot 테스트
+    name: Backend tests
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     defaults:
       run:
         working-directory: backend
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Java 21 설정
+      - name: Set up Java 21
         uses: actions/setup-java@v4
         with:
-          java-version: '21'
-          distribution: 'temurin'
+          java-version: "21"
+          distribution: temurin
 
-      # gradlew 없이 gradle 명령을 직접 사용 (wrapper jar 불필요)
-      # TODO: gradle/actions/setup-gradle@v4 로 업그레이드 시 Node 20 deprecation 경고 해소 가능
-      #       현재는 CI 안정성 우선으로 @v3 유지
-      - name: Gradle 설정
-        uses: gradle/actions/setup-gradle@v3
+      # The repository does not commit a Gradle wrapper jar, so CI uses the
+      # Gradle CLI distribution. v6 is current; cache-provider: basic avoids
+      # the enhanced/proprietary caching path while keeping stable dependency cache behavior.
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: "8.7"
+          cache-provider: basic
 
-      - name: Gradle 테스트
+      - name: Run Gradle tests
         run: gradle test --no-daemon --stacktrace
 
-  python-smoke:
-    name: Python smoke 테스트
+  python-test:
+    name: Python tests
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     defaults:
       run:
         working-directory: python-embed
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Python 3.11 설정
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: python-embed/requirements.txt
 
-      - name: 의존성 설치
-        run: pip install --no-cache-dir -r requirements.txt
+      - name: Install mock/dev test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
 
-      - name: smoke 테스트 (app.main import 확인)
-        run: python -c "from app.main import app; print('FastAPI app import OK')"
+      - name: Run pytest
+        run: pytest -q
 
-  integration-smoke:
-    name: Integration smoke (Compose)
+  docs-script-check:
+    name: Docs and script sanity
     runs-on: ubuntu-latest
-    needs: [backend-test, python-smoke]
-    timeout-minutes: 20
+    permissions:
+      contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: .env 준비
-        run: cp infra/docker/.env.example infra/docker/.env
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-      - name: Compose 기동 (dev)
+      - name: Check whitespace
+        run: git diff --check
+
+      - name: Validate evidence JSON
         run: |
+          set -euo pipefail
+          python -m json.tool docs/model-analysis/experiment_summary.json > /dev/null
+          python -m json.tool docs/ops-evidence/submission-real-model-e2e-summary.json > /dev/null
+
+      - name: Verify PowerShell availability
+        run: pwsh -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+
+      - name: Check reconciliation script help and syntax
+        run: |
+          set -euo pipefail
+          pwsh -NoProfile -File ./scripts/check-qdrant-reference-consistency.ps1 -Help
+          pwsh -NoProfile -Command "& { [scriptblock]::Create((Get-Content -Raw './scripts/check-qdrant-reference-consistency.ps1')) | Out-Null }"
+
+      - name: Check submission E2E script help and syntax
+        run: |
+          set -euo pipefail
+          pwsh -NoProfile -File ./scripts/verify-submission-real-model-e2e.ps1 -Help
+          pwsh -NoProfile -Command "& { [scriptblock]::Create((Get-Content -Raw './scripts/verify-submission-real-model-e2e.ps1')) | Out-Null }"
+
+      - name: Secret scan-lite for committed evidence
+        run: |
+          set -euo pipefail
+          if grep -R -n -E -- '-----BEGIN [A-Z ]*PRIVATE KEY-----|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|AIza[0-9A-Za-z_-]{35}|ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{40,}|AKIA[0-9A-Z]{16}' docs/ops-evidence docs/model-analysis scripts; then
+            echo "::error::Potential raw private key, JWT, API key, GitHub token, OpenAI key, or AWS key pattern found."
+            exit 1
+          fi
+
+  compose-mock-smoke:
+    name: Compose mock smoke
+    runs-on: ubuntu-latest
+    needs: [backend-test, python-test, docs-script-check]
+    permissions:
+      contents: read
+    timeout-minutes: 25
+    env:
+      COMPOSE_ENV_FILE: infra/docker/.env
+      QDRANT_COLLECTION: dog_nose_embeddings_ci_mock
+      QDRANT_VECTOR_DIM: "128"
+      EMBED_MODEL: mock-v1
+      PYTHON_EMBED_INSTALL_REAL_DEPS: "0"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare compose env
+        run: cp infra/docker/.env.example "${COMPOSE_ENV_FILE}"
+
+      - name: Validate compose config
+        run: |
+          set -euo pipefail
           docker compose \
-            --env-file infra/docker/.env \
+            --env-file "${COMPOSE_ENV_FILE}" \
+            -f infra/docker/compose.yaml \
+            -f infra/docker/compose.dev.yaml \
+            config > /tmp/petnose-compose-config.yaml
+          grep -q "dog_nose_embeddings_ci_mock" /tmp/petnose-compose-config.yaml
+
+      - name: Start compose mock stack
+        run: |
+          set -euo pipefail
+          docker compose \
+            --env-file "${COMPOSE_ENV_FILE}" \
             -f infra/docker/compose.yaml \
             -f infra/docker/compose.dev.yaml \
             up -d --build
 
-      - name: 통합 스모크 검증
+      - name: Run mock smoke checks
         run: |
           set -euo pipefail
 
           compose_dev() {
             docker compose \
-              --env-file infra/docker/.env \
+              --env-file "${COMPOSE_ENV_FILE}" \
               -f infra/docker/compose.yaml \
               -f infra/docker/compose.dev.yaml \
               "$@"
           }
 
           on_error() {
-            echo "[ERROR] Integration smoke 실패. 컨테이너 상태/로그를 출력합니다."
+            echo "[ERROR] Compose mock smoke failed. Container status and logs follow."
             compose_dev ps || true
             compose_dev logs --tail=200 spring-api python-embed mysql qdrant nginx || true
           }
           trap on_error ERR
 
-          echo "[INFO] nginx 경유 actuator 대기..."
-          for i in $(seq 1 40); do
-            if curl -fsS --max-time 5 http://localhost/actuator/health > /dev/null; then
+          echo "[INFO] Waiting for actuator health through nginx..."
+          for attempt in $(seq 1 50); do
+            if curl -fsS --max-time 5 http://localhost/actuator/health > /tmp/actuator.json; then
               break
+            fi
+            if [ "${attempt}" -eq 50 ]; then
+              echo "[ERROR] actuator health did not become ready."
+              exit 1
             fi
             sleep 3
           done
 
-          echo "[INFO] actuator health 확인"
-          curl -fsS http://localhost/actuator/health > /tmp/actuator.json
-          grep -q "\"status\"" /tmp/actuator.json
+          python - <<'PY'
+          import json
+          with open("/tmp/actuator.json", encoding="utf-8") as handle:
+              body = json.load(handle)
+          assert body["status"] == "UP", body
+          PY
 
-          echo "[INFO] dev ping 확인"
+          echo "[INFO] Checking Python embed health and mock dimension..."
+          curl -fsS http://localhost:8000/health > /tmp/python-health.json
+          python - <<'PY'
+          import json
+          import os
+          expected_dim = int(os.environ["QDRANT_VECTOR_DIM"])
+          with open("/tmp/python-health.json", encoding="utf-8") as handle:
+              body = json.load(handle)
+          assert body["status"] == "ok", body
+          assert body["model_loaded"] is True, body
+          assert body["model"].startswith("mock-v1"), body
+          assert body["vector_dim"] == expected_dim, body
+          PY
+
+          echo "[INFO] Checking Spring dev endpoints..."
           curl -fsS http://localhost:8080/api/dev/ping > /tmp/dev-ping.json
-          grep -q "\"status\":\"ok\"" /tmp/dev-ping.json
+          python - <<'PY'
+          import json
+          with open("/tmp/dev-ping.json", encoding="utf-8") as handle:
+              body = json.load(handle)
+          assert body["status"] == "ok", body
+          PY
 
-          echo "[INFO] Flyway 적용 여부 확인"
-          MYSQL_USER_VALUE="$(grep -m1 '^MYSQL_USER=' infra/docker/.env | cut -d= -f2- | tr -d '\r')"
-          MYSQL_PASSWORD_VALUE="$(grep -m1 '^MYSQL_PASSWORD=' infra/docker/.env | cut -d= -f2- | tr -d '\r')"
-          MYSQL_DATABASE_VALUE="$(grep -m1 '^MYSQL_DATABASE=' infra/docker/.env | cut -d= -f2- | tr -d '\r')"
-          FLYWAY_COUNT="$(compose_dev exec -T mysql mysql -u"${MYSQL_USER_VALUE}" -p"${MYSQL_PASSWORD_VALUE}" -D"${MYSQL_DATABASE_VALUE}" -Nse "SELECT COUNT(*) FROM flyway_schema_history WHERE success=1")"
-          test "${FLYWAY_COUNT:-0}" -ge 1
-
-          echo "[INFO] Spring -> Python 연결 확인"
           curl -fsS http://localhost:8080/api/dev/embed-ping > /tmp/embed-ping.json
-          grep -q "\"embed_service_healthy\":true" /tmp/embed-ping.json
+          python - <<'PY'
+          import json
+          with open("/tmp/embed-ping.json", encoding="utf-8") as handle:
+              body = json.load(handle)
+          assert body["embed_service_healthy"] is True, body
+          PY
 
-          echo "[INFO] Spring -> Python /embed 호출 확인"
+          echo "[INFO] Checking Spring -> Python /embed call and vector dimension..."
           echo "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7+2d8AAAAASUVORK5CYII=" | base64 -d > /tmp/smoke.png
           curl -fsS -X POST "http://localhost:8080/api/dev/embed-sample" \
             -F "image=@/tmp/smoke.png;type=image/png" > /tmp/embed-sample.json
-          grep -q "\"status\":\"ok\"" /tmp/embed-sample.json
+          python - <<'PY'
+          import json
+          import os
+          expected_dim = int(os.environ["QDRANT_VECTOR_DIM"])
+          with open("/tmp/embed-sample.json", encoding="utf-8") as handle:
+              body = json.load(handle)
+          assert body["status"] == "ok", body
+          assert body["dimension"] == expected_dim, body
+          assert body["vector_length"] == expected_dim, body
+          PY
 
-          echo "[INFO] Qdrant 컬렉션 확인 (initializer 경로)"
-          curl -fsS http://localhost:6333/collections/dog_nose_embeddings > /tmp/qdrant-collection.json
-          grep -q "\"status\":\"ok\"" /tmp/qdrant-collection.json
+          echo "[INFO] Checking Flyway and active dog nose v2 tables..."
+          MYSQL_USER_VALUE="$(grep -m1 '^MYSQL_USER=' "${COMPOSE_ENV_FILE}" | cut -d= -f2- | tr -d '\r')"
+          MYSQL_PASSWORD_VALUE="$(grep -m1 '^MYSQL_PASSWORD=' "${COMPOSE_ENV_FILE}" | cut -d= -f2- | tr -d '\r')"
+          MYSQL_DATABASE_VALUE="$(grep -m1 '^MYSQL_DATABASE=' "${COMPOSE_ENV_FILE}" | cut -d= -f2- | tr -d '\r')"
+          FLYWAY_COUNT="$(compose_dev exec -T mysql mysql -u"${MYSQL_USER_VALUE}" -p"${MYSQL_PASSWORD_VALUE}" -D"${MYSQL_DATABASE_VALUE}" -Nse "SELECT COUNT(*) FROM flyway_schema_history WHERE success=1")"
+          test "${FLYWAY_COUNT:-0}" -ge 1
 
-      - name: cleanup compose (always)
+          for table in users dogs dog_images dog_nose_references verification_logs adoption_posts adoption_post_likes password_reset_tokens; do
+            TABLE_COUNT="$(compose_dev exec -T mysql mysql -u"${MYSQL_USER_VALUE}" -p"${MYSQL_PASSWORD_VALUE}" -D"${MYSQL_DATABASE_VALUE}" -Nse "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${MYSQL_DATABASE_VALUE}' AND table_name='${table}'")"
+            test "${TABLE_COUNT}" -eq 1
+          done
+
+          echo "[INFO] Checking Qdrant mock collection contract..."
+          curl -fsS "http://localhost:6333/collections/${QDRANT_COLLECTION}" > /tmp/qdrant-collection.json
+          python - <<'PY'
+          import json
+          import os
+          expected_dim = int(os.environ["QDRANT_VECTOR_DIM"])
+          with open("/tmp/qdrant-collection.json", encoding="utf-8") as handle:
+              body = json.load(handle)
+          assert body["status"] == "ok", body
+          vectors = body["result"]["config"]["params"]["vectors"]
+          if "size" in vectors:
+              size = vectors["size"]
+              distance = vectors["distance"]
+          else:
+              first_vector = next(iter(vectors.values()))
+              size = first_vector["size"]
+              distance = first_vector["distance"]
+          assert size == expected_dim, body
+          assert distance.lower() == "cosine", body
+          PY
+
+      - name: Collect compose logs on failure
+        if: failure()
+        run: |
+          docker compose \
+            --env-file "${COMPOSE_ENV_FILE}" \
+            -f infra/docker/compose.yaml \
+            -f infra/docker/compose.dev.yaml \
+            ps || true
+          docker compose \
+            --env-file "${COMPOSE_ENV_FILE}" \
+            -f infra/docker/compose.yaml \
+            -f infra/docker/compose.dev.yaml \
+            logs --tail=200 spring-api python-embed mysql qdrant nginx || true
+
+      - name: Cleanup compose
         if: always()
         run: |
           docker compose \
-            --env-file infra/docker/.env \
+            --env-file "${COMPOSE_ENV_FILE}" \
             -f infra/docker/compose.yaml \
             -f infra/docker/compose.dev.yaml \
             down -v || true
 
   docker-build:
-    name: Docker 이미지 빌드 확인
+    name: Docker build
     runs-on: ubuntu-latest
-    needs: [backend-test, python-smoke]
+    needs: [backend-test, python-test]
+    permissions:
+      contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: backend 이미지 빌드
+      - name: Build backend image
         run: docker build -t petnose-spring-api:ci ./backend
 
-      - name: python-embed 이미지 빌드
-        run: docker build -t petnose-python-embed:ci ./python-embed
+      - name: Build python embed mock image
+        run: docker build --build-arg INSTALL_REAL_MODEL_DEPS=0 -t petnose-python-embed:ci ./python-embed

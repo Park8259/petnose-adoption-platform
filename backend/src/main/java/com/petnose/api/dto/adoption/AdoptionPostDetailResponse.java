@@ -36,6 +36,8 @@ public record AdoptionPostDetailResponse(
         String authorContactPhone,
         @JsonProperty("author_region")
         String authorRegion,
+        @JsonProperty("liked")
+        boolean liked,
         @JsonProperty("published_at")
         LocalDateTime publishedAt,
         @JsonProperty("created_at")

@@ -12,6 +12,7 @@ import com.petnose.api.domain.enums.VerificationResult;
 import com.petnose.api.dto.adoption.AdoptionPostCreateRequest;
 import com.petnose.api.exception.ApiException;
 import com.petnose.api.repository.AdoptionPostRepository;
+import com.petnose.api.repository.AdoptionPostLikeRepository;
 import com.petnose.api.repository.DogImageRepository;
 import com.petnose.api.repository.DogRepository;
 import com.petnose.api.repository.UserRepository;
@@ -55,6 +56,9 @@ class AdoptionPostServiceTest {
     private AdoptionPostRepository adoptionPostRepository;
 
     @Mock
+    private AdoptionPostLikeRepository adoptionPostLikeRepository;
+
+    @Mock
     private FileStorageService fileStorageService;
 
     @Mock
@@ -94,6 +98,7 @@ class AdoptionPostServiceTest {
         verify(dogRepository, never()).save(any());
         verify(verificationLogRepository, never()).save(any());
         verify(fileStorageService).storeProfileImage(eq(dog.getId()), any());
+        verify(fileStorageService).deleteOnTransactionRollback(stored);
         verify(dogImageRepository).save(org.mockito.ArgumentMatchers.argThat(image ->
                 image.getDogId().equals(dog.getId())
                         && image.getImageType() == DogImageType.PROFILE

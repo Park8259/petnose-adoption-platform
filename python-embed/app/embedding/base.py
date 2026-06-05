@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -18,6 +19,12 @@ class EmbedResult:
     vector: list[float]
     dimension: int
     model: str
+
+
+@dataclass(frozen=True, slots=True)
+class EmbedInput:
+    image_bytes: bytes
+    content_type: str | None = None
 
 
 class BaseEmbedder(ABC):
@@ -44,6 +51,10 @@ class BaseEmbedder(ABC):
     @abstractmethod
     def embed(self, image_bytes: bytes, content_type: str | None = None) -> EmbedResult:
         """Create an embedding vector from image bytes."""
+
+    def embed_batch(self, images: Sequence[EmbedInput]) -> list[EmbedResult]:
+        """Create embedding vectors from multiple images."""
+        return [self.embed(image.image_bytes, image.content_type) for image in images]
 
     def health_dict(self) -> dict[str, Any]:
         return {

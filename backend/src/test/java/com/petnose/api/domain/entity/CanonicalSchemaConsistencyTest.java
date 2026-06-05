@@ -24,8 +24,34 @@ class CanonicalSchemaConsistencyTest {
             "users",
             "dogs",
             "dog_images",
+            "dog_nose_references",
+            "password_reset_tokens",
             "verification_logs",
-            "adoption_posts"
+            "adoption_posts",
+            "adoption_post_likes"
+    );
+    private static final Set<String> USER_COLUMNS = Set.of(
+            "id",
+            "email",
+            "password_hash",
+            "role",
+            "display_name",
+            "contact_phone",
+            "region",
+            "profile_image_path",
+            "profile_image_mime_type",
+            "profile_image_file_size",
+            "profile_image_sha256",
+            "is_active",
+            "created_at"
+    );
+    private static final Set<String> PASSWORD_RESET_TOKEN_COLUMNS = Set.of(
+            "id",
+            "user_id",
+            "token_hash",
+            "expires_at",
+            "used_at",
+            "created_at"
     );
     private static final Set<String> VERIFICATION_LOG_COLUMNS = Set.of(
             "id",
@@ -39,14 +65,49 @@ class CanonicalSchemaConsistencyTest {
             "result",
             "purpose",
             "similarity_score",
+            "score_breakdown_json",
             "candidate_dog_id",
             "model",
             "dimension",
             "failure_reason",
             "created_at"
     );
-    private static final List<String> RETIRED_PRECHECK_FIELDS = List.of(
-            "expires_at",
+    private static final Set<String> DOG_NOSE_REFERENCE_COLUMNS = Set.of(
+            "id",
+            "dog_id",
+            "dog_image_id",
+            "qdrant_point_id",
+            "embedding_kind",
+            "reference_index",
+            "model",
+            "dimension",
+            "preprocess_version",
+            "quality_status",
+            "quality_score",
+            "is_active",
+            "created_at"
+    );
+    private static final Set<String> ADOPTION_POST_COLUMNS = Set.of(
+            "id",
+            "author_user_id",
+            "adopter_user_id",
+            "dog_id",
+            "title",
+            "content",
+            "status",
+            "published_at",
+            "closed_at",
+            "adopted_at",
+            "created_at",
+            "updated_at"
+    );
+    private static final Set<String> ADOPTION_POST_LIKE_COLUMNS = Set.of(
+            "id",
+            "user_id",
+            "post_id",
+            "created_at"
+    );
+    private static final List<String> RETIRED_PRECHECK_CONSUMPTION_FIELDS = List.of(
             "consumed_at",
             "consumed_by_post_id"
     );
@@ -81,6 +142,22 @@ class CanonicalSchemaConsistencyTest {
     }
 
     @Test
+    void activeCleanSqlUsersIncludeProfileImageMetadata() throws Exception {
+        String sql = canonicalSql();
+        Map<String, Set<String>> columnsByTable = columnsByTable(sql);
+        String users = tableDefinitions(sql).get("users");
+
+        assertThat(columnsByTable.get("users"))
+                .containsExactlyInAnyOrderElementsOf(USER_COLUMNS);
+        assertThat(users).contains(
+                "profile_image_path VARCHAR(500) NULL",
+                "profile_image_mime_type VARCHAR(100) NULL",
+                "profile_image_file_size BIGINT NULL",
+                "profile_image_sha256 CHAR(64) NULL"
+        );
+    }
+
+    @Test
     void activeCleanSqlVerificationLogsUseDogIdCenteredRuntimeColumns() throws Exception {
         String sql = canonicalSql();
         Map<String, Set<String>> columnsByTable = columnsByTable(sql);
@@ -88,11 +165,93 @@ class CanonicalSchemaConsistencyTest {
 
         assertThat(columnsByTable.get("verification_logs"))
                 .containsExactlyInAnyOrderElementsOf(VERIFICATION_LOG_COLUMNS)
-                .doesNotContain(RETIRED_PRECHECK_FIELDS.toArray(String[]::new));
+                .doesNotContain("expires_at")
+                .doesNotContain(RETIRED_PRECHECK_CONSUMPTION_FIELDS.toArray(String[]::new));
         assertThat(verificationLogs).contains(
                 "dog_image_id BIGINT NULL",
                 "purpose VARCHAR(40) NOT NULL DEFAULT 'DOG_REGISTRATION'",
-                "similarity_score DECIMAL(6, 5) NULL"
+                "similarity_score DECIMAL(6, 5) NULL",
+                "score_breakdown_json TEXT NULL"
+        );
+    }
+
+    @Test
+    void activeCleanSqlPasswordResetTokensStoreOnlyHashes() throws Exception {
+        String sql = canonicalSql();
+        Map<String, Set<String>> columnsByTable = columnsByTable(sql);
+        String passwordResetTokens = tableDefinitions(sql).get("password_reset_tokens");
+
+        assertThat(columnsByTable.get("password_reset_tokens"))
+                .containsExactlyInAnyOrderElementsOf(PASSWORD_RESET_TOKEN_COLUMNS);
+        assertThat(passwordResetTokens).contains(
+                "token_hash CHAR(64) NOT NULL",
+                "expires_at TIMESTAMP NOT NULL",
+                "used_at TIMESTAMP NULL",
+                "UNIQUE KEY uk_password_reset_tokens_hash (token_hash)",
+                "KEY idx_password_reset_tokens_user_id (user_id)",
+                "KEY idx_password_reset_tokens_expires_at (expires_at)",
+                "KEY idx_password_reset_tokens_user_used (user_id, used_at)",
+                "FOREIGN KEY (user_id) REFERENCES users (id)"
+        );
+        assertThat(passwordResetTokens).doesNotContain("reset_token VARCHAR", "reset_token TEXT", "raw_token", "plain_token");
+    }
+
+    @Test
+    void activeCleanSqlDogNoseReferencesTrackQdrantPointsAndMetadata() throws Exception {
+        String sql = canonicalSql();
+        Map<String, Set<String>> columnsByTable = columnsByTable(sql);
+        String dogNoseReferences = tableDefinitions(sql).get("dog_nose_references");
+
+        assertThat(columnsByTable.get("dog_nose_references"))
+                .containsExactlyInAnyOrderElementsOf(DOG_NOSE_REFERENCE_COLUMNS);
+        assertThat(dogNoseReferences).contains(
+                "qdrant_point_id CHAR(36) NOT NULL",
+                "embedding_kind VARCHAR(20) NOT NULL",
+                "preprocess_version VARCHAR(100) NOT NULL",
+                "quality_status VARCHAR(30) NOT NULL DEFAULT 'ACCEPTED'",
+                "UNIQUE KEY uk_dog_nose_references_qdrant_point_id (qdrant_point_id)",
+                "KEY idx_dog_nose_references_dog_kind_active (dog_id, embedding_kind, is_active)",
+                "FOREIGN KEY (dog_id) REFERENCES dogs (id)",
+                "FOREIGN KEY (dog_image_id) REFERENCES dog_images (id)",
+                "CHECK (embedding_kind IN ('REFERENCE', 'CENTROID'))",
+                "CHECK (quality_status IN ('ACCEPTED', 'REJECTED', 'NEEDS_REVIEW'))"
+        );
+    }
+
+    @Test
+    void activeCleanSqlAdoptionPostLikesUseRelationTable() throws Exception {
+        String sql = canonicalSql();
+        Map<String, Set<String>> columnsByTable = columnsByTable(sql);
+        String adoptionPostLikes = tableDefinitions(sql).get("adoption_post_likes");
+
+        assertThat(columnsByTable.get("adoption_post_likes"))
+                .containsExactlyInAnyOrderElementsOf(ADOPTION_POST_LIKE_COLUMNS);
+        assertThat(adoptionPostLikes).contains(
+                "user_id BIGINT NOT NULL",
+                "post_id BIGINT NOT NULL",
+                "created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP",
+                "UNIQUE KEY uk_adoption_post_likes_user_post (user_id, post_id)",
+                "KEY idx_adoption_post_likes_user_created_at (user_id, created_at)",
+                "KEY idx_adoption_post_likes_post_id (post_id)",
+                "FOREIGN KEY (user_id) REFERENCES users (id)",
+                "FOREIGN KEY (post_id) REFERENCES adoption_posts (id)"
+        );
+    }
+
+    @Test
+    void activeCleanSqlAdoptionPostsTrackCompletionAdopter() throws Exception {
+        String sql = canonicalSql();
+        Map<String, Set<String>> columnsByTable = columnsByTable(sql);
+        String adoptionPosts = tableDefinitions(sql).get("adoption_posts");
+
+        assertThat(columnsByTable.get("adoption_posts"))
+                .containsExactlyInAnyOrderElementsOf(ADOPTION_POST_COLUMNS);
+        assertThat(adoptionPosts).contains(
+                "adopter_user_id BIGINT NULL",
+                "adopted_at TIMESTAMP NULL",
+                "KEY idx_adoption_posts_adopter_user_id (adopter_user_id)",
+                "KEY idx_adoption_posts_adopter_status_adopted_at (adopter_user_id, status, adopted_at)",
+                "FOREIGN KEY (adopter_user_id) REFERENCES users (id)"
         );
     }
 
@@ -115,8 +274,31 @@ class CanonicalSchemaConsistencyTest {
 
         assertThat(dbmlTableNames(dbml)).containsExactlyInAnyOrderElementsOf(ACTIVE_TABLES);
         assertThat(dbml).doesNotContain(removedAttemptTableName());
-        assertThat(dbml).doesNotContain(RETIRED_PRECHECK_FIELDS.toArray(String[]::new));
+        assertThat(dbml).doesNotContain(RETIRED_PRECHECK_CONSUMPTION_FIELDS.toArray(String[]::new));
+        assertThat(dbml).contains(
+                "profile_image_path varchar(500)",
+                "profile_image_mime_type varchar(100)",
+                "profile_image_file_size bigint",
+                "profile_image_sha256 char(64)",
+                "Table password_reset_tokens",
+                "token_hash char(64)",
+                "expires_at timestamp",
+                "used_at timestamp",
+                "Table adoption_post_likes",
+                "(user_id, post_id) [unique, name: \"uk_adoption_post_likes_user_post\"]",
+                "adopter_user_id bigint",
+                "adopted_at timestamp",
+                "adopter_user_id [name: \"idx_adoption_posts_adopter_user_id\"]",
+                "(adopter_user_id, status, adopted_at) [name: \"idx_adoption_posts_adopter_status_adopted_at\"]"
+        );
+        assertThat(dbmlEnumValues(dbml, "dog_status"))
+                .containsExactly("PENDING", "REGISTERED", "DUPLICATE_SUSPECTED", "REVIEW_REQUIRED", "REJECTED", "ADOPTED", "INACTIVE");
         assertThat(dbmlEnumValues(dbml, "dog_image_type")).containsExactly("NOSE", "PROFILE");
+        assertThat(dbmlEnumValues(dbml, "verification_result"))
+                .containsExactly("PENDING", "PASSED", "DUPLICATE_SUSPECTED", "REVIEW_REQUIRED", "EMBED_FAILED", "QDRANT_SEARCH_FAILED", "QDRANT_UPSERT_FAILED");
+        assertThat(dbmlEnumValues(dbml, "dog_nose_embedding_kind")).containsExactly("REFERENCE", "CENTROID");
+        assertThat(dbmlEnumValues(dbml, "nose_reference_quality_status"))
+                .containsExactly("ACCEPTED", "REJECTED", "NEEDS_REVIEW");
         assertThat(dbmlEnumValues(dbml, "verification_purpose"))
                 .containsExactly("DOG_REGISTRATION", "HANDOVER_COMPARE");
     }
