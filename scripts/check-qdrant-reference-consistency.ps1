@@ -39,6 +39,10 @@ param(
 
     [AllowNull()]
     [AllowEmptyString()]
+    [string]$ComposeProjectName = "",
+
+    [AllowNull()]
+    [AllowEmptyString()]
     [string]$MysqlService = "mysql",
 
     [AllowNull()]
@@ -73,6 +77,26 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+function Expand-ComposeFileList {
+    param([string[]]$Values)
+
+    $expanded = @()
+    foreach ($value in @($Values)) {
+        if ([string]::IsNullOrWhiteSpace($value)) {
+            continue
+        }
+        foreach ($part in ([string]$value).Split([char]";", [System.StringSplitOptions]::RemoveEmptyEntries)) {
+            $trimmed = $part.Trim()
+            if (-not [string]::IsNullOrWhiteSpace($trimmed)) {
+                $expanded += $trimmed
+            }
+        }
+    }
+    return $expanded
+}
+
+$ComposeFile = @(Expand-ComposeFileList -Values $ComposeFile)
+
 function Show-Usage {
     @"
 Usage:
@@ -89,6 +113,7 @@ Key options:
   -Collection <name>            Default: dog_nose_embeddings_real_v2
   -EnvFile <path>               Default: infra/docker/.env
   -ComposeFile <paths[]>        Default: infra/docker/compose.yaml, infra/docker/compose.dev.yaml
+  -ComposeProjectName <name>     Optional docker compose project name; omitted keeps default behavior
   -MysqlService <service>       Default: mysql
   -MysqlDatabase <database>     Default: MYSQL_DATABASE from env file, then petnose
   -MysqlUser <user>             Default: MYSQL_USER from env file, then petnose
@@ -394,7 +419,11 @@ try {
             [string]$Query
         )
 
-        $composeArgs = @("compose", "--env-file", $ResolvedEnvFile)
+        $composeArgs = @("compose")
+        if (-not [string]::IsNullOrWhiteSpace($ComposeProjectName)) {
+            $composeArgs += @("-p", $ComposeProjectName)
+        }
+        $composeArgs += @("--env-file", $ResolvedEnvFile)
         foreach ($file in $ResolvedComposeFiles) {
             $composeArgs += @("-f", $file)
         }

@@ -29,6 +29,7 @@
 | Migration 참고 | `reference/DB_MIGRATION_STRATEGY.md` | Flyway/runtime migration 작업 |
 | Vector/Storage 참고 | `reference/STORAGE_AND_VECTOR_BOUNDARY.md` | Qdrant/Python Embed/file storage 경계 판단 |
 | Qdrant 정합성 복구 | `reference/QDRANT_RECONCILIATION_RUNBOOK.md` | `dog_nose_references`와 Qdrant active points drift 점검/복구 |
+| 수동 전체 smoke | `reference/MANUAL_FULL_FEATURE_SMOKE.md` | 회원가입부터 입양 완료까지 local/dev 전체 기능 수동 검증 |
 | 모델 분석 근거 | `model-analysis/README.md` | dog nose v2 threshold/Qdrant reference 설계 summary와 재현 경로 확인 |
 | Spring-Python 참고 | `reference/SPRING_PYTHON_EMBED_CONTRACT.md` | Spring Boot ↔ Python Embed 연동 작업 |
 | CI/CD 참고 | `reference/CI_CD_WORKFLOW_OVERVIEW.md` | GitHub Actions CI, image publish, CD 범위 구분 |
