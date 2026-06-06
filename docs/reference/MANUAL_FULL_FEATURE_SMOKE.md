@@ -2,7 +2,7 @@
 
 ## 목적
 
-`scripts/manual-full-feature-smoke.ps1`는 로컬 또는 개발 서버 runtime에서 PetNose MVP의 주요 사용자 흐름을 사람이 한 번에 확인하기 위한 PowerShell 7 smoke script다.
+`scripts/manual-full-feature-smoke.ps1`는 로컬, 개발 서버, 또는 운영 서버 API에서 PetNose MVP의 주요 사용자 흐름을 사람이 한 번에 확인하기 위한 PowerShell 7 smoke script다.
 
 검증 범위는 회원가입, 로그인, 내 정보, 프로필/프로필 이미지, 비밀번호 변경, 선택적 비밀번호 재설정, 강아지 등록, 내 강아지 조회, 분양글 생성, 공개 목록/상세 privacy, 좋아요, 선택적 Firebase chat, 인도 시점 비문 확인, 입양 완료, 내가 입양한 강아지 목록, 파일 서빙, Qdrant/MySQL reconciliation이다.
 
@@ -51,6 +51,41 @@ pwsh ./scripts/manual-full-feature-smoke.ps1 `
 - `ComposeProjectName`: `petnose`
 
 `manual-full-feature-smoke-local/` 디렉터리는 gitignore 대상이다.
+
+## 운영 서버 API smoke
+
+운영 서버처럼 내부 Qdrant/Python Embed/MySQL에 직접 접근하면 안 되는 대상은 `-ApiOnly`와 `-SkipInternalPreflight`를 사용한다. 이 mode는 외부 HTTP API만 호출하며 다음 검증을 생략한다.
+
+- Python Embed 직접 health check
+- Qdrant 직접 health/collection check
+- initial DB zero count check
+- initial Qdrant active point zero check
+- Qdrant/MySQL reconciliation
+- dev-only `/api/dev/ping` check
+
+`-ApiOnly`에서는 `-ResetRuntimeData`, `-StartRuntime`, `-StopRuntimeAfter`를 사용할 수 없다. 운영 서버 데이터 삭제나 compose lifecycle 제어 옵션은 절대 사용하지 않는다. `-RunReconciliation`은 기본 skip이며, 명시적으로 `-RunReconciliation:$false`를 넘기는 것을 권장한다.
+
+운영 서버 실행 예시:
+
+```powershell
+pwsh -NoProfile -File .\scripts\manual-full-feature-smoke.ps1 `
+  -ApiOnly `
+  -SkipInternalPreflight `
+  -RootUrl "http://15.164.211.50" `
+  -BaseUrl "http://15.164.211.50/api" `
+  -NoseImageDir "C:\Users\jaesung\Desktop\dog_nose\ddubi" `
+  -PasswordResetMode skip `
+  -FirebaseMode enabled `
+  -FcmToken "manual-smoke-fcm-token" `
+  -RunReconciliation:$false `
+  -WriteEvidence `
+  -WriteApiTranscript `
+  -PrintApiTranscript `
+  -ApiTranscriptDetail body `
+  -AllowAmbiguousHandover
+```
+
+`-FirebaseMode enabled`에서는 `/api/firebase/custom-token`이 `FIREBASE_DISABLED`를 반환하면 실패로 처리한다. enabled smoke는 Firebase Admin runtime이 실제로 켜진 서버에서만 PASS해야 한다.
 
 ## Dedicated compose project 실행
 
@@ -269,9 +304,9 @@ Duplicate suspected가 발생하면 같은 nose fixture가 이미 같은 runtime
 - fixture basename/count/SHA-256 hash
 - scenario PASS/SKIP/FAIL
 - ID present marker
-- 초기 DB row count와 Qdrant active point count
+- 초기 DB row count와 Qdrant active point count. `-ApiOnly`에서는 skip으로 기록
 - sanitized API method/path/status/request/response/assertion transcript
-- sanitized reconciliation counts
+- sanitized reconciliation counts. `-ApiOnly`에서는 skip으로 기록
 
 저장하지 않는 항목:
 
@@ -306,6 +341,8 @@ Duplicate suspected가 발생하면 같은 nose fixture가 이미 같은 runtime
 | `NoseImageDir` | `1`부터 `6`까지 indexed image가 있는 디렉터리 |
 | `PasswordResetMode` | `skip`, `dev-exposed`, `email` |
 | `FirebaseMode` | `skip`, `disabled`, `enabled`, `auto` |
+| `SkipInternalPreflight` | Python Embed/Qdrant 직접 health/collection check 생략 |
+| `ApiOnly` | 운영 서버용 API-only mode. 내부 preflight, 초기 zero check, reconciliation, compose control 생략/금지 |
 | `RunReconciliation` | Qdrant/MySQL 정합성 점검 실행 여부 |
 | `WriteEvidence` | sanitized summary JSON/Markdown 저장 |
 | `PrintApiTranscript` | sanitized API transcript를 console에 출력 |

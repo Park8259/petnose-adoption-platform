@@ -9,6 +9,11 @@ adoption post creation, likes, optional Firebase chat, handover verification,
 adoption completion, adopted dog query, file serving, and optional Qdrant/MySQL
 reconciliation.
 
+Use -ApiOnly for a production/server API smoke where only externally exposed
+HTTP APIs are safe to touch. ApiOnly skips direct Python Embed/Qdrant preflight,
+clean-runtime zero checks, reconciliation by default, and forbids compose
+runtime control flags.
+
 It writes only sanitized summaries when -WriteEvidence is used. Raw passwords,
 JWTs, reset tokens, Firebase tokens, FCM tokens, service account details, raw
 images, raw vectors, and full Qdrant payloads are not written to evidence.
@@ -23,6 +28,23 @@ pwsh ./scripts/manual-full-feature-smoke.ps1 `
   -FirebaseMode auto `
   -RunReconciliation `
   -WriteEvidence
+
+.EXAMPLE
+pwsh -NoProfile -File .\scripts\manual-full-feature-smoke.ps1 `
+  -ApiOnly `
+  -SkipInternalPreflight `
+  -RootUrl "http://15.164.211.50" `
+  -BaseUrl "http://15.164.211.50/api" `
+  -NoseImageDir "C:\Users\jaesung\Desktop\dog_nose\ddubi" `
+  -PasswordResetMode skip `
+  -FirebaseMode enabled `
+  -FcmToken "manual-smoke-fcm-token" `
+  -RunReconciliation:$false `
+  -WriteEvidence `
+  -WriteApiTranscript `
+  -PrintApiTranscript `
+  -ApiTranscriptDetail body `
+  -AllowAmbiguousHandover
 #>
 
 [CmdletBinding()]
@@ -63,6 +85,8 @@ param(
     [AllowEmptyString()]
     [string]$FcmToken = "",
 
+    [switch]$SkipInternalPreflight,
+    [switch]$ApiOnly,
     [switch]$RunReconciliation = $true,
     [switch]$WriteEvidence,
 
@@ -155,6 +179,11 @@ $script:ApiTranscriptCounter = 0
 $script:CurrentScenarioName = ""
 $script:CurrentApiRecord = $null
 $script:RuntimeStartedByScript = $false
+$script:SkipInternalPreflightEffective = [bool]($SkipInternalPreflight -or $ApiOnly)
+
+if ($ApiOnly -and -not $PSBoundParameters.ContainsKey("RunReconciliation")) {
+    $RunReconciliation = $false
+}
 
 $script:Summary = [ordered]@{
     checked_at = $script:StartedAt.ToString("o")
@@ -166,6 +195,8 @@ $script:Summary = [ordered]@{
     runtime_health = [ordered]@{}
     fixture = [ordered]@{}
     modes = [ordered]@{
+        api_only = [bool]$ApiOnly
+        skip_internal_preflight = [bool]$script:SkipInternalPreflightEffective
         password_reset = $PasswordResetMode
         firebase = $FirebaseMode
         run_reconciliation = [bool]$RunReconciliation
@@ -213,6 +244,8 @@ Defaults:
   -HandoverImageIndex            6
   -PasswordResetMode             skip
   -FirebaseMode                  auto
+  -SkipInternalPreflight         false
+  -ApiOnly                       false
   -RunReconciliation             true
   -OutputDir                     docs/ops-evidence/manual-full-feature-smoke-local
   -SummaryPath                   docs/ops-evidence/manual-full-feature-smoke-local/summary.json
@@ -225,6 +258,8 @@ Defaults:
 Modes:
   -PasswordResetMode skip|dev-exposed|email
   -FirebaseMode skip|disabled|enabled|auto
+  -SkipInternalPreflight         Skip direct Python Embed/Qdrant health/collection checks
+  -ApiOnly                       Server API smoke mode; skips internal checks and compose control
 
 Evidence:
   -WriteEvidence                 Write sanitized summary.json and summary.md
@@ -240,6 +275,23 @@ Optional behavior:
   -StartRuntime                  Run docker compose up -d --build before the smoke
   -StopRuntimeAfter              Run docker compose down -v after the smoke
   -RunReconciliation:`$false      Skip Qdrant/MySQL reconciliation
+
+Server API smoke example:
+  pwsh -NoProfile -File .\scripts\manual-full-feature-smoke.ps1 ``
+    -ApiOnly ``
+    -SkipInternalPreflight ``
+    -RootUrl "http://15.164.211.50" ``
+    -BaseUrl "http://15.164.211.50/api" ``
+    -NoseImageDir "C:\Users\jaesung\Desktop\dog_nose\ddubi" ``
+    -PasswordResetMode skip ``
+    -FirebaseMode enabled ``
+    -FcmToken "manual-smoke-fcm-token" ``
+    -RunReconciliation:`$false ``
+    -WriteEvidence ``
+    -WriteApiTranscript ``
+    -PrintApiTranscript ``
+    -ApiTranscriptDetail body ``
+    -AllowAmbiguousHandover
 
 Exit codes:
   0 success
@@ -1037,6 +1089,21 @@ function Fail-Config {
     throw "CONFIG: $Message"
 }
 
+function Assert-ModeCompatibility {
+    if (-not $ApiOnly) {
+        return
+    }
+
+    if ($ResetRuntimeData -or $StartRuntime -or $StopRuntimeAfter) {
+        Fail-Config "ApiOnly forbids ResetRuntimeData, StartRuntime, and StopRuntimeAfter because server API smoke must not control runtime data or compose lifecycle."
+    }
+    if ($RunReconciliation) {
+        Fail-Config "ApiOnly skips Qdrant/MySQL reconciliation. Pass -RunReconciliation:`$false for server API smoke."
+    }
+
+    $script:Summary["validation_notes"] += "ApiOnly mode skipped direct Python Embed/Qdrant preflight, clean-runtime zero checks, and reconciliation."
+}
+
 function Assert-Status {
     param(
         [Parameter(Mandatory = $true)][object]$Response,
@@ -1638,9 +1705,11 @@ function Wait-RuntimeHealth {
     $qdrantHealthUrl = Join-Url $QdrantUrl "healthz"
 
     while ((Get-Date) -lt $deadline) {
-        if ((Test-HttpOk -Url $rootHealthUrl) -and
-            (Test-HttpOk -Url $pythonHealthUrl) -and
-            (Test-HttpOk -Url $qdrantHealthUrl)) {
+        $rootOk = Test-HttpOk -Url $rootHealthUrl
+        if ($script:SkipInternalPreflightEffective -and $rootOk) {
+            return
+        }
+        if ($rootOk -and (Test-HttpOk -Url $pythonHealthUrl) -and (Test-HttpOk -Url $qdrantHealthUrl)) {
             return
         }
         Start-Sleep -Seconds 5
@@ -2031,36 +2100,46 @@ function Invoke-Preflight {
     Assert-Status -Response $rootHealth -ExpectedStatus 200
     $script:Summary["runtime_health"]["spring_status"] = Get-PropertyValue -Object $rootHealth.Json -Name "status"
 
-    $pythonHealth = Invoke-Json -Method "GET" -Url (Join-Url $PythonEmbedUrl "health")
-    Assert-Status -Response $pythonHealth -ExpectedStatus 200
-    $script:Summary["runtime_health"]["python"] = ConvertTo-SafeEvidenceValue -Value $pythonHealth.Json
+    if ($script:SkipInternalPreflightEffective) {
+        $script:Summary["runtime_health"]["python"] = "skipped"
+        $script:Summary["runtime_health"]["qdrant_healthz"] = "skipped"
+        $script:Summary["runtime_health"]["qdrant_collection"] = "skipped"
+    } else {
+        $pythonHealth = Invoke-Json -Method "GET" -Url (Join-Url $PythonEmbedUrl "health")
+        Assert-Status -Response $pythonHealth -ExpectedStatus 200
+        $script:Summary["runtime_health"]["python"] = ConvertTo-SafeEvidenceValue -Value $pythonHealth.Json
 
-    $qdrantHealth = Invoke-Json -Method "GET" -Url (Join-Url $QdrantUrl "healthz")
-    Assert-Status -Response $qdrantHealth -ExpectedStatus 200
-    $script:Summary["runtime_health"]["qdrant_healthz"] = "ok"
+        $qdrantHealth = Invoke-Json -Method "GET" -Url (Join-Url $QdrantUrl "healthz")
+        Assert-Status -Response $qdrantHealth -ExpectedStatus 200
+        $script:Summary["runtime_health"]["qdrant_healthz"] = "ok"
 
-    $collection = Invoke-Json -Method "GET" -Url (Join-Url $QdrantUrl "collections/$QdrantCollection")
-    Assert-Status -Response $collection -ExpectedStatus 200
-    $contract = Get-VectorContract -CollectionResponse $collection.Json
-    Assert-Equal -Actual $contract.dimension -Expected $ExpectedVectorDimension -Name "qdrant.collection.dimension"
-    if ($null -ne $contract.distance) {
-        if (-not ([string]$contract.distance).Equals($ExpectedDistance, [System.StringComparison]::OrdinalIgnoreCase)) {
-            Fail-Assert "qdrant.collection.distance mismatch. Expected '$ExpectedDistance', actual '$($contract.distance)'."
+        $collection = Invoke-Json -Method "GET" -Url (Join-Url $QdrantUrl "collections/$QdrantCollection")
+        Assert-Status -Response $collection -ExpectedStatus 200
+        $contract = Get-VectorContract -CollectionResponse $collection.Json
+        Assert-Equal -Actual $contract.dimension -Expected $ExpectedVectorDimension -Name "qdrant.collection.dimension"
+        if ($null -ne $contract.distance) {
+            if (-not ([string]$contract.distance).Equals($ExpectedDistance, [System.StringComparison]::OrdinalIgnoreCase)) {
+                Fail-Assert "qdrant.collection.distance mismatch. Expected '$ExpectedDistance', actual '$($contract.distance)'."
+            }
+        }
+        $script:Summary["runtime_health"]["qdrant_collection"] = [ordered]@{
+            collection = $QdrantCollection
+            dimension = $contract.dimension
+            distance = $contract.distance
         }
     }
-    $script:Summary["runtime_health"]["qdrant_collection"] = [ordered]@{
-        collection = $QdrantCollection
-        dimension = $contract.dimension
-        distance = $contract.distance
-    }
 
-    $devPing = Invoke-Json -Method "GET" -Url (Join-Url $BaseUrl "dev/ping")
-    if ($devPing.StatusCode -eq 200) {
-        $script:Summary["runtime_health"]["base_url_dev_ping"] = "ok"
-    } elseif ($devPing.StatusCode -eq 404 -or $devPing.StatusCode -eq 403) {
-        $script:Summary["runtime_health"]["base_url_dev_ping"] = "not available in this profile"
+    if ($ApiOnly) {
+        $script:Summary["runtime_health"]["base_url_dev_ping"] = "skipped in ApiOnly mode"
     } else {
-        Assert-StatusIn -Response $devPing -ExpectedStatuses @(200, 404, 403) -Name "base_url_dev_ping"
+        $devPing = Invoke-Json -Method "GET" -Url (Join-Url $BaseUrl "dev/ping")
+        if ($devPing.StatusCode -eq 200) {
+            $script:Summary["runtime_health"]["base_url_dev_ping"] = "ok"
+        } elseif ($devPing.StatusCode -eq 404 -or $devPing.StatusCode -eq 403) {
+            $script:Summary["runtime_health"]["base_url_dev_ping"] = "not available in this profile"
+        } else {
+            Assert-StatusIn -Response $devPing -ExpectedStatuses @(200, 404, 403) -Name "base_url_dev_ping"
+        }
     }
 }
 
@@ -2389,13 +2468,16 @@ function Verify-LikeFlow {
 }
 
 function Test-FirebaseDisabledResponse {
-    param([Parameter(Mandatory = $true)][object]$Response)
+    param(
+        [Parameter(Mandatory = $true)][object]$Response,
+        [bool]$RecordExpected = $true
+    )
 
     if ([int]$Response.StatusCode -ne 503) {
         return $false
     }
     $isDisabled = "$(Get-PropertyValue -Object $Response.Json -Name "error_code")" -eq "FIREBASE_DISABLED"
-    if ($isDisabled) {
+    if ($isDisabled -and $RecordExpected) {
         Add-ApiAssertion -Status "PASS" -Description "Firebase disabled response" -Expected "503 FIREBASE_DISABLED" -Actual "503 FIREBASE_DISABLED"
         Set-CurrentApiResult -Result "EXPECTED_DISABLED"
     }
@@ -2408,6 +2490,10 @@ function Invoke-EnabledChatFlow {
     $tokenResponse = $ExistingTokenResponse
     if ($null -eq $tokenResponse) {
         $tokenResponse = Invoke-Json -Method "POST" -Url (Join-Url $BaseUrl "firebase/custom-token") -BearerToken $script:AdopterToken
+        if (Test-FirebaseDisabledResponse -Response $tokenResponse -RecordExpected:$false) {
+            Add-ApiAssertion -Status "FAIL" -Description "Firebase enabled mode" -Expected "Firebase custom token" -Actual "FIREBASE_DISABLED"
+            Fail-Assert "FirebaseMode enabled expected Firebase custom token, but server returned FIREBASE_DISABLED."
+        }
         Assert-Status -Response $tokenResponse -ExpectedStatus 200
     }
     $customToken = [string](Get-PropertyValue -Object $tokenResponse.Json -Name "firebase_custom_token")
@@ -2589,9 +2675,14 @@ function Verify-FileServing {
 }
 
 try {
+    Assert-ModeCompatibility
     Initialize-RuntimeIfRequested
     Invoke-Scenario -Name "preflight" -Command { Invoke-Preflight }
-    Invoke-Scenario -Name "initial_runtime_cleanliness" -Command { Verify-CleanRuntimeData }
+    if ($ApiOnly) {
+        Skip-Scenario -Name "initial_runtime_cleanliness" -Note "Skipped in ApiOnly mode to avoid direct DB/Qdrant server data checks."
+    } else {
+        Invoke-Scenario -Name "initial_runtime_cleanliness" -Command { Verify-CleanRuntimeData }
+    }
     Invoke-Scenario -Name "owner_register_multipart" -Command { Register-Owner }
     Invoke-Scenario -Name "owner_login" -Command { Login-Owner }
     Invoke-Scenario -Name "users_me" -Command { Get-OwnerMe }
@@ -2612,7 +2703,9 @@ try {
     Invoke-Scenario -Name "adoption_completion" -Command { Complete-Adoption }
     Invoke-Scenario -Name "adopted_dogs" -Command { Verify-AdoptedDogs }
     Invoke-Scenario -Name "file_serving" -Command { Verify-FileServing }
-    if ($RunReconciliation) {
+    if ($ApiOnly) {
+        Skip-Scenario -Name "reconciliation" -Note "Skipped in ApiOnly mode to avoid internal Qdrant/MySQL reconciliation."
+    } elseif ($RunReconciliation) {
         Invoke-Scenario -Name "reconciliation" -Command { Invoke-Reconciliation }
     } else {
         Skip-Scenario -Name "reconciliation" -Note "Skipped with -RunReconciliation:`$false."
