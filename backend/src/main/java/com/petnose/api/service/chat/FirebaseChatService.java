@@ -76,7 +76,7 @@ public class FirebaseChatService {
 
         String uid = firebaseUid(userId);
         try {
-            String token = firebaseAuth.createCustomToken(uid, Map.of("user_id", userId));
+            String token = firebaseAuth.createCustomToken(uid);
             return new FirebaseTokenResponse(uid, token);
         } catch (Exception e) {
             throw new ApiException(
