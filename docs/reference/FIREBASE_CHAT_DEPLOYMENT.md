@@ -181,6 +181,8 @@ Spring Boot remains responsible for:
 
 Spring Boot also re-checks MySQL `adoption_posts.status` before allowing message sends.
 
+Firebase custom tokens use only the deterministic Firebase UID `user_{id}`. Do not add `user_id` as a custom token additional claim because Firebase reserves that claim name.
+
 ---
 
 ## Smoke And Evidence
