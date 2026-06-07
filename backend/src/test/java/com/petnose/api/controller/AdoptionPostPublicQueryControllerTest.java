@@ -615,6 +615,35 @@ class AdoptionPostPublicQueryControllerTest {
     }
 
     @Test
+    void likeEndpointsAcceptTrailingSlashForAppUrlJoinTolerance() throws Exception {
+        User author = saveUser("Trailing Like Author", "01010101111", "Seoul");
+        User currentUser = saveUser("Trailing Like User", "01010101112", "Busan");
+        Dog dog = saveDog(author, "TrailingLikeDog");
+        saveVerificationLog(author, dog, VerificationResult.PASSED);
+        AdoptionPost post = savePost(author, dog, AdoptionPostStatus.OPEN, "Trailing slash like post");
+        String token = tokenFor(currentUser);
+
+        mockMvc.perform(put("/api/adoption-posts/{post_id}/like/", post.getId())
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.post_id").value(post.getId()))
+                .andExpect(jsonPath("$.liked").value(true));
+
+        mockMvc.perform(get("/api/adoption-posts/liked/me/")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items", hasSize(1)))
+                .andExpect(jsonPath("$.items[0].post_id").value(post.getId()))
+                .andExpect(jsonPath("$.items[0].liked").value(true));
+
+        mockMvc.perform(delete("/api/adoption-posts/{post_id}/like/", post.getId())
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.post_id").value(post.getId()))
+                .andExpect(jsonPath("$.liked").value(false));
+    }
+
+    @Test
     void unlikeDeletesRowAndIsIdempotent() throws Exception {
         User author = saveUser("Unlike Author", "01010101014", "Seoul");
         User currentUser = saveUser("Unlike User", "01010101015", "Busan");

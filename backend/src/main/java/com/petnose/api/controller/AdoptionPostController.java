@@ -38,7 +38,7 @@ public class AdoptionPostController {
         return adoptionPostService.findPublicPosts(status, page, size, currentUserId);
     }
 
-    @GetMapping("/liked/me")
+    @GetMapping({"/liked/me", "/liked/me/"})
     public AdoptionPostLikedListResponse listLikedMine(
             @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorizationHeader,
             @RequestParam(value = "page", required = false) String page,
@@ -68,7 +68,7 @@ public class AdoptionPostController {
         return adoptionPostService.findPublicPost(postId, currentUserId);
     }
 
-    @PutMapping("/{post_id}/like")
+    @PutMapping({"/{post_id}/like", "/{post_id}/like/"})
     public AdoptionPostLikeResponse like(
             @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorizationHeader,
             @PathVariable("post_id") Long postId
@@ -77,7 +77,7 @@ public class AdoptionPostController {
         return adoptionPostService.likePost(currentUserId, postId);
     }
 
-    @DeleteMapping("/{post_id}/like")
+    @DeleteMapping({"/{post_id}/like", "/{post_id}/like/"})
     public AdoptionPostLikeResponse unlike(
             @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorizationHeader,
             @PathVariable("post_id") Long postId
