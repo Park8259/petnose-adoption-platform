@@ -24,6 +24,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -530,6 +531,28 @@ class AdoptionPostPublicQueryControllerTest {
         assertThat(adoptionPostLikeRepository.existsByUserIdAndPostId(currentUser.getId(), post.getId())).isTrue();
     }
 
+    @ParameterizedTest
+    @CsvSource({
+            "OPEN,01010101100,01010101101",
+            "RESERVED,01010101102,01010101103",
+            "COMPLETED,01010101104,01010101105"
+    })
+    void likeAllowsEveryPublicVisibleStatus(String statusValue, String authorPhone, String userPhone) throws Exception {
+        User author = saveUser(statusValue + " Like Author", authorPhone, "Seoul");
+        User currentUser = saveUser(statusValue + " Like User", userPhone, "Busan");
+        Dog dog = saveDog(author, statusValue + "LikeDog");
+        saveVerificationLog(author, dog, VerificationResult.PASSED);
+        AdoptionPost post = savePost(author, dog, AdoptionPostStatus.valueOf(statusValue), statusValue + " like post");
+
+        mockMvc.perform(put("/api/adoption-posts/{post_id}/like", post.getId())
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenFor(currentUser)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.post_id").value(post.getId()))
+                .andExpect(jsonPath("$.liked").value(true));
+
+        assertThat(adoptionPostLikeRepository.countByUserIdAndPostId(currentUser.getId(), post.getId())).isEqualTo(1);
+    }
+
     @Test
     void likeIsIdempotentForSameUserAndPost() throws Exception {
         User author = saveUser("Idempotent Author", "01010101012", "Seoul");
@@ -549,6 +572,46 @@ class AdoptionPostPublicQueryControllerTest {
                 .andExpect(jsonPath("$.liked").value(true));
 
         assertThat(adoptionPostLikeRepository.countByUserIdAndPostId(currentUser.getId(), post.getId())).isEqualTo(1);
+    }
+
+    @Test
+    void likeThroughApiIsReflectedInPublicListDetailAndLikedListForCurrentUserOnly() throws Exception {
+        User author = saveUser("Api Reflect Author", "01010101106", "Seoul");
+        User currentUser = saveUser("Api Reflect User", "01010101107", "Busan");
+        User otherUser = saveUser("Api Reflect Other", "01010101108", "Daegu");
+        Dog dog = saveDog(author, "ApiReflectDog");
+        saveVerificationLog(author, dog, VerificationResult.PASSED);
+        AdoptionPost post = savePost(author, dog, AdoptionPostStatus.OPEN, "API reflected like post");
+
+        mockMvc.perform(put("/api/adoption-posts/{post_id}/like", post.getId())
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenFor(currentUser)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.liked").value(true));
+
+        mockMvc.perform(get("/api/adoption-posts")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenFor(currentUser)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items[0].post_id").value(post.getId()))
+                .andExpect(jsonPath("$.items[0].liked").value(true));
+
+        mockMvc.perform(get("/api/adoption-posts/{post_id}", post.getId())
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenFor(currentUser)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.liked").value(true));
+
+        mockMvc.perform(get("/api/adoption-posts/liked/me")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenFor(currentUser)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items", hasSize(1)))
+                .andExpect(jsonPath("$.items[0].post_id").value(post.getId()))
+                .andExpect(jsonPath("$.items[0].liked").value(true))
+                .andExpect(jsonPath("$.items[0].liked_at").isNotEmpty())
+                .andExpect(jsonPath("$.total_count").value(1));
+
+        mockMvc.perform(get("/api/adoption-posts/{post_id}", post.getId())
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenFor(otherUser)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.liked").value(false));
     }
 
     @Test
@@ -584,10 +647,50 @@ class AdoptionPostPublicQueryControllerTest {
     }
 
     @Test
+    void likedListRequiresAuthorizationInsteadOfFallingThroughToPostDetail() throws Exception {
+        mockMvc.perform(get("/api/adoption-posts/liked/me"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.error_code").value("UNAUTHORIZED"));
+    }
+
+    @Test
+    void likeEndpointsRejectInvalidAuthorizationHeader() throws Exception {
+        User author = saveUser("Invalid Like Auth Author", "01010101109", "Seoul");
+        Dog dog = saveDog(author, "InvalidLikeAuthDog");
+        saveVerificationLog(author, dog, VerificationResult.PASSED);
+        AdoptionPost post = savePost(author, dog, AdoptionPostStatus.OPEN, "Invalid auth like post");
+
+        mockMvc.perform(put("/api/adoption-posts/{post_id}/like", post.getId())
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer invalid-token"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.error_code").value("UNAUTHORIZED"));
+
+        mockMvc.perform(delete("/api/adoption-posts/{post_id}/like", post.getId())
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer invalid-token"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.error_code").value("UNAUTHORIZED"));
+
+        mockMvc.perform(get("/api/adoption-posts/liked/me")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer invalid-token"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.error_code").value("UNAUTHORIZED"));
+    }
+
+    @Test
     void likeReturnsPostNotFoundForMissingPost() throws Exception {
         User currentUser = saveUser("Missing Like User", "01010101016", "Seoul");
 
         mockMvc.perform(put("/api/adoption-posts/{post_id}/like", 999999L)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenFor(currentUser)))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error_code").value("POST_NOT_FOUND"));
+    }
+
+    @Test
+    void unlikeReturnsPostNotFoundForMissingPost() throws Exception {
+        User currentUser = saveUser("Missing Unlike User", "01010101110", "Seoul");
+
+        mockMvc.perform(delete("/api/adoption-posts/{post_id}/like", 999999L)
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokenFor(currentUser)))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.error_code").value("POST_NOT_FOUND"));
