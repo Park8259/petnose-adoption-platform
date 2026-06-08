@@ -40,8 +40,6 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.time.Period;
-import java.time.ZoneId;
 import java.util.Base64;
 import java.util.LinkedHashSet;
 import java.util.Map;
@@ -63,7 +61,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class AdoptionPostPublicQueryControllerTest {
 
     private static final String JWT_SECRET = "test-petnose-jwt-secret-change-me-32bytes";
-    private static final ZoneId SERVICE_ZONE = ZoneId.of("Asia/Seoul");
 
     private static final Set<String> PUBLIC_LIST_ITEM_FIELDS = Set.of(
             "post_id",
@@ -351,7 +348,6 @@ class AdoptionPostPublicQueryControllerTest {
         saveVerificationLog(author, dog, VerificationResult.PENDING);
         saveVerificationLog(author, dog, VerificationResult.PASSED);
         AdoptionPost post = savePost(author, dog, AdoptionPostStatus.RESERVED, "Reserved adoption post");
-        int expectedAge = expectedAge(dog);
 
         MvcResult result = mockMvc.perform(get("/api/adoption-posts/{post_id}", post.getId()))
                 .andExpect(status().isOk())
@@ -364,7 +360,7 @@ class AdoptionPostPublicQueryControllerTest {
                 .andExpect(jsonPath("$.breed").value("Maltese"))
                 .andExpect(jsonPath("$.gender").value("MALE"))
                 .andExpect(jsonPath("$.birth_date").value("2023-01-01"))
-                .andExpect(jsonPath("$.age").value(expectedAge))
+                .andExpect(jsonPath("$.age").value(3))
                 .andExpect(jsonPath("$.description").value("Likes people and walks."))
                 .andExpect(jsonPath("$.price").value(150000))
                 .andExpect(jsonPath("$.health").value("Healthy and vaccinated."))
@@ -436,6 +432,7 @@ class AdoptionPostPublicQueryControllerTest {
         User author = saveUser("Legacy Author", "01044445555", "Daegu");
         Dog dog = saveDog(author, "LegacyDog");
         dog.setBirthDate(null);
+        dog.setAge(null);
         dog.setHealth(null);
         dogRepository.saveAndFlush(dog);
         AdoptionPost post = savePost(author, dog, AdoptionPostStatus.OPEN, "Legacy detail post");
@@ -453,18 +450,19 @@ class AdoptionPostPublicQueryControllerTest {
     }
 
     @Test
-    void detailReturnsNullAgeForFutureBirthDate() throws Exception {
-        User author = saveUser("Future Author", "01044446666", "Daegu");
-        Dog dog = saveDog(author, "FutureDog");
-        LocalDate tomorrow = LocalDate.now(SERVICE_ZONE).plusDays(1);
-        dog.setBirthDate(tomorrow);
+    void detailReturnsStoredAgeWithoutBirthDateCalculation() throws Exception {
+        User author = saveUser("Stored Age Author", "01044446666", "Daegu");
+        Dog dog = saveDog(author, "StoredAgeDog");
+        LocalDate futureBirthDate = LocalDate.now().plusDays(1);
+        dog.setBirthDate(futureBirthDate);
+        dog.setAge(4);
         dogRepository.saveAndFlush(dog);
-        AdoptionPost post = savePost(author, dog, AdoptionPostStatus.OPEN, "Future birth date post");
+        AdoptionPost post = savePost(author, dog, AdoptionPostStatus.OPEN, "Stored age post");
 
         mockMvc.perform(get("/api/adoption-posts/{post_id}", post.getId()))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.age").value(nullValue()))
-                .andExpect(jsonPath("$.birth_date").value(tomorrow.toString()))
+                .andExpect(jsonPath("$.age").value(4))
+                .andExpect(jsonPath("$.birth_date").value(futureBirthDate.toString()))
                 .andExpect(jsonPath("$.nose_image_url").doesNotExist());
     }
 
@@ -980,6 +978,7 @@ class AdoptionPostPublicQueryControllerTest {
         dog.setBreed("Maltese");
         dog.setGender(DogGender.MALE);
         dog.setBirthDate(LocalDate.of(2023, 1, 1));
+        dog.setAge(3);
         dog.setDescription("Likes people and walks.");
         dog.setHealth("Healthy and vaccinated.");
         dog.setStatus(DogStatus.REGISTERED);
@@ -1077,10 +1076,6 @@ class AdoptionPostPublicQueryControllerTest {
 
     private String responseBody(MvcResult result) {
         return new String(result.getResponse().getContentAsByteArray(), StandardCharsets.UTF_8);
-    }
-
-    private int expectedAge(Dog dog) {
-        return Period.between(dog.getBirthDate(), LocalDate.now(SERVICE_ZONE)).getYears();
     }
 
     private void assertPublicListItemFields(MvcResult result) throws Exception {

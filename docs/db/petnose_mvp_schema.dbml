@@ -101,8 +101,10 @@ Table dogs {
   breed varchar(100) [note: "DB nullable for operational/import flexibility. POST /api/dogs/register requires a non-blank breed."]
   gender dog_gender [note: "DB nullable for operational/import flexibility. POST /api/dogs/register requires MALE, FEMALE, or UNKNOWN. UNKNOWN is an explicit API value, not a DB default."]
   birth_date date
+  age int [note: "Optional stored integer age from POST /api/dogs/register. Public adoption post detail exposes this as age; it is not calculated from birth_date."]
   description text
-  health text [note: "Optional free-text health profile field. Public adoption post detail exposes this as health; age is calculated from birth_date and is not stored."]
+  health text [note: "Optional free-text health profile field. Public adoption post detail exposes this as health."]
+  price bigint [note: "Optional KRW integer amount captured during dog registration. Adoption post creation copies this to adoption_posts.price when create request price is omitted."]
   status dog_status [not null, default: "PENDING"]
   created_at timestamp [not null, default: `CURRENT_TIMESTAMP`]
   updated_at timestamp [not null, default: `CURRENT_TIMESTAMP`]

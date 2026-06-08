@@ -290,6 +290,7 @@ class CanonicalSchemaConsistencyTest {
                 "Table adoption_post_likes",
                 "(user_id, post_id) [unique, name: \"uk_adoption_post_likes_user_post\"]",
                 "adopter_user_id bigint",
+                "age int",
                 "health text",
                 "price bigint",
                 "adopted_at timestamp",

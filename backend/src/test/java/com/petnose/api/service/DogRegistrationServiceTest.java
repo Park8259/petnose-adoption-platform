@@ -180,6 +180,8 @@ class DogRegistrationServiceTest {
         VerificationLog log = onlyVerificationLog();
 
         assertThat(dog.getStatus()).isEqualTo(DogStatus.REGISTERED);
+        assertThat(dog.getAge()).isEqualTo(3);
+        assertThat(dog.getPrice()).isEqualTo(250000L);
         assertThat(dog.getHealth()).isEqualTo("healthy");
         assertThat(dogImages).hasSize(5);
         assertThat(log.getResult()).isEqualTo(VerificationResult.PASSED);
@@ -516,13 +518,38 @@ class DogRegistrationServiceTest {
         assertThat(dogNoseReferences).isEmpty();
     }
 
+    @Test
+    void registerRejectsInvalidAgeAndPriceBeforeEmbedAndRows() {
+        assertThatThrownBy(() -> service.register(request(noseImages(5), "-1", "250000")))
+                .isInstanceOfSatisfying(ApiException.class, e -> {
+                    assertThat(e.getStatus()).isEqualTo(org.springframework.http.HttpStatus.BAD_REQUEST);
+                    assertThat(e.getErrorCode()).isEqualTo("VALIDATION_FAILED");
+                });
+        assertThatThrownBy(() -> service.register(request(noseImages(5), "3", "free")))
+                .isInstanceOfSatisfying(ApiException.class, e -> {
+                    assertThat(e.getStatus()).isEqualTo(org.springframework.http.HttpStatus.BAD_REQUEST);
+                    assertThat(e.getErrorCode()).isEqualTo("VALIDATION_FAILED");
+                });
+
+        verify(embedClient, never()).embedBatch(anyList());
+        assertThat(dogs).isEmpty();
+        assertThat(dogImages).isEmpty();
+        assertThat(verificationLogs).isEmpty();
+    }
+
     private DogRegisterRequest request(List<MockMultipartFile> noseImages) {
+        return request(noseImages, "3", "250000");
+    }
+
+    private DogRegisterRequest request(List<MockMultipartFile> noseImages, String age, String price) {
         return new DogRegisterRequest(
                 1L,
                 "Bori",
                 "Jindo",
                 "MALE",
                 "2024-01-01",
+                age,
+                price,
                 "friendly",
                 "healthy",
                 noseImages == null ? null : List.copyOf(noseImages)

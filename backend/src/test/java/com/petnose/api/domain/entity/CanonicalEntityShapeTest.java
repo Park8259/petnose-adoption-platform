@@ -26,12 +26,18 @@ class CanonicalEntityShapeTest {
     @Test
     void dogEntityDoesNotExposeRemovedRegistrationSnapshotFields() throws Exception {
         Set<String> fields = declaredFieldNames(Dog.class);
+        Column age = Dog.class.getDeclaredField("age").getAnnotation(Column.class);
         Column health = Dog.class.getDeclaredField("health").getAnnotation(Column.class);
+        Column price = Dog.class.getDeclaredField("price").getAnnotation(Column.class);
 
-        assertThat(fields).contains("health");
+        assertThat(fields).contains("age", "health", "price");
+        assertThat(age.name()).isEqualTo("age");
+        assertThat(age.nullable()).isTrue();
         assertThat(health.name()).isEqualTo("health");
         assertThat(health.nullable()).isTrue();
         assertThat(health.columnDefinition()).isEqualTo("TEXT");
+        assertThat(price.name()).isEqualTo("price");
+        assertThat(price.nullable()).isTrue();
         assertThat(fields).doesNotContain(
                 join("qdrant", "PointId"),
                 join("nose", "VerificationStatus"),
@@ -274,7 +280,10 @@ class CanonicalEntityShapeTest {
         assertThat(profileFieldsMigration).contains(
                 "ADD COLUMN price BIGINT NULL AFTER content",
                 "CHECK (price IS NULL OR price >= 0)",
-                "ADD COLUMN health TEXT NULL AFTER description"
+                "ADD COLUMN age INT NULL AFTER birth_date",
+                "ADD COLUMN health TEXT NULL AFTER description",
+                "ADD COLUMN price BIGINT NULL AFTER health",
+                "CHECK (age IS NULL OR age >= 0)"
         );
     }
 

@@ -37,11 +37,17 @@ public class Dog {
     @Column(name = "birth_date")
     private LocalDate birthDate;
 
+    @Column(name = "age")
+    private Integer age;
+
     @Column(columnDefinition = "TEXT")
     private String description;
 
     @Column(name = "health", columnDefinition = "TEXT")
     private String health;
+
+    @Column(name = "price")
+    private Long price;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 30)

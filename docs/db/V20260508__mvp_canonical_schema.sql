@@ -57,8 +57,10 @@ CREATE TABLE dogs (
     -- explicit API value and is not applied as a DB default.
     gender VARCHAR(10) NULL,
     birth_date DATE NULL,
+    age INT NULL,
     description TEXT NULL,
     health TEXT NULL,
+    price BIGINT NULL,
     status VARCHAR(30) NOT NULL DEFAULT 'PENDING',
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -69,6 +71,10 @@ CREATE TABLE dogs (
         FOREIGN KEY (owner_user_id) REFERENCES users (id),
     CONSTRAINT chk_dogs_gender
         CHECK (gender IS NULL OR gender IN ('MALE', 'FEMALE', 'UNKNOWN')),
+    CONSTRAINT chk_dogs_age
+        CHECK (age IS NULL OR age >= 0),
+    CONSTRAINT chk_dogs_price
+        CHECK (price IS NULL OR price >= 0),
     CONSTRAINT chk_dogs_status
         CHECK (status IN ('PENDING', 'REGISTERED', 'DUPLICATE_SUSPECTED', 'REVIEW_REQUIRED', 'REJECTED', 'ADOPTED', 'INACTIVE'))
 ) ENGINE = InnoDB
