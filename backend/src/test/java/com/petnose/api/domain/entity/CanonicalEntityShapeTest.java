@@ -280,10 +280,15 @@ class CanonicalEntityShapeTest {
         assertThat(profileFieldsMigration).contains(
                 "ADD COLUMN price BIGINT NULL AFTER content",
                 "CHECK (price IS NULL OR price >= 0)",
+                "ADD COLUMN health TEXT NULL AFTER description"
+        );
+
+        String dogAgeAndPriceMigration = resourceText("db/migration/V11__add_dog_age_and_price.sql");
+        assertThat(dogAgeAndPriceMigration).contains(
                 "ADD COLUMN age INT NULL AFTER birth_date",
-                "ADD COLUMN health TEXT NULL AFTER description",
                 "ADD COLUMN price BIGINT NULL AFTER health",
-                "CHECK (age IS NULL OR age >= 0)"
+                "CHECK (age IS NULL OR age >= 0)",
+                "CHECK (price IS NULL OR price >= 0)"
         );
     }
 
