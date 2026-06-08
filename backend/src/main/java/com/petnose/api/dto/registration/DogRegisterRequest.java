@@ -10,6 +10,8 @@ public record DogRegisterRequest(
         String breed,
         String gender,
         String birthDate,
+        String age,
+        String price,
         String description,
         String health,
         List<MultipartFile> noseImages

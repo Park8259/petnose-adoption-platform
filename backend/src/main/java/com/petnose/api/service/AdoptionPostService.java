@@ -41,10 +41,7 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.multipart.MultipartFile;
 
-import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.time.Period;
-import java.time.ZoneId;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -60,7 +57,6 @@ public class AdoptionPostService {
     private static final int DEFAULT_PUBLIC_PAGE = 0;
     private static final int DEFAULT_PUBLIC_PAGE_SIZE = 20;
     private static final int MAX_PUBLIC_PAGE_SIZE = 100;
-    private static final ZoneId SERVICE_ZONE = ZoneId.of("Asia/Seoul");
 
     private static final List<AdoptionPostStatus> ACTIVE_STATUSES = List.of(
             AdoptionPostStatus.DRAFT,
@@ -240,7 +236,7 @@ public class AdoptionPostService {
     public AdoptionPostCreateResponse create(Long currentUserId, AdoptionPostCreateRequest request) {
         validateRequest(request);
         AdoptionPostStatus requestedStatus = AdoptionPostStatus.fromCreateRequest(request.status());
-        Long price = parsePrice(request.price());
+        Long requestPrice = parsePrice(request.price());
 
         User currentUser = userRepository.findById(currentUserId)
                 .orElseThrow(() -> new ApiException(HttpStatus.UNAUTHORIZED, "UNAUTHORIZED", "인증이 필요합니다."));
@@ -253,6 +249,7 @@ public class AdoptionPostService {
         validateLatestVerificationLog(dog.getId());
         validateNoActivePost(dog.getId());
         saveRequiredProfileImage(dog.getId(), request.profileImage());
+        Long price = request.price() == null ? dog.getPrice() : requestPrice;
 
         AdoptionPost post = new AdoptionPost();
         post.setAuthorUserId(currentUser.getId());
@@ -741,7 +738,7 @@ public class AdoptionPostService {
                 dog.getBreed(),
                 dog.getGender() == null ? null : dog.getGender().name(),
                 dog.getBirthDate(),
-                calculateAge(dog.getBirthDate()),
+                dog.getAge(),
                 dog.getDescription(),
                 post.getPrice(),
                 dog.getHealth(),
@@ -755,17 +752,6 @@ public class AdoptionPostService {
                 post.getCreatedAt(),
                 post.getUpdatedAt()
         );
-    }
-
-    private Integer calculateAge(LocalDate birthDate) {
-        if (birthDate == null) {
-            return null;
-        }
-        LocalDate today = LocalDate.now(SERVICE_ZONE);
-        if (birthDate.isAfter(today)) {
-            return null;
-        }
-        return Period.between(birthDate, today).getYears();
     }
 
     private AdoptionPostLikedListItemResponse toLikedListItemResponse(

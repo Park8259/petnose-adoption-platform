@@ -902,6 +902,8 @@ Form fields:
 - `breed`: string, required, non-blank
 - `gender`: required, `MALE`, `FEMALE`, or `UNKNOWN`
 - `birth_date`: `YYYY-MM-DD`, optional
+- `age`: integer, optional. 0 이상이어야 하며 `dogs.age`에 저장된다. 서버는 `birth_date`로 age를 계산하지 않는다.
+- `price`: integer, optional. 원화 정수 금액이며 `dogs.price`에 저장된다. blank는 null, non-numeric 또는 negative 값은 `VALIDATION_FAILED`.
 - `description`: string, optional
 - `health`: string, optional
 - `nose_images`: file[], required, exactly `5`
@@ -1395,7 +1397,7 @@ Contract notes:
 - post 생성 전 `users.display_name`은 non-blank여야 한다.
 - `title`은 required, non-blank이며 trim 후 최대 200자다.
 - `content`는 required, non-blank이며 trim 후 저장된다.
-- `price`는 nullable `adoption_posts.price`에 저장된다. 값이 있으면 0 이상의 정수여야 한다.
+- `price`는 nullable `adoption_posts.price`에 저장된다. 값이 있으면 0 이상의 정수여야 한다. `price` 파라미터를 생략하면 `dogs.price`를 기본값으로 복사하고, blank를 명시하면 null로 저장한다.
 - 분양글 생성은 새 `dogs` row 또는 새 NOSE `dog_images` row를 만들지 않는다.
 - 분양글 생성은 `profile_image`를 저장하고 `dog_images.image_type=PROFILE` row를 만든다.
 - 분양글 생성은 embed service를 호출하지 않고 Qdrant upsert도 수행하지 않는다.
@@ -1506,7 +1508,7 @@ Response `200`:
 Contract notes:
 
 - detail은 `OPEN`, `RESERVED`, `COMPLETED` post에 대해서만 public이다.
-- `age`는 `dogs.birth_date` 기준 만 나이 계산값이다. `birth_date`가 null이거나 미래 날짜면 null이다. `age` 컬럼은 없다.
+- `age`는 nullable `dogs.age` 저장값이다. 서버는 `dogs.birth_date`로 age를 계산하지 않으며, `birth_date`는 기존 호환성을 위해 별도로 유지된다.
 - `price`는 nullable `adoption_posts.price`, `health`는 nullable `dogs.health`에서 내려간다.
 - `birth_date`와 `description`은 기존 호환성을 위해 유지한다. `health`는 `description`과 별도 필드이며 미입력 시 null이다.
 - `verification_status`는 Flutter display를 위해 포함한다.

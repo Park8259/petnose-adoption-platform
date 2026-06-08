@@ -185,6 +185,8 @@ class AdoptionPostCreateControllerTest {
     void createStoresNullPriceWhenPriceIsBlank() throws Exception {
         User user = saveUser("초코 보호자", true);
         Dog dog = saveDog(user, DogStatus.REGISTERED);
+        dog.setPrice(75000L);
+        dogRepository.saveAndFlush(dog);
         saveVerificationLog(user, dog, saveNoseImage(dog), VerificationResult.PASSED);
 
         createPostWithPrice(tokenFor(user), dog.getId(), "제목", "내용", "   ", "OPEN")
@@ -193,6 +195,22 @@ class AdoptionPostCreateControllerTest {
 
         AdoptionPost saved = adoptionPostRepository.findAll().getFirst();
         assertThat(saved.getPrice()).isNull();
+    }
+
+    @Test
+    void createUsesRegisteredDogPriceWhenCreatePriceIsMissing() throws Exception {
+        User user = saveUser("초코 보호자", true);
+        Dog dog = saveDog(user, DogStatus.REGISTERED);
+        dog.setPrice(75000L);
+        dogRepository.saveAndFlush(dog);
+        saveVerificationLog(user, dog, saveNoseImage(dog), VerificationResult.PASSED);
+
+        createPost(tokenFor(user), dog.getId(), "제목", "내용", "OPEN")
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.price").value(75000));
+
+        AdoptionPost saved = adoptionPostRepository.findAll().getFirst();
+        assertThat(saved.getPrice()).isEqualTo(75000L);
     }
 
     @Test

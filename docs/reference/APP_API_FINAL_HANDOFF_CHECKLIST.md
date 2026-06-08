@@ -51,7 +51,7 @@ This checklist is the app-team connection summary for the APIs implemented throu
 
 - Dog registration: `POST /api/dogs/register`
 - Adoption post create: `POST /api/adoption-posts`
-- Dog registration multipart fields: `name`, `breed`, `gender`, optional `birth_date`, optional `description`, optional `health`, exactly five `nose_images` file parts.
+- Dog registration multipart fields: `name`, `breed`, `gender`, optional `birth_date`, optional `age`, optional `price`, optional `description`, optional `health`, exactly five `nose_images` file parts.
 - Store `dog_id` only when `registration_allowed=true`.
 - Adoption post multipart fields: `dog_id`, `title`, `content`, optional `price`, optional `status`, required file `profile_image`.
 - Adoption post `profile_image` is the representative dog/post image stored as `dog_images.image_type=PROFILE`.
@@ -64,7 +64,7 @@ This checklist is the app-team connection summary for the APIs implemented throu
 - Owner list: `GET /api/adoption-posts/me`
 - Public list/detail may be called without Authorization and then return `liked=false`.
 - With a valid Authorization header, public list/detail compute `liked` for the current user.
-- Public detail includes `age`, `price`, and `health`; `age` is calculated from `birth_date` and is not stored. Existing `birth_date` and `description` remain, and `health` is a separate nullable field.
+- Public detail includes `age`, `price`, and `health`; `age` is the nullable stored `dogs.age` value, not a `birth_date` calculation. Existing `birth_date` and `description` remain, and `health` is a separate nullable field.
 - Public list does not include `age`, `price`, or `health`.
 - Public list/detail do not expose `nose_image_url`.
 

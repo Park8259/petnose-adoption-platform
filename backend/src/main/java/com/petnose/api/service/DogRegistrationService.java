@@ -96,6 +96,8 @@ public class DogRegistrationService {
     public DogRegisterResponse register(DogRegisterRequest request) {
         validateRequiredFields(request);
         LocalDate birthDate = parseBirthDate(request.birthDate());
+        Integer age = parseAge(request.age());
+        Long price = parsePrice(request.price());
         List<NoseImageUpload> uploads = readNoseImages(request.noseImages());
 
         User user = userRepository.findById(request.userId())
@@ -129,7 +131,7 @@ public class DogRegistrationService {
         PendingRegistration pending;
         try {
             pending = transactionTemplate.execute(status ->
-                    createPendingRows(user.getId(), dogId, request, birthDate, storedFiles)
+                    createPendingRows(user.getId(), dogId, request, birthDate, age, price, storedFiles)
             );
         } catch (RuntimeException e) {
             fileStorageService.deleteStoredFilesQuietly(storedFiles);
@@ -302,6 +304,8 @@ public class DogRegistrationService {
             String dogId,
             DogRegisterRequest request,
             LocalDate birthDate,
+            Integer age,
+            Long price,
             List<FileStorageService.StoredFile> storedFiles
     ) {
         Dog dog = new Dog();
@@ -311,8 +315,10 @@ public class DogRegistrationService {
         dog.setBreed(request.breed().trim());
         dog.setGender(DogGender.from(request.gender()));
         dog.setBirthDate(birthDate);
+        dog.setAge(age);
         dog.setDescription(blankToNull(request.description()));
         dog.setHealth(blankToNull(request.health()));
+        dog.setPrice(price);
         dog.setStatus(DogStatus.PENDING);
         dogRepository.save(dog);
 
@@ -791,6 +797,40 @@ public class DogRegistrationService {
         } catch (DateTimeParseException e) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_BIRTH_DATE", "birth_date는 YYYY-MM-DD 형식이어야 합니다.");
         }
+    }
+
+    private Integer parseAge(String age) {
+        if (age == null || age.isBlank()) {
+            return null;
+        }
+        try {
+            int parsed = Integer.parseInt(age.trim());
+            if (parsed < 0) {
+                throw validationFailed("age는 0 이상이어야 합니다.");
+            }
+            return parsed;
+        } catch (NumberFormatException e) {
+            throw validationFailed("age는 숫자여야 합니다.");
+        }
+    }
+
+    private Long parsePrice(String price) {
+        if (price == null || price.isBlank()) {
+            return null;
+        }
+        try {
+            long parsed = Long.parseLong(price.trim());
+            if (parsed < 0) {
+                throw validationFailed("price는 0 이상이어야 합니다.");
+            }
+            return parsed;
+        } catch (NumberFormatException e) {
+            throw validationFailed("price는 숫자여야 합니다.");
+        }
+    }
+
+    private ApiException validationFailed(String message) {
+        return new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_FAILED", message);
     }
 
     private String blankToNull(String value) {

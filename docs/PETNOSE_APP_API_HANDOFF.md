@@ -30,9 +30,9 @@
 
 ### D. 분양글 작성
 
-- 먼저 `POST /api/dogs/register`에 강아지 정보와 `nose_images` 5장을 보내고 비문 중복 검사를 완료한다. Optional `health`를 보낼 수 있으며, `age`는 보내거나 저장하지 않고 서버가 `birth_date`로 계산한다.
+- 먼저 `POST /api/dogs/register`에 강아지 정보와 `nose_images` 5장을 보내고 비문 중복 검사를 완료한다. Optional `age`, `price`, `health`를 보낼 수 있다. `age`는 nullable int 저장값이며 서버가 `birth_date`로 계산하지 않는다.
 - `registration_allowed=true`일 때만 반환된 `dog_id`를 분양글 작성 form state에 저장한다.
-- 분양글 생성은 `POST /api/adoption-posts`로 호출한다. Optional `price`는 원화 정수 금액이며 blank는 null로 저장된다.
+- 분양글 생성은 `POST /api/adoption-posts`로 호출한다. Optional `price`는 원화 정수 금액이며 blank는 null로 저장된다. `price` 파라미터를 생략하면 등록 단계의 dog price가 `adoption_posts.price`로 복사된다.
 - 분양글 생성의 `profile_image`는 분양글 대표 이미지이며 `dog_images.image_type=PROFILE`로 저장된다.
 - user profile image와 dog/adoption profile image 저장 영역은 다르다.
 
@@ -40,7 +40,7 @@
 
 - 목록은 `GET /api/adoption-posts`, 상세는 `GET /api/adoption-posts/{post_id}`를 호출한다.
 - 목록/상세 response의 `liked` field를 그대로 사용한다.
-- 상세 response는 `birth_date`와 `description`을 유지하며 `age`, `price`, `health`를 추가로 반환한다. `age`는 저장 필드가 아니라 `birth_date` 기준 만 나이 계산값이고, `health`는 `description`과 별도 필드로 미입력 시 null이다.
+- 상세 response는 `birth_date`와 `description`을 유지하며 `age`, `price`, `health`를 추가로 반환한다. `age`는 nullable `dogs.age` 저장값이고, `health`는 `description`과 별도 필드로 미입력 시 null이다.
 - 목록 response에는 `age`, `price`, `health`가 없다.
 - Authorization header가 없으면 public list/detail은 `liked=false`를 반환한다.
 - Authorization header가 있으면 서버가 current user 기준 `liked`를 계산한다.
@@ -158,6 +158,8 @@ Form-data:
 - `breed`: required
 - `gender`: required, `MALE`, `FEMALE`, or `UNKNOWN`
 - `birth_date`: optional, `YYYY-MM-DD`
+- `age`: optional, 0 이상의 정수
+- `price`: optional, 원화 정수 금액. Blank는 null, non-numeric/negative 값은 `VALIDATION_FAILED`.
 - `description`: optional
 - `health`: optional
 - `nose_images`: required file[], exactly 5. 같은 multipart field name으로 5개 file part를 보낸다.
@@ -244,6 +246,7 @@ Notes:
 - `dog_id`는 current user 소유의 `REGISTERED` dog여야 한다.
 - dog의 latest verification result는 `PASSED`여야 한다.
 - 같은 dog에 active post가 이미 있으면 생성할 수 없다.
+- `price` 파라미터를 생략하면 dog registration 단계에 저장된 price를 `adoption_posts.price`로 복사한다. Blank를 명시하면 null로 저장한다.
 
 ## Handover Verification
 
