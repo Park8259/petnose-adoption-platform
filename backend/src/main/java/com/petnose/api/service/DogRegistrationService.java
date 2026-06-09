@@ -93,62 +93,94 @@ public class DogRegistrationService {
     @Value("${qdrant.search-score-threshold:0.55}")
     private double qdrantSearchScoreThreshold;
 
+    @Value("${petnose.registration-timing-log-enabled:true}")
+    private boolean registrationTimingLogEnabled;
+
     public DogRegisterResponse register(DogRegisterRequest request) {
-        validateRequiredFields(request);
-        LocalDate birthDate = parseBirthDate(request.birthDate());
-        Integer age = parseAge(request.age());
-        Long price = parsePrice(request.price());
-        List<NoseImageUpload> uploads = readNoseImages(request.noseImages());
-
-        User user = userRepository.findById(request.userId())
-                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "USER_NOT_FOUND", "존재하지 않는 user_id 입니다."));
-
-        String dogId = UUID.randomUUID().toString();
-
-        EmbedClient.BatchEmbedResponse embedResponse = requestBatchEmbeddingOrFail(dogId, uploads);
-        validateBatchEmbeddingDimensionOrFail(dogId, embedResponse, uploads.size());
-
-        List<List<Double>> referenceVectors = embedResponse.items().stream()
-                .map(EmbedClient.BatchEmbedItem::vector)
-                .toList();
-        List<String> referenceFilenames = uploads.stream()
-                .map(NoseImageUpload::filename)
-                .toList();
-
-        ReferenceQualityReport qualityReport = checkReferenceQualityOrFail(referenceVectors, referenceFilenames);
-        List<Double> centroidVector = NoseVectorMath.centroid(referenceVectors);
-
-        DogNoseAggregationResult aggregationResult = searchExistingDogsOrFail(dogId, referenceVectors, centroidVector);
-        DogNoseDecision decision = dogNoseDecisionPolicy.evaluate(
-                aggregationResult.topCandidate(),
-                noseRegistrationProperties.getDuplicateThreshold(),
-                noseRegistrationProperties.getReviewLowerBound()
-        );
-        ScoreBreakdownResponse scoreBreakdown = buildScoreBreakdown(decision, qualityReport);
-        String scoreBreakdownJson = toScoreBreakdownJson(scoreBreakdown, qualityReport);
-
-        List<FileStorageService.StoredFile> storedFiles = storeNoseImages(dogId, uploads);
-        PendingRegistration pending;
+        RegistrationTiming timing = new RegistrationTiming();
+        boolean completed = false;
         try {
-            pending = transactionTemplate.execute(status ->
-                    createPendingRows(user.getId(), dogId, request, birthDate, age, price, storedFiles)
-            );
-        } catch (RuntimeException e) {
-            fileStorageService.deleteStoredFilesQuietly(storedFiles);
-            throw e;
-        }
-        if (pending == null) {
-            fileStorageService.deleteStoredFilesQuietly(storedFiles);
-            throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "REGISTRATION_INIT_FAILED", "등록 초기화에 실패했습니다.");
-        }
+            validateRequiredFields(request);
+            LocalDate birthDate = parseBirthDate(request.birthDate());
+            Integer age = parseAge(request.age());
+            Long price = parsePrice(request.price());
+            timing.mark("validate_and_parse_request");
 
-        return switch (decision.result()) {
-            case DUPLICATE_SUSPECTED, REVIEW_REQUIRED ->
-                    completeRegistrationWithoutQdrant(pending, embedResponse, decision, scoreBreakdown, scoreBreakdownJson);
-            case PASSED ->
-                    completePassedRegistration(pending, embedResponse, referenceVectors, centroidVector, decision, scoreBreakdown, scoreBreakdownJson);
-            default -> throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "REGISTRATION_DECISION_FAILED", "등록 판정 결과가 올바르지 않습니다.");
-        };
+            List<NoseImageUpload> uploads = readNoseImages(request.noseImages());
+            timing.mark("read_nose_images");
+
+            User user = userRepository.findById(request.userId())
+                    .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "USER_NOT_FOUND", "존재하지 않는 user_id 입니다."));
+            timing.mark("load_user");
+
+            String dogId = UUID.randomUUID().toString();
+            timing.setDogId(dogId);
+
+            EmbedClient.BatchEmbedResponse embedResponse = requestBatchEmbeddingOrFail(dogId, uploads);
+            timing.mark("embed_batch");
+
+            validateBatchEmbeddingDimensionOrFail(dogId, embedResponse, uploads.size());
+            timing.mark("validate_embedding_dimension");
+
+            List<List<Double>> referenceVectors = embedResponse.items().stream()
+                    .map(EmbedClient.BatchEmbedItem::vector)
+                    .toList();
+            List<String> referenceFilenames = uploads.stream()
+                    .map(NoseImageUpload::filename)
+                    .toList();
+            timing.mark("build_reference_vectors");
+
+            ReferenceQualityReport qualityReport = checkReferenceQualityOrFail(referenceVectors, referenceFilenames);
+            timing.mark("reference_quality_check");
+
+            List<Double> centroidVector = NoseVectorMath.centroid(referenceVectors);
+            timing.mark("centroid_build");
+
+            DogNoseAggregationResult aggregationResult = searchExistingDogsOrFail(dogId, referenceVectors, centroidVector);
+            timing.mark("qdrant_search");
+
+            DogNoseDecision decision = dogNoseDecisionPolicy.evaluate(
+                    aggregationResult.topCandidate(),
+                    noseRegistrationProperties.getDuplicateThreshold(),
+                    noseRegistrationProperties.getReviewLowerBound()
+            );
+            timing.setDecisionResult(decision.result());
+            timing.mark("decision_policy");
+
+            ScoreBreakdownResponse scoreBreakdown = buildScoreBreakdown(decision, qualityReport);
+            String scoreBreakdownJson = toScoreBreakdownJson(scoreBreakdown, qualityReport);
+            timing.mark("score_breakdown");
+
+            List<FileStorageService.StoredFile> storedFiles = storeNoseImages(dogId, uploads);
+            timing.mark("file_store");
+
+            PendingRegistration pending;
+            try {
+                pending = transactionTemplate.execute(status ->
+                        createPendingRows(user.getId(), dogId, request, birthDate, age, price, storedFiles)
+                );
+                timing.mark("db_create_pending_rows");
+            } catch (RuntimeException e) {
+                fileStorageService.deleteStoredFilesQuietly(storedFiles);
+                throw e;
+            }
+            if (pending == null) {
+                fileStorageService.deleteStoredFilesQuietly(storedFiles);
+                throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "REGISTRATION_INIT_FAILED", "등록 초기화에 실패했습니다.");
+            }
+
+            DogRegisterResponse response = switch (decision.result()) {
+                case DUPLICATE_SUSPECTED, REVIEW_REQUIRED ->
+                        completeRegistrationWithoutQdrant(pending, embedResponse, decision, scoreBreakdown, scoreBreakdownJson, timing);
+                case PASSED ->
+                        completePassedRegistration(pending, embedResponse, referenceVectors, centroidVector, decision, scoreBreakdown, scoreBreakdownJson, timing);
+                default -> throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "REGISTRATION_DECISION_FAILED", "등록 판정 결과가 올바르지 않습니다.");
+            };
+            completed = true;
+            return response;
+        } finally {
+            logRegistrationTiming(timing, completed);
+        }
     }
 
     private List<NoseImageUpload> readNoseImages(List<MultipartFile> noseImages) {
@@ -361,12 +393,17 @@ public class DogRegistrationService {
             EmbedClient.BatchEmbedResponse embedResponse,
             DogNoseDecision decision,
             ScoreBreakdownResponse scoreBreakdown,
-            String scoreBreakdownJson
+            String scoreBreakdownJson,
+            RegistrationTiming timing
     ) {
         transactionTemplate.executeWithoutResult(status ->
                 markAsDecision(pending, embedResponse, decision, scoreBreakdownJson)
         );
-        return buildResponse(pending, embedResponse, decision, scoreBreakdown, messageFor(decision.result()));
+        timing.mark("db_mark_decision");
+
+        DogRegisterResponse response = buildResponse(pending, embedResponse, decision, scoreBreakdown, messageFor(decision.result()));
+        timing.mark("build_response");
+        return response;
     }
 
     private DogRegisterResponse completePassedRegistration(
@@ -376,7 +413,8 @@ public class DogRegistrationService {
             List<Double> centroidVector,
             DogNoseDecision decision,
             ScoreBreakdownResponse scoreBreakdown,
-            String scoreBreakdownJson
+            String scoreBreakdownJson,
+            RegistrationTiming timing
     ) {
         List<PreparedQdrantPoint> preparedPoints = prepareQdrantPoints(pending, embedResponse, referenceVectors, centroidVector);
         List<QdrantDogVectorClient.QdrantPointUpsertRequest> upsertRequests = preparedPoints.stream()
@@ -386,10 +424,13 @@ public class DogRegistrationService {
                         point.payload()
                 ))
                 .toList();
+        timing.mark("qdrant_prepare_points");
 
         try {
             qdrantDogVectorClient.upsertAll(upsertRequests);
+            timing.mark("qdrant_upsert");
         } catch (QdrantDogVectorClient.QdrantClientException e) {
+            timing.mark("qdrant_upsert_failed");
             log.warn("[DogRegistration] qdrant v2 upsert 실패: dogId={}, status={}, message={}",
                     pending.dogId(), e.getUpstreamStatus(), e.getMessage());
             transactionTemplate.executeWithoutResult(status ->
@@ -408,6 +449,7 @@ public class DogRegistrationService {
             transactionTemplate.executeWithoutResult(status ->
                     createReferencesAndMarkRegistered(pending, embedResponse, decision.finalScore(), scoreBreakdownJson, preparedPoints)
             );
+            timing.mark("db_create_references_mark_registered");
         } catch (RuntimeException e) {
             deleteQdrantPointsBestEffort(preparedPoints.stream().map(PreparedQdrantPoint::pointId).toList());
             try {
@@ -427,7 +469,9 @@ public class DogRegistrationService {
             throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "QDRANT_UPSERT_FAILED", "벡터 인덱스 동기화에 실패했습니다.");
         }
 
-        return buildResponse(pending, embedResponse, decision, scoreBreakdown, messageFor(decision.result()));
+        DogRegisterResponse response = buildResponse(pending, embedResponse, decision, scoreBreakdown, messageFor(decision.result()));
+        timing.mark("build_response");
+        return response;
     }
 
     private List<PreparedQdrantPoint> prepareQdrantPoints(
@@ -846,6 +890,62 @@ public class DogRegistrationService {
 
     private BigDecimal toScore(double score) {
         return BigDecimal.valueOf(score).setScale(5, RoundingMode.HALF_UP);
+    }
+
+    private void logRegistrationTiming(RegistrationTiming timing, boolean completed) {
+        if (!registrationTimingLogEnabled) {
+            return;
+        }
+        log.info(
+                "[DogRegistrationTiming] completed={}, dogId={}, result={}, totalMs={}, stagesMs={}",
+                completed,
+                timing.dogId(),
+                timing.decisionResult(),
+                timing.totalMillis(),
+                timing.stages()
+        );
+    }
+
+    private static final class RegistrationTiming {
+        private final long startedNanos = System.nanoTime();
+        private final Map<String, Long> stages = new LinkedHashMap<>();
+        private long lastNanos = startedNanos;
+        private String dogId;
+        private VerificationResult decisionResult;
+
+        void setDogId(String dogId) {
+            this.dogId = dogId;
+        }
+
+        void setDecisionResult(VerificationResult decisionResult) {
+            this.decisionResult = decisionResult;
+        }
+
+        void mark(String stageName) {
+            long now = System.nanoTime();
+            stages.put(stageName, nanosToMillis(now - lastNanos));
+            lastNanos = now;
+        }
+
+        String dogId() {
+            return dogId;
+        }
+
+        VerificationResult decisionResult() {
+            return decisionResult;
+        }
+
+        long totalMillis() {
+            return nanosToMillis(System.nanoTime() - startedNanos);
+        }
+
+        Map<String, Long> stages() {
+            return new LinkedHashMap<>(stages);
+        }
+
+        private static long nanosToMillis(long nanos) {
+            return Math.round(nanos / 1_000_000.0);
+        }
     }
 
     private record NoseImageUpload(

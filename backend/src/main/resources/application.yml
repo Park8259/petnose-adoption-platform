@@ -94,6 +94,7 @@ nose:
   preprocess-version: ${NOSE_PREPROCESS_VERSION:rgb_resize224_bicubic_imagenet_l2_v1}
 
 petnose:
+  registration-timing-log-enabled: ${PETNOSE_REGISTRATION_TIMING_LOG_ENABLED:true}
   handover-verification:
     match-threshold: ${PETNOSE_HANDOVER_VERIFICATION_MATCH_THRESHOLD:0.65}
     ambiguous-threshold: ${PETNOSE_HANDOVER_VERIFICATION_AMBIGUOUS_THRESHOLD:0.65}
