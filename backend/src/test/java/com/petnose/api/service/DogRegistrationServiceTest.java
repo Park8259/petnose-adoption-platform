@@ -4,14 +4,19 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.petnose.api.client.EmbedClient;
 import com.petnose.api.client.QdrantDogVectorClient;
 import com.petnose.api.config.NoseRegistrationProperties;
+import com.petnose.api.config.ProfileNoseMatchProperties;
 import com.petnose.api.domain.entity.Dog;
 import com.petnose.api.domain.entity.DogImage;
 import com.petnose.api.domain.entity.DogNoseReference;
 import com.petnose.api.domain.entity.User;
 import com.petnose.api.domain.entity.VerificationLog;
+import com.petnose.api.domain.enums.DogImageType;
 import com.petnose.api.domain.enums.DogNoseEmbeddingKind;
 import com.petnose.api.domain.enums.DogStatus;
 import com.petnose.api.domain.enums.VerificationResult;
+import com.petnose.api.dto.registration.DogNoseVerificationResponse;
+import com.petnose.api.dto.registration.DogProfileDraftRequest;
+import com.petnose.api.dto.registration.DogProfileDraftResponse;
 import com.petnose.api.dto.registration.DogRegisterRequest;
 import com.petnose.api.dto.registration.DogRegisterResponse;
 import com.petnose.api.exception.ApiException;
@@ -98,6 +103,7 @@ class DogRegistrationServiceTest {
     @BeforeEach
     void setUp() {
         NoseRegistrationProperties properties = new NoseRegistrationProperties();
+        ProfileNoseMatchProperties profileNoseMatchProperties = new ProfileNoseMatchProperties();
         service = new DogRegistrationService(
                 userRepository,
                 dogRepository,
@@ -108,6 +114,7 @@ class DogRegistrationServiceTest {
                 embedClient,
                 qdrantDogVectorClient,
                 properties,
+                profileNoseMatchProperties,
                 new ObjectMapper(),
                 transactionTemplate()
         );
@@ -119,6 +126,7 @@ class DogRegistrationServiceTest {
         user.setId(1L);
         user.setEmail("user@example.com");
         user.setPasswordHash("hash");
+        user.setActive(true);
         when(userRepository.findById(1L)).thenReturn(Optional.of(user));
 
         when(dogRepository.save(any(Dog.class))).thenAnswer(invocation -> {
@@ -138,6 +146,15 @@ class DogRegistrationServiceTest {
             dogImages.put(image.getId(), image);
             return image;
         });
+        when(dogImageRepository.findFirstByDogIdAndImageTypeOrderByUploadedAtDescIdDesc(anyString(), any()))
+                .thenAnswer(invocation -> {
+                    String dogId = invocation.getArgument(0);
+                    DogImageType imageType = invocation.getArgument(1);
+                    return dogImages.values().stream()
+                            .filter(image -> dogId.equals(image.getDogId()))
+                            .filter(image -> image.getImageType() == imageType)
+                            .reduce((first, second) -> second);
+                });
 
         when(verificationLogRepository.save(any(VerificationLog.class))).thenAnswer(invocation -> {
             VerificationLog log = invocation.getArgument(0);
@@ -154,11 +171,19 @@ class DogRegistrationServiceTest {
         when(fileStorageService.storeNoseImage(anyString(), any()))
                 .thenAnswer(invocation -> storedFile(
                         "dogs/%s/nose/nose_%d.jpg".formatted(
-                                invocation.getArgument(0),
+                                invocation.getArgument(0, String.class),
                                 storedFileIndex.getAndIncrement()
                         )
                 ));
+        when(fileStorageService.storeProfileImage(anyString(), any()))
+                .thenAnswer(invocation -> storedFile("dogs/%s/profile/profile.jpg".formatted(invocation.getArgument(0, String.class))));
+        when(fileStorageService.readStoredImage(anyString(), any(), any(), any()))
+                .thenAnswer(invocation -> storedFile(invocation.getArgument(0)));
         when(fileStorageService.toPublicUrl(anyString())).thenAnswer(invocation -> "/files/" + invocation.getArgument(0));
+        when(embedClient.extractProfileNose(any(), anyString(), anyString())).thenReturn(Map.of(
+                "extracted", false,
+                "failure_reason", "DETECTOR_UNAVAILABLE"
+        ));
 
         doAnswer(invocation -> {
             Iterable<DogNoseReference> references = invocation.getArgument(0);
@@ -218,6 +243,97 @@ class DogRegistrationServiceTest {
                         DogNoseEmbeddingKind.CENTROID
                 );
         verify(fileStorageService, never()).deleteStoredFilesQuietly(anyCollection());
+    }
+
+    @Test
+    void profileDraftCreatesPendingDogAndProfileImageWithoutQdrantOrVerificationLog() {
+        when(embedClient.extractProfileNose(any(), anyString(), anyString())).thenReturn(profilePreviewMap());
+
+        DogProfileDraftResponse response = service.createProfileDraft(profileDraftRequest());
+
+        Dog dog = dogs.get(response.dogId());
+        assertThat(dog.getStatus()).isEqualTo(DogStatus.PENDING);
+        assertThat(dog.getName()).isEqualTo("Bori");
+        assertThat(dog.getBreed()).isEqualTo("Jindo");
+        assertThat(response.status()).isEqualTo("PENDING");
+        assertThat(response.profileImageUrl()).startsWith("/files/dogs/");
+        assertThat(response.profileNosePreview().extracted()).isTrue();
+        assertThat(response.profileNosePreview().confidence()).isEqualTo(0.95484);
+
+        assertThat(dogImages).hasSize(1);
+        assertThat(dogImages.values().iterator().next().getImageType()).isEqualTo(DogImageType.PROFILE);
+        assertThat(verificationLogs).isEmpty();
+        verify(embedClient, never()).embedBatch(anyList());
+        verify(qdrantDogVectorClient, never()).searchReferencePoints(anyList(), anyInt(), anyDouble());
+        verify(qdrantDogVectorClient, never()).upsertAll(anyList());
+    }
+
+    @Test
+    void pendingDogNoseVerificationPassRunsExistingDuplicateFlowAfterProfileMatch() {
+        savePendingDogWithProfile("draft-dog");
+        when(embedClient.profileNoseMatchBatch(any(), anyString(), anyString(), anyList()))
+                .thenReturn(profileBatchResponse(List.of(0.771138, 0.772269, 0.693301, 0.816335, 0.777755), null));
+        when(embedClient.embedBatch(anyList())).thenReturn(batchResponse(consistentVectors()));
+
+        DogNoseVerificationResponse response = service.verifyPendingDogWithNoseImages("draft-dog", 1L, noseImages(5));
+
+        assertThat(response.profileMatchAllowed()).isTrue();
+        assertThat(response.profileMatchStatus()).isEqualTo("PASSED");
+        assertThat(response.profileMatchThreshold()).isEqualTo(0.65);
+        assertThat(response.profileMatchMinPassCount()).isEqualTo(4);
+        assertThat(response.profileMatchPassCount()).isEqualTo(5);
+        assertThat(response.profileMatchMedianScore()).isEqualTo(0.772269);
+        assertThat(response.profileMatchScores()).hasSize(5);
+        assertThat(response.thresholdCalibrated()).isFalse();
+        assertThat(response.registrationAllowed()).isTrue();
+        assertThat(response.status()).isEqualTo("REGISTERED");
+        assertThat(dogs.get("draft-dog").getStatus()).isEqualTo(DogStatus.REGISTERED);
+        assertThat(dogImages.values())
+                .filteredOn(image -> image.getImageType() == DogImageType.PROFILE)
+                .hasSize(1);
+        assertThat(dogImages.values())
+                .filteredOn(image -> image.getImageType() == DogImageType.NOSE)
+                .hasSize(5);
+        assertThat(onlyVerificationLog().getResult()).isEqualTo(VerificationResult.PASSED);
+        verify(qdrantDogVectorClient).upsertAll(anyList());
+    }
+
+    @Test
+    void pendingDogNoseVerificationMismatchKeepsDogPendingAndSkipsNosePersistenceAndQdrant() {
+        savePendingDogWithProfile("draft-dog");
+        when(embedClient.profileNoseMatchBatch(any(), anyString(), anyString(), anyList()))
+                .thenReturn(profileBatchResponse(List.of(0.51, 0.52, 0.49, 0.72, 0.50), null));
+
+        DogNoseVerificationResponse response = service.verifyPendingDogWithNoseImages("draft-dog", 1L, noseImages(5));
+
+        assertThat(response.profileMatchAllowed()).isFalse();
+        assertThat(response.profileMatchStatus()).isEqualTo("FAILED");
+        assertThat(response.registrationAllowed()).isFalse();
+        assertThat(response.status()).isEqualTo("PENDING");
+        assertThat(response.failureReason()).isEqualTo("PROFILE_NOSE_MISMATCH");
+        assertThat(dogs.get("draft-dog").getStatus()).isEqualTo(DogStatus.PENDING);
+        assertThat(dogImages).hasSize(1);
+        assertThat(verificationLogs).isEmpty();
+        verify(fileStorageService, never()).storeNoseImage(anyString(), any());
+        verify(embedClient, never()).embedBatch(anyList());
+        verify(qdrantDogVectorClient, never()).searchReferencePoints(anyList(), anyInt(), anyDouble());
+        verify(qdrantDogVectorClient, never()).upsertAll(anyList());
+    }
+
+    @Test
+    void pendingDogNoseVerificationMissingProfileFailsBeforePythonOrQdrant() {
+        Dog dog = candidateDog("draft-dog", "Jindo");
+        dog.setOwnerUserId(1L);
+        dog.setStatus(DogStatus.PENDING);
+        dogs.put(dog.getId(), dog);
+
+        assertThatThrownBy(() -> service.verifyPendingDogWithNoseImages("draft-dog", 1L, noseImages(5)))
+                .isInstanceOfSatisfying(ApiException.class, e ->
+                        assertThat(e.getErrorCode()).isEqualTo("PROFILE_IMAGE_NOT_FOUND"));
+
+        verify(embedClient, never()).profileNoseMatchBatch(any(), anyString(), anyString(), anyList());
+        verify(qdrantDogVectorClient, never()).searchReferencePoints(anyList(), anyInt(), anyDouble());
+        verify(qdrantDogVectorClient, never()).upsertAll(anyList());
     }
 
     @Test
@@ -516,6 +632,84 @@ class DogRegistrationServiceTest {
         assertThat(dogImages).isEmpty();
         assertThat(verificationLogs).isEmpty();
         assertThat(dogNoseReferences).isEmpty();
+    }
+
+    private DogProfileDraftRequest profileDraftRequest() {
+        return new DogProfileDraftRequest(
+                1L,
+                "Bori",
+                "Jindo",
+                "MALE",
+                "2024-01-01",
+                "friendly",
+                profileImage()
+        );
+    }
+
+    private void savePendingDogWithProfile(String dogId) {
+        Dog dog = candidateDog(dogId, "Jindo");
+        dog.setOwnerUserId(1L);
+        dog.setStatus(DogStatus.PENDING);
+        dogs.put(dogId, dog);
+
+        DogImage profile = new DogImage();
+        profile.setId(dogImageIds.getAndIncrement());
+        profile.setDogId(dogId);
+        profile.setImageType(DogImageType.PROFILE);
+        profile.setFilePath("dogs/%s/profile/profile.jpg".formatted(dogId));
+        profile.setMimeType("image/jpeg");
+        profile.setFileSize(3L);
+        profile.setSha256("hash");
+        dogImages.put(profile.getId(), profile);
+    }
+
+    private static MockMultipartFile profileImage() {
+        return new MockMultipartFile("profile_image", "profile.jpg", "image/jpeg", new byte[]{1, 2, 3});
+    }
+
+    private static Map<String, Object> profilePreviewMap() {
+        Map<String, Object> response = new HashMap<>();
+        response.put("extracted", true);
+        response.put("confidence", 0.95484);
+        response.put("crop_width", 224);
+        response.put("crop_height", 224);
+        response.put("failure_reason", null);
+        return response;
+    }
+
+    private static EmbedClient.ProfileNoseMatchBatchResponse profileBatchResponse(
+            List<Double> scores,
+            String failureReason
+    ) {
+        List<EmbedClient.ProfileNoseMatchBatchScore> scoreItems = new ArrayList<>();
+        for (int i = 0; i < scores.size(); i++) {
+            Double score = scores.get(i);
+            scoreItems.add(new EmbedClient.ProfileNoseMatchBatchScore(i + 1, score, score != null && score >= 0.65));
+        }
+        int passCount = (int) scores.stream()
+                .filter(score -> score != null && score >= 0.65)
+                .count();
+        List<Double> presentScores = scores.stream().filter(score -> score != null).sorted().toList();
+        Double median = presentScores.isEmpty() ? null : presentScores.get(presentScores.size() / 2);
+        return new EmbedClient.ProfileNoseMatchBatchResponse(
+                failureReason == null && passCount >= 4 && median != null && median >= 0.65,
+                0.65,
+                false,
+                passCount,
+                4,
+                median,
+                null,
+                null,
+                null,
+                failureReason == null,
+                0.95484,
+                224,
+                224,
+                MODEL,
+                3,
+                scoreItems,
+                failureReason
+        );
     }
 
     @Test

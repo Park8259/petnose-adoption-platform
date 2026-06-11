@@ -55,10 +55,15 @@ htmlcov/
 *.pth
 *.ckpt
 *.onnx
+*.weights
+*.pb
 *.h5
 *.keras
 *.safetensors
 saved_model/
+
+# ── Local Codex/demo artifacts (커밋 금지) ──────────────────────────────────
+.codex_local/
 
 # ── Model analysis generated outputs ─────────────────────────────────────────
 docs/model-analysis/*.csv

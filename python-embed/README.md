@@ -11,9 +11,10 @@
 - `EMBED_MODEL=dog-nose-identification2` (실제 모델)
 
 ## 모드별 의존성 정책
-- 기본 `requirements.txt`는 mock 회귀/CI 경량 유지를 위한 최소 의존성만 포함
+- 기본 `requirements.txt`는 mock 회귀/CI 경량 유지를 위한 최소 의존성과 profile nose crop POC용 Pillow만 포함
 - 실제 모델 의존성은 `requirements-real.txt`로 분리
 - Docker 빌드 인자 `PYTHON_EMBED_INSTALL_REAL_DEPS=1`일 때만 실제 모델 의존성 설치
+- Ultralytics 또는 legacy YOLOv5 local repo runtime은 custom dog-nose YOLO weights가 있는 로컬 POC에서만 별도 설치/참조
 
 ## 환경변수
 - `EMBED_MODEL` (`mock-v1` | `dog-nose-identification2`)
@@ -21,9 +22,24 @@
 - `EMBED_DEVICE` (기본 `cpu`)
 - `DOG_NOSE_MODEL_DIR` (기본 `/models/dog_nose_identification2`)
 - `DOG_NOSE_MODEL_PATH` (선택, checkpoint 직접 지정)
+- `DOG_NOSE_RUNTIME` (`torch` | `onnxruntime`, 기본 `torch`)
+- `DOG_NOSE_ONNX_PATH` (선택, `DOG_NOSE_RUNTIME=onnxruntime`일 때 exported `.onnx` 직접 지정)
+- `DOG_NOSE_ORT_INTRA_OP_THREADS`, `DOG_NOSE_ORT_INTER_OP_THREADS` (선택, ONNX Runtime CPU thread 설정)
+- `DOG_NOSE_EXTRACT_ENABLED` (`true` | `false`, 기본 `false`)
+- `DOG_NOSE_DETECTOR_WEIGHTS` (custom dog-nose YOLO weight 경로)
+- `DOG_NOSE_DETECTOR_BACKEND` (`ultralytics` | `yolov5_legacy`, 기본 `ultralytics`)
+- `DOG_NOSE_YOLOV5_REPO` (`DOG_NOSE_DETECTOR_BACKEND=yolov5_legacy`일 때 local YOLOv5 repo 경로, `hubconf.py` 필요)
+- `DOG_NOSE_DETECT_CONF_THRESHOLD` (기본 `0.35`)
+- `DOG_NOSE_CROP_SIZE` (기본 `224`)
+- `DOG_NOSE_BBOX_EXPAND` (기본 `1.40`)
+- `DOG_NOSE_CLASS_ID` (기본 `0`)
+- `DOG_NOSE_CLASS_NAMES` (기본 `nose,dog_nose,pet_nose`)
+- `PROFILE_NOSE_MATCH_THRESHOLD` (기본 `0.65`, calibration 전 dev 값; registration duplicate threshold와 별도)
 - `MAX_IMAGE_BYTES` (기본 20MB)
 - `MAX_BATCH_IMAGES` (`/embed-batch` 요청당 최대 이미지 수, 기본 5)
 - `MAX_BATCH_TOTAL_BYTES` (`/embed-batch` 요청 전체 이미지 크기 합계 제한, 기본 80MB)
+
+`DOG_NOSE_DETECTOR_BACKEND=yolov5_legacy`는 local POC 전용입니다. local YOLOv5 repo code와 PyTorch `.pt` checkpoint를 실행/역직렬화하므로, public checkpoint는 격리된 컨테이너에서만 검증하고 production 반영 전 라이선스/보안 검토가 필요합니다.
 
 ## Health 응답
 기존 키(`status`, `model_loaded`, `model`, `vector_dim`)는 유지하며 디버깅 필드를 추가합니다.
@@ -145,3 +161,26 @@ curl.exe -i -X POST "http://localhost/api/dogs/register" `
 ## 모델 파일 커밋 금지
 - `.pt`, `.pth`, `.ckpt`, `.onnx`, `.h5`, `.keras` 등 weight 파일은 git 커밋 금지
 - 모델은 외부 경로/볼륨 마운트로 주입
+
+## ONNX Runtime CPU experiment
+
+`DOG_NOSE_RUNTIME=onnxruntime` 경로는 AWS CPU latency와 vector parity가 증명될 때까지 opt-in 실험 기능입니다.
+
+```bash
+pip install -r requirements-real.txt -r requirements-onnx.txt
+
+python scripts/onnx_runtime_experiment.py export \
+  --model-dir /models/dog_nose_identification2 \
+  --output /tmp/petnose-onnx-runtime-experiment/dog_nose_s101_224.onnx
+
+python scripts/onnx_runtime_experiment.py compare \
+  --model-dir /models/dog_nose_identification2 \
+  --onnx /tmp/petnose-onnx-runtime-experiment/dog_nose_s101_224.onnx \
+  --fixtures /path/to/nose-fixtures \
+  --output-dir /tmp/petnose-onnx-runtime-experiment
+
+EMBED_MODEL=dog-nose-identification2 \
+DOG_NOSE_RUNTIME=onnxruntime \
+DOG_NOSE_ONNX_PATH=/tmp/petnose-onnx-runtime-experiment/dog_nose_s101_224.onnx \
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```

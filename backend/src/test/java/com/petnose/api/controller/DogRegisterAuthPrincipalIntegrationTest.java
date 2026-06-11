@@ -308,10 +308,12 @@ class DogRegisterAuthPrincipalIntegrationTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error_code").value("NOSE_IMAGES_REQUIRED"));
 
-        mockMvc.perform(legacyDogMultipart("nose.jpg", "Bori", "Jindo", "MALE")
+        mockMvc.perform(singleCanonicalNoseImageMultipart("nose.jpg", "Bori", "Jindo", "MALE")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error_code").value("NOSE_IMAGES_REQUIRED"));
+                .andExpect(jsonPath("$.error_code").value("NOSE_IMAGES_COUNT_INVALID"))
+                .andExpect(jsonPath("$.details.expected_count").value(5))
+                .andExpect(jsonPath("$.details.actual_count").value(1));
 
         mockMvc.perform(dogMultipart(null, noseImages(5), "Bori", "Jindo", "INVALID")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken))
@@ -471,7 +473,7 @@ class DogRegisterAuthPrincipalIntegrationTest {
         return builder;
     }
 
-    private MockHttpServletRequestBuilder legacyDogMultipart(
+    private MockHttpServletRequestBuilder singleCanonicalNoseImageMultipart(
             String filename,
             String name,
             String breed,

@@ -213,6 +213,59 @@ public class EmbedClient {
         return new BatchEmbedResponse(items, dimension, model);
     }
 
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> extractProfileNose(byte[] imageBytes, String filename, String contentType) {
+        MultipartBodyBuilder builder = new MultipartBodyBuilder();
+        addMultipartFilePart(builder, "image", imageBytes, filename, contentType);
+        return postMultipartForMap("/internal/nose/extract", builder, "nose extract service");
+    }
+
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> profileNoseMatch(
+            byte[] profileImageBytes,
+            String profileFilename,
+            String profileContentType,
+            byte[] noseImageBytes,
+            String noseFilename,
+            String noseContentType
+    ) {
+        MultipartBodyBuilder builder = new MultipartBodyBuilder();
+        addMultipartFilePart(builder, "profile_image", profileImageBytes, profileFilename, profileContentType);
+        addMultipartFilePart(builder, "nose_image", noseImageBytes, noseFilename, noseContentType);
+        return postMultipartForMap("/internal/nose/profile-match", builder, "profile nose match service");
+    }
+
+    public ProfileNoseMatchBatchResponse profileNoseMatchBatch(
+            byte[] profileImageBytes,
+            String profileFilename,
+            String profileContentType,
+            List<BatchImageInput> noseImages
+    ) {
+        if (noseImages == null || noseImages.isEmpty()) {
+            throw new EmbedClientException("profile nose match batch 요청 이미지가 비어 있습니다.", null, null, null);
+        }
+
+        MultipartBodyBuilder builder = new MultipartBodyBuilder();
+        addMultipartFilePart(builder, "profile_image", profileImageBytes, profileFilename, profileContentType);
+        for (BatchImageInput noseImage : noseImages) {
+            validateBatchImageInput(noseImage);
+            addMultipartFilePart(
+                    builder,
+                    "nose_image",
+                    noseImage.imageBytes(),
+                    noseImage.filename(),
+                    noseImage.contentType()
+            );
+        }
+
+        Map<String, Object> response = postMultipartForMap(
+                "/internal/nose/profile-match-batch",
+                builder,
+                "profile nose match batch service"
+        );
+        return parseProfileNoseMatchBatchResponse(response);
+    }
+
     /**
      * Python embed service health 확인.
      */
@@ -250,6 +303,32 @@ public class EmbedClient {
             String model
     ) {}
 
+    public record ProfileNoseMatchBatchScore(
+            int index,
+            Double similarityScore,
+            boolean passed
+    ) {}
+
+    public record ProfileNoseMatchBatchResponse(
+            boolean matched,
+            double threshold,
+            boolean thresholdCalibrated,
+            int passCount,
+            int requiredPassCount,
+            Double medianScore,
+            Double meanScore,
+            Double minScore,
+            Double maxScore,
+            boolean profileNoseExtracted,
+            Double profileConfidence,
+            Integer profileCropWidth,
+            Integer profileCropHeight,
+            String model,
+            Integer dimension,
+            List<ProfileNoseMatchBatchScore> scores,
+            String failureReason
+    ) {}
+
     private static void validateBatchImageInput(BatchImageInput image) {
         if (image == null) {
             throw new EmbedClientException("embed batch 요청 이미지가 null입니다.", null, null, null);
@@ -265,6 +344,65 @@ public class EmbedClient {
         }
     }
 
+    private static void addMultipartFilePart(
+            MultipartBodyBuilder builder,
+            String partName,
+            byte[] imageBytes,
+            String filename,
+            String contentType
+    ) {
+        if (imageBytes == null || imageBytes.length == 0) {
+            throw new EmbedClientException(partName + " 이미지 바이트가 비어 있습니다.", null, null, null);
+        }
+        if (filename == null || filename.isBlank()) {
+            throw new EmbedClientException(partName + " 파일명이 비어 있습니다.", null, null, null);
+        }
+        if (contentType == null || contentType.isBlank()) {
+            throw new EmbedClientException(partName + " contentType이 비어 있습니다.", null, null, null);
+        }
+
+        MultipartBodyBuilder.PartBuilder imagePart = builder.part(partName, new ByteArrayResource(imageBytes) {
+            @Override
+            public String getFilename() {
+                return filename;
+            }
+        });
+        imagePart.filename(filename);
+        imagePart.contentType(MediaType.parseMediaType(contentType));
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> postMultipartForMap(String uri, MultipartBodyBuilder builder, String operationName) {
+        Map<String, Object> response;
+        try {
+            response = webClient.post()
+                    .uri(uri)
+                    .contentType(MediaType.MULTIPART_FORM_DATA)
+                    .body(BodyInserters.fromMultipartData(builder.build()))
+                    .retrieve()
+                    .bodyToMono(Map.class)
+                    .block();
+        } catch (WebClientResponseException e) {
+            throw new EmbedClientException(
+                    "%s 호출 실패: status=%d body=%s".formatted(
+                            operationName,
+                            e.getStatusCode().value(),
+                            e.getResponseBodyAsString()
+                    ),
+                    e.getStatusCode().value(),
+                    e.getResponseBodyAsString(),
+                    e
+            );
+        } catch (Exception e) {
+            throw new EmbedClientException(operationName + " 호출 실패: " + e.getMessage(), null, null, e);
+        }
+
+        if (response == null) {
+            throw new EmbedClientException(operationName + " 응답이 null입니다.", null, null, null);
+        }
+        return response;
+    }
+
     private static List<Double> toVector(List<?> rawVector, Map<String, Object> response) {
         List<Double> vector = new ArrayList<>();
         for (Object value : rawVector) {
@@ -278,6 +416,69 @@ public class EmbedClient {
 
     private static String valueOrNull(Object value) {
         return value == null ? null : String.valueOf(value);
+    }
+
+    private static ProfileNoseMatchBatchResponse parseProfileNoseMatchBatchResponse(Map<String, Object> response) {
+        Object scoresObj = response.get("scores");
+        List<ProfileNoseMatchBatchScore> scores = new ArrayList<>();
+        if (scoresObj instanceof List<?> rawScores) {
+            for (Object rawScore : rawScores) {
+                if (!(rawScore instanceof Map<?, ?> scoreMap)) {
+                    throw new EmbedClientException("profile nose match batch scores 형식이 올바르지 않습니다.", null, String.valueOf(response), null);
+                }
+                Object indexObj = scoreMap.get("index");
+                if (!(indexObj instanceof Number indexNumber)) {
+                    throw new EmbedClientException("profile nose match batch score.index가 숫자가 아닙니다.", null, String.valueOf(response), null);
+                }
+                scores.add(new ProfileNoseMatchBatchScore(
+                        indexNumber.intValue(),
+                        numberAsDouble(scoreMap.get("similarity_score")),
+                        booleanValue(scoreMap.get("passed"))
+                ));
+            }
+        }
+
+        return new ProfileNoseMatchBatchResponse(
+                booleanValue(response.get("matched")),
+                numberAsDouble(response.get("threshold"), 0.65),
+                booleanValue(response.get("threshold_calibrated")),
+                numberAsInt(response.get("pass_count"), 0),
+                numberAsInt(response.get("required_pass_count"), 4),
+                numberAsDouble(response.get("median_score")),
+                numberAsDouble(response.get("mean_score")),
+                numberAsDouble(response.get("min_score")),
+                numberAsDouble(response.get("max_score")),
+                booleanValue(response.get("profile_nose_extracted")),
+                numberAsDouble(response.get("profile_confidence")),
+                numberAsInteger(response.get("profile_crop_width")),
+                numberAsInteger(response.get("profile_crop_height")),
+                valueOrNull(response.get("model")),
+                numberAsInteger(response.get("dimension")),
+                List.copyOf(scores),
+                valueOrNull(response.get("failure_reason"))
+        );
+    }
+
+    private static Double numberAsDouble(Object value) {
+        return value instanceof Number number ? number.doubleValue() : null;
+    }
+
+    private static double numberAsDouble(Object value, double defaultValue) {
+        Double parsed = numberAsDouble(value);
+        return parsed == null ? defaultValue : parsed;
+    }
+
+    private static Integer numberAsInteger(Object value) {
+        return value instanceof Number number ? number.intValue() : null;
+    }
+
+    private static int numberAsInt(Object value, int defaultValue) {
+        Integer parsed = numberAsInteger(value);
+        return parsed == null ? defaultValue : parsed;
+    }
+
+    private static boolean booleanValue(Object value) {
+        return value instanceof Boolean bool && bool;
     }
 
     public static class EmbedClientException extends RuntimeException {
