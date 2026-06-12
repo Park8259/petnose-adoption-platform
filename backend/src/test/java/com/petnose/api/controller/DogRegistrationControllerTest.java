@@ -4,7 +4,12 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.petnose.api.dto.registration.DogRegisterRequest;
 import com.petnose.api.dto.registration.DogRegisterResponse;
+import com.petnose.api.dto.registration.DogNoseVerificationResponse;
+import com.petnose.api.dto.registration.DogProfileDraftRequest;
+import com.petnose.api.dto.registration.DogProfileDraftResponse;
 import com.petnose.api.dto.registration.DuplicateCandidateResponse;
+import com.petnose.api.dto.registration.ProfileMatchScoreResponse;
+import com.petnose.api.dto.registration.ProfileNosePreviewResponse;
 import com.petnose.api.dto.registration.ScoreBreakdownResponse;
 import com.petnose.api.exception.ApiException;
 import com.petnose.api.service.AuthService;
@@ -49,6 +54,84 @@ class DogRegistrationControllerTest {
 
     @MockBean
     private AuthService authService;
+
+    @Test
+    void profileDraftAcceptsUserIdFallbackAndReturnsCreated() throws Exception {
+        when(dogRegistrationService.createProfileDraft(ArgumentMatchers.any()))
+                .thenReturn(new DogProfileDraftResponse(
+                        "dog-draft-1",
+                        "PENDING",
+                        "/files/dogs/dog-draft-1/profile/profile.jpg",
+                        new ProfileNosePreviewResponse(true, 0.95484, 224, 224, null),
+                        "draft created"
+                ));
+
+        mockMvc.perform(multipart("/api/dogs/profile-draft")
+                        .file(new MockMultipartFile("profile_image", "profile.jpg", "image/jpeg", new byte[]{1, 2, 3}))
+                        .param("user_id", "42")
+                        .param("name", "Bori")
+                        .param("breed", "Jindo")
+                        .param("gender", "MALE")
+                        .param("birth_date", "2024-01-01")
+                        .param("description", "friendly"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.dog_id").value("dog-draft-1"))
+                .andExpect(jsonPath("$.status").value("PENDING"))
+                .andExpect(jsonPath("$.profile_image_url").value("/files/dogs/dog-draft-1/profile/profile.jpg"))
+                .andExpect(jsonPath("$.profile_nose_preview.extracted").value(true))
+                .andExpect(jsonPath("$.profile_nose_preview.confidence").value(0.95484));
+
+        ArgumentCaptor<DogProfileDraftRequest> requestCaptor = ArgumentCaptor.forClass(DogProfileDraftRequest.class);
+        verify(dogRegistrationService).createProfileDraft(requestCaptor.capture());
+        assertThat(requestCaptor.getValue().userId()).isEqualTo(42L);
+        assertThat(requestCaptor.getValue().profileImage().getName()).isEqualTo("profile_image");
+    }
+
+    @Test
+    void noseVerificationAcceptsCanonicalNoseImageMultipartParts() throws Exception {
+        when(authService.currentActiveUserId("Bearer test-token")).thenReturn(42L);
+        when(dogRegistrationService.verifyPendingDogWithNoseImages(ArgumentMatchers.anyString(), ArgumentMatchers.anyLong(), ArgumentMatchers.any()))
+                .thenReturn(noseVerificationPassedResponse());
+
+        mockMvc.perform(canonicalNoseVerificationMultipartRequest()
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer test-token"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.dog_id").value("dog-draft-1"))
+                .andExpect(jsonPath("$.profile_match_allowed").value(true))
+                .andExpect(jsonPath("$.profile_match_status").value("PASSED"))
+                .andExpect(jsonPath("$.profile_match_threshold").value(0.65))
+                .andExpect(jsonPath("$.profile_match_min_pass_count").value(4))
+                .andExpect(jsonPath("$.profile_match_pass_count").value(5))
+                .andExpect(jsonPath("$.threshold_calibrated").value(false))
+                .andExpect(jsonPath("$.registration_allowed").value(true))
+                .andExpect(jsonPath("$.status").value("REGISTERED"));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<org.springframework.web.multipart.MultipartFile>> filesCaptor = ArgumentCaptor.forClass(List.class);
+        verify(dogRegistrationService).verifyPendingDogWithNoseImages(ArgumentMatchers.eq("dog-draft-1"), ArgumentMatchers.eq(42L), filesCaptor.capture());
+        assertThat(filesCaptor.getValue())
+                .hasSize(5)
+                .extracting(file -> file.getName())
+                .containsOnly("nose_image");
+    }
+
+    @Test
+    void noseVerificationAcceptsLegacyNoseImagesAlias() throws Exception {
+        when(dogRegistrationService.verifyPendingDogWithNoseImages(ArgumentMatchers.anyString(), ArgumentMatchers.anyLong(), ArgumentMatchers.any()))
+                .thenReturn(noseVerificationPassedResponse());
+
+        mockMvc.perform(legacyNoseVerificationMultipartRequest().param("user_id", "42"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.profile_match_allowed").value(true));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<org.springframework.web.multipart.MultipartFile>> filesCaptor = ArgumentCaptor.forClass(List.class);
+        verify(dogRegistrationService).verifyPendingDogWithNoseImages(ArgumentMatchers.eq("dog-draft-1"), ArgumentMatchers.eq(42L), filesCaptor.capture());
+        assertThat(filesCaptor.getValue())
+                .hasSize(5)
+                .extracting(file -> file.getName())
+                .containsOnly("nose_images");
+    }
 
     @Test
     void registerDogReturnsCreatedWhenRegistrationAllowed() throws Exception {
@@ -137,6 +220,48 @@ class DogRegistrationControllerTest {
                         "score_breakdown",
                         "nose_image_urls",
                         "message"
+                );
+    }
+
+    @Test
+    void registerDogAcceptsCanonicalNoseImageMultipartParts() throws Exception {
+        when(authService.currentActiveUserId("Bearer test-token")).thenReturn(42L);
+        when(dogRegistrationService.register(ArgumentMatchers.any()))
+                .thenReturn(registrationAllowedResponse());
+
+        mockMvc.perform(validCanonicalNoseImageMultipartRequest())
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.registration_allowed").value(true));
+
+        ArgumentCaptor<DogRegisterRequest> requestCaptor = ArgumentCaptor.forClass(DogRegisterRequest.class);
+        verify(dogRegistrationService).register(requestCaptor.capture());
+        assertThat(requestCaptor.getValue().noseImages())
+                .hasSize(5)
+                .extracting(file -> file.getName())
+                .containsOnly("nose_image");
+    }
+
+    @Test
+    void registerDogPrefersCanonicalNoseImageWhenBothAliasesArePresent() throws Exception {
+        when(authService.currentActiveUserId("Bearer test-token")).thenReturn(42L);
+        when(dogRegistrationService.register(ArgumentMatchers.any()))
+                .thenReturn(registrationAllowedResponse());
+
+        mockMvc.perform(validMultipartRequestWithBothNoseImageAliases())
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.registration_allowed").value(true));
+
+        ArgumentCaptor<DogRegisterRequest> requestCaptor = ArgumentCaptor.forClass(DogRegisterRequest.class);
+        verify(dogRegistrationService).register(requestCaptor.capture());
+        assertThat(requestCaptor.getValue().noseImages())
+                .hasSize(5)
+                .extracting(file -> file.getOriginalFilename())
+                .containsExactly(
+                        "canonical-1.png",
+                        "canonical-2.png",
+                        "canonical-3.png",
+                        "canonical-4.png",
+                        "canonical-5.png"
                 );
     }
 
@@ -301,6 +426,39 @@ class DogRegistrationControllerTest {
                 .param("user_id", "999");
     }
 
+    private static org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder validCanonicalNoseImageMultipartRequest() {
+        return canonicalNoseImageMultipartRequest()
+                .header(HttpHeaders.AUTHORIZATION, "Bearer test-token");
+    }
+
+    private static org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder validMultipartRequestWithBothNoseImageAliases() {
+        org.springframework.test.web.servlet.request.MockMultipartHttpServletRequestBuilder builder = canonicalNoseImageMultipartRequest()
+                .file(new MockMultipartFile("nose_images", "legacy-1.png", "image/png", new byte[]{1, 2, 3}))
+                .file(new MockMultipartFile("nose_images", "legacy-2.png", "image/png", new byte[]{1, 2, 3}))
+                .file(new MockMultipartFile("nose_images", "legacy-3.png", "image/png", new byte[]{1, 2, 3}))
+                .file(new MockMultipartFile("nose_images", "legacy-4.png", "image/png", new byte[]{1, 2, 3}))
+                .file(new MockMultipartFile("nose_images", "legacy-5.png", "image/png", new byte[]{1, 2, 3}));
+        return builder.header(HttpHeaders.AUTHORIZATION, "Bearer test-token");
+    }
+
+    private static org.springframework.test.web.servlet.request.MockMultipartHttpServletRequestBuilder canonicalNoseImageMultipartRequest() {
+        org.springframework.test.web.servlet.request.MockMultipartHttpServletRequestBuilder builder = multipart("/api/dogs/register")
+                .file(new MockMultipartFile("nose_image", "canonical-1.png", "image/png", new byte[]{1, 2, 3}))
+                .file(new MockMultipartFile("nose_image", "canonical-2.png", "image/png", new byte[]{1, 2, 3}))
+                .file(new MockMultipartFile("nose_image", "canonical-3.png", "image/png", new byte[]{1, 2, 3}))
+                .file(new MockMultipartFile("nose_image", "canonical-4.png", "image/png", new byte[]{1, 2, 3}))
+                .file(new MockMultipartFile("nose_image", "canonical-5.png", "image/png", new byte[]{1, 2, 3}));
+        builder.param("name", "Bori");
+        builder.param("breed", "Jindo");
+        builder.param("gender", "MALE");
+        builder.param("birth_date", "2024-01-01");
+        builder.param("age", "3");
+        builder.param("price", "250000");
+        builder.param("description", "friendly");
+        builder.param("health", "healthy");
+        return builder;
+    }
+
     private static org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder validMultipartRequestWithoutAuthorization() {
         MockMultipartFile noseImage1 = new MockMultipartFile("nose_images", "sample.png", "image/png", new byte[]{1, 2, 3});
         MockMultipartFile noseImage2 = new MockMultipartFile("nose_images", "sample-2.png", "image/png", new byte[]{1, 2, 3});
@@ -322,6 +480,94 @@ class DogRegistrationControllerTest {
                 .param("price", "250000")
                 .param("description", "friendly")
                 .param("health", "healthy");
+    }
+
+    private static org.springframework.test.web.servlet.request.MockMultipartHttpServletRequestBuilder canonicalNoseVerificationMultipartRequest() {
+        return multipart("/api/dogs/dog-draft-1/nose-verification")
+                .file(new MockMultipartFile("nose_image", "canonical-1.png", "image/png", new byte[]{1, 2, 3}))
+                .file(new MockMultipartFile("nose_image", "canonical-2.png", "image/png", new byte[]{1, 2, 3}))
+                .file(new MockMultipartFile("nose_image", "canonical-3.png", "image/png", new byte[]{1, 2, 3}))
+                .file(new MockMultipartFile("nose_image", "canonical-4.png", "image/png", new byte[]{1, 2, 3}))
+                .file(new MockMultipartFile("nose_image", "canonical-5.png", "image/png", new byte[]{1, 2, 3}));
+    }
+
+    private static org.springframework.test.web.servlet.request.MockMultipartHttpServletRequestBuilder legacyNoseVerificationMultipartRequest() {
+        return multipart("/api/dogs/dog-draft-1/nose-verification")
+                .file(new MockMultipartFile("nose_images", "legacy-1.png", "image/png", new byte[]{1, 2, 3}))
+                .file(new MockMultipartFile("nose_images", "legacy-2.png", "image/png", new byte[]{1, 2, 3}))
+                .file(new MockMultipartFile("nose_images", "legacy-3.png", "image/png", new byte[]{1, 2, 3}))
+                .file(new MockMultipartFile("nose_images", "legacy-4.png", "image/png", new byte[]{1, 2, 3}))
+                .file(new MockMultipartFile("nose_images", "legacy-5.png", "image/png", new byte[]{1, 2, 3}));
+    }
+
+    private static DogRegisterResponse registrationAllowedResponse() {
+        return new DogRegisterResponse(
+                "dog-1",
+                true,
+                "REGISTERED",
+                "VERIFIED",
+                "COMPLETED",
+                null,
+                "dog-nose-identification2:s101_224",
+                2048,
+                0.12345,
+                "/files/dogs/dog-1/nose/sample.png",
+                null,
+                null,
+                "MULTI_REFERENCE",
+                5,
+                scoreBreakdown(0.12345),
+                List.of(
+                        "/files/dogs/dog-1/nose/sample.png",
+                        "/files/dogs/dog-1/nose/sample-2.png",
+                        "/files/dogs/dog-1/nose/sample-3.png",
+                        "/files/dogs/dog-1/nose/sample-4.png",
+                        "/files/dogs/dog-1/nose/sample-5.png"
+                ),
+                "registered"
+        );
+    }
+
+    private static DogNoseVerificationResponse noseVerificationPassedResponse() {
+        return new DogNoseVerificationResponse(
+                "dog-draft-1",
+                true,
+                "PASSED",
+                0.65,
+                4,
+                5,
+                0.772269,
+                "median",
+                List.of(
+                        new ProfileMatchScoreResponse(1, 0.771138, true),
+                        new ProfileMatchScoreResponse(2, 0.772269, true),
+                        new ProfileMatchScoreResponse(3, 0.693301, true),
+                        new ProfileMatchScoreResponse(4, 0.816335, true),
+                        new ProfileMatchScoreResponse(5, 0.777755, true)
+                ),
+                false,
+                true,
+                "REGISTERED",
+                "VERIFIED",
+                "COMPLETED",
+                null,
+                "dog-nose-identification2:s101_224",
+                2048,
+                0.12345,
+                null,
+                "MULTI_REFERENCE",
+                5,
+                scoreBreakdown(0.12345),
+                List.of(
+                        "/files/dogs/dog-draft-1/nose/nose-1.png",
+                        "/files/dogs/dog-draft-1/nose/nose-2.png",
+                        "/files/dogs/dog-draft-1/nose/nose-3.png",
+                        "/files/dogs/dog-draft-1/nose/nose-4.png",
+                        "/files/dogs/dog-draft-1/nose/nose-5.png"
+                ),
+                null,
+                "registered"
+        );
     }
 
     private static ScoreBreakdownResponse scoreBreakdown(double finalScore) {

@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.petnose.api.client.EmbedClient;
 import com.petnose.api.client.QdrantDogVectorClient;
 import com.petnose.api.config.NoseRegistrationProperties;
+import com.petnose.api.config.ProfileNoseMatchProperties;
 import com.petnose.api.domain.entity.Dog;
 import com.petnose.api.domain.entity.DogImage;
 import com.petnose.api.domain.entity.DogNoseReference;
@@ -17,9 +18,14 @@ import com.petnose.api.domain.enums.DogStatus;
 import com.petnose.api.domain.enums.NoseReferenceQualityStatus;
 import com.petnose.api.domain.enums.VerificationPurpose;
 import com.petnose.api.domain.enums.VerificationResult;
+import com.petnose.api.dto.registration.DogNoseVerificationResponse;
+import com.petnose.api.dto.registration.DogProfileDraftRequest;
+import com.petnose.api.dto.registration.DogProfileDraftResponse;
 import com.petnose.api.dto.registration.DogRegisterRequest;
 import com.petnose.api.dto.registration.DogRegisterResponse;
 import com.petnose.api.dto.registration.DuplicateCandidateResponse;
+import com.petnose.api.dto.registration.ProfileMatchScoreResponse;
+import com.petnose.api.dto.registration.ProfileNosePreviewResponse;
 import com.petnose.api.dto.registration.ScoreBreakdownResponse;
 import com.petnose.api.exception.ApiException;
 import com.petnose.api.repository.DogImageRepository;
@@ -67,6 +73,9 @@ public class DogRegistrationService {
 
     private static final String EMBEDDING_MODE_MULTI_REFERENCE = "MULTI_REFERENCE";
     private static final String SCORE_POLICY = DogNoseScoreBreakdown.MAX_REFERENCE_OR_CENTROID_POLICY;
+    private static final String PROFILE_NOSE_MISMATCH = "PROFILE_NOSE_MISMATCH";
+    private static final String DETECTOR_UNAVAILABLE = "DETECTOR_UNAVAILABLE";
+    private static final String MEDIAN_AGGREGATE = "median";
 
     private final UserRepository userRepository;
     private final DogRepository dogRepository;
@@ -77,6 +86,7 @@ public class DogRegistrationService {
     private final EmbedClient embedClient;
     private final QdrantDogVectorClient qdrantDogVectorClient;
     private final NoseRegistrationProperties noseRegistrationProperties;
+    private final ProfileNoseMatchProperties profileNoseMatchProperties;
     private final ObjectMapper objectMapper;
     private final TransactionTemplate transactionTemplate;
 
@@ -95,6 +105,87 @@ public class DogRegistrationService {
 
     @Value("${petnose.registration-timing-log-enabled:true}")
     private boolean registrationTimingLogEnabled;
+
+    public DogProfileDraftResponse createProfileDraft(DogProfileDraftRequest request) {
+        validateRequiredFields(new DogRegisterRequest(
+                request.userId(),
+                request.name(),
+                request.breed(),
+                request.gender(),
+                request.birthDate(),
+                null,
+                null,
+                request.description(),
+                null,
+                null
+        ));
+        LocalDate birthDate = parseBirthDate(request.birthDate());
+        User user = loadActiveUserOrThrow(request.userId());
+        String dogId = UUID.randomUUID().toString();
+
+        FileStorageService.StoredFile storedProfile = fileStorageService.storeProfileImage(dogId, request.profileImage());
+        try {
+            Boolean created = transactionTemplate.execute(status -> {
+                createProfileDraftRows(user.getId(), dogId, request, birthDate, storedProfile);
+                return Boolean.TRUE;
+            });
+            if (!Boolean.TRUE.equals(created)) {
+                fileStorageService.deleteStoredFileQuietly(storedProfile);
+                throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "PROFILE_DRAFT_CREATE_FAILED", "프로필 임시 등록에 실패했습니다.");
+            }
+        } catch (RuntimeException e) {
+            fileStorageService.deleteStoredFileQuietly(storedProfile);
+            throw e;
+        }
+
+        ProfileNosePreviewResponse preview = previewProfileNose(storedProfile);
+        return new DogProfileDraftResponse(
+                dogId,
+                DogStatus.PENDING.name(),
+                fileStorageService.toPublicUrl(storedProfile.relativePath()),
+                preview,
+                "강아지 프로필 정보가 임시 등록되었습니다. 비문 5장을 업로드해 인증을 완료하세요."
+        );
+    }
+
+    public DogNoseVerificationResponse verifyPendingDogWithNoseImages(
+            String dogId,
+            Long userId,
+            List<? extends MultipartFile> noseImages
+    ) {
+        User user = loadActiveUserOrThrow(userId);
+        Dog dog = dogRepository.findById(dogId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "DOG_NOT_FOUND", "강아지 정보를 찾을 수 없습니다."));
+        if (!user.getId().equals(dog.getOwnerUserId())) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "DOG_OWNER_MISMATCH", "해당 강아지에 접근할 수 없습니다.");
+        }
+        if (dog.getStatus() != DogStatus.PENDING) {
+            throw new ApiException(HttpStatus.CONFLICT, "DOG_STATUS_NOT_PENDING", "PENDING 상태의 강아지만 비문 인증을 완료할 수 있습니다.");
+        }
+
+        DogImage profileImage = dogImageRepository.findFirstByDogIdAndImageTypeOrderByUploadedAtDescIdDesc(
+                        dogId,
+                        DogImageType.PROFILE
+                )
+                .orElseThrow(() -> new ApiException(HttpStatus.CONFLICT, "PROFILE_IMAGE_NOT_FOUND", "저장된 프로필 이미지가 없습니다."));
+        FileStorageService.StoredFile profileFile = fileStorageService.readStoredImage(
+                profileImage.getFilePath(),
+                profileImage.getMimeType(),
+                profileImage.getFileSize(),
+                profileImage.getSha256()
+        );
+        List<NoseImageUpload> uploads = readNoseImages(noseImages);
+
+        ProfileConsistencyDecision profileDecision = requestProfileConsistency(dogId, profileFile, uploads);
+        if (!profileDecision.allowed()) {
+            log.info("[DogRegistration] profile nose mismatch: dogId={}, passCount={}, median={}, reason={}",
+                    dogId, profileDecision.passCount(), profileDecision.medianScore(), profileDecision.failureReason());
+            return buildProfileMismatchResponse(dogId, profileDecision);
+        }
+
+        DogRegisterResponse registrationResponse = verifyExistingPendingDogWithNoseImages(dog, user, uploads);
+        return buildProfilePassedResponse(registrationResponse, profileDecision);
+    }
 
     public DogRegisterResponse register(DogRegisterRequest request) {
         RegistrationTiming timing = new RegistrationTiming();
@@ -183,12 +274,303 @@ public class DogRegistrationService {
         }
     }
 
-    private List<NoseImageUpload> readNoseImages(List<MultipartFile> noseImages) {
+    private DogRegisterResponse verifyExistingPendingDogWithNoseImages(
+            Dog dog,
+            User user,
+            List<NoseImageUpload> uploads
+    ) {
+        RegistrationTiming timing = new RegistrationTiming();
+        timing.setDogId(dog.getId());
+        boolean completed = false;
+        try {
+            EmbedClient.BatchEmbedResponse embedResponse = requestBatchEmbeddingOrFail(dog.getId(), uploads);
+            timing.mark("embed_batch");
+
+            validateBatchEmbeddingDimensionOrFail(dog.getId(), embedResponse, uploads.size());
+            timing.mark("validate_embedding_dimension");
+
+            List<List<Double>> referenceVectors = embedResponse.items().stream()
+                    .map(EmbedClient.BatchEmbedItem::vector)
+                    .toList();
+            List<String> referenceFilenames = uploads.stream()
+                    .map(NoseImageUpload::filename)
+                    .toList();
+            timing.mark("build_reference_vectors");
+
+            ReferenceQualityReport qualityReport = checkReferenceQualityOrFail(referenceVectors, referenceFilenames);
+            timing.mark("reference_quality_check");
+
+            List<Double> centroidVector = NoseVectorMath.centroid(referenceVectors);
+            timing.mark("centroid_build");
+
+            DogNoseAggregationResult aggregationResult = searchExistingDogsOrFail(dog.getId(), referenceVectors, centroidVector);
+            timing.mark("qdrant_search");
+
+            DogNoseDecision decision = dogNoseDecisionPolicy.evaluate(
+                    aggregationResult.topCandidate(),
+                    noseRegistrationProperties.getDuplicateThreshold(),
+                    noseRegistrationProperties.getReviewLowerBound()
+            );
+            timing.setDecisionResult(decision.result());
+            timing.mark("decision_policy");
+
+            ScoreBreakdownResponse scoreBreakdown = buildScoreBreakdown(decision, qualityReport);
+            String scoreBreakdownJson = toScoreBreakdownJson(scoreBreakdown, qualityReport);
+            timing.mark("score_breakdown");
+
+            List<FileStorageService.StoredFile> storedFiles = storeNoseImages(dog.getId(), uploads);
+            timing.mark("file_store");
+
+            PendingRegistration pending;
+            try {
+                pending = transactionTemplate.execute(status ->
+                        createVerificationRowsForExistingDog(user.getId(), dog.getId(), storedFiles)
+                );
+                timing.mark("db_create_verification_rows");
+            } catch (RuntimeException e) {
+                fileStorageService.deleteStoredFilesQuietly(storedFiles);
+                throw e;
+            }
+            if (pending == null) {
+                fileStorageService.deleteStoredFilesQuietly(storedFiles);
+                throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "REGISTRATION_INIT_FAILED", "등록 초기화에 실패했습니다.");
+            }
+
+            DogRegisterResponse response = switch (decision.result()) {
+                case DUPLICATE_SUSPECTED, REVIEW_REQUIRED ->
+                        completeRegistrationWithoutQdrant(pending, embedResponse, decision, scoreBreakdown, scoreBreakdownJson, timing);
+                case PASSED ->
+                        completePassedRegistration(pending, embedResponse, referenceVectors, centroidVector, decision, scoreBreakdown, scoreBreakdownJson, timing);
+                default -> throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "REGISTRATION_DECISION_FAILED", "등록 판정 결과가 올바르지 않습니다.");
+            };
+            completed = true;
+            return response;
+        } finally {
+            logRegistrationTiming(timing, completed);
+        }
+    }
+
+    private void createProfileDraftRows(
+            Long userId,
+            String dogId,
+            DogProfileDraftRequest request,
+            LocalDate birthDate,
+            FileStorageService.StoredFile storedProfile
+    ) {
+        Dog dog = new Dog();
+        dog.setId(dogId);
+        dog.setOwnerUserId(userId);
+        dog.setName(request.name().trim());
+        dog.setBreed(request.breed().trim());
+        dog.setGender(DogGender.from(request.gender()));
+        dog.setBirthDate(birthDate);
+        dog.setDescription(blankToNull(request.description()));
+        dog.setStatus(DogStatus.PENDING);
+        dogRepository.save(dog);
+
+        DogImage profileImage = buildDogImage(dogId, DogImageType.PROFILE, storedProfile);
+        dogImageRepository.save(profileImage);
+    }
+
+    private PendingRegistration createVerificationRowsForExistingDog(
+            Long userId,
+            String dogId,
+            List<FileStorageService.StoredFile> storedFiles
+    ) {
+        List<StoredNoseImage> noseImages = new ArrayList<>();
+        for (FileStorageService.StoredFile storedFile : storedFiles) {
+            DogImage noseImage = buildDogImage(dogId, DogImageType.NOSE, storedFile);
+            dogImageRepository.save(noseImage);
+            noseImages.add(new StoredNoseImage(noseImage.getId(), storedFile));
+        }
+
+        StoredNoseImage representative = noseImages.get(0);
+        VerificationLog verificationLog = new VerificationLog();
+        verificationLog.setDogId(dogId);
+        verificationLog.setDogImageId(representative.dogImageId());
+        verificationLog.setRequestedByUserId(userId);
+        verificationLog.setSubmittedImagePath(representative.storedFile().relativePath());
+        verificationLog.setSubmittedImageMimeType(representative.storedFile().mimeType());
+        verificationLog.setSubmittedImageFileSize(representative.storedFile().fileSize());
+        verificationLog.setSubmittedImageSha256(representative.storedFile().sha256());
+        verificationLog.setPurpose(VerificationPurpose.DOG_REGISTRATION);
+        verificationLog.setResult(VerificationResult.PENDING);
+        verificationLogRepository.save(verificationLog);
+
+        return new PendingRegistration(dogId, List.copyOf(noseImages), verificationLog.getId());
+    }
+
+    private ProfileNosePreviewResponse previewProfileNose(FileStorageService.StoredFile storedProfile) {
+        try {
+            Map<String, Object> response = embedClient.extractProfileNose(
+                    storedProfile.bytes(),
+                    storedProfile.originalFilename(),
+                    storedProfile.mimeType()
+            );
+            return new ProfileNosePreviewResponse(
+                    booleanValue(response.get("extracted")),
+                    numberAsDouble(response.get("confidence")),
+                    numberAsInteger(response.get("crop_width")),
+                    numberAsInteger(response.get("crop_height")),
+                    valueOrNull(response.get("failure_reason"))
+            );
+        } catch (EmbedClient.EmbedClientException e) {
+            log.warn("[DogRegistration] profile preview extraction skipped: message={}", e.getMessage());
+            return new ProfileNosePreviewResponse(false, null, null, null, DETECTOR_UNAVAILABLE);
+        }
+    }
+
+    private ProfileConsistencyDecision requestProfileConsistency(
+            String dogId,
+            FileStorageService.StoredFile profileFile,
+            List<NoseImageUpload> uploads
+    ) {
+        List<EmbedClient.BatchImageInput> noseInputs = uploads.stream()
+                .map(upload -> new EmbedClient.BatchImageInput(upload.bytes(), upload.filename(), upload.contentType()))
+                .toList();
+
+        EmbedClient.ProfileNoseMatchBatchResponse response;
+        try {
+            response = embedClient.profileNoseMatchBatch(
+                    profileFile.bytes(),
+                    profileFile.originalFilename(),
+                    profileFile.mimeType(),
+                    noseInputs
+            );
+        } catch (EmbedClient.EmbedClientException e) {
+            log.warn("[DogRegistration] profile nose match batch 실패: dogId={}, upstreamStatus={}, message={}",
+                    dogId, e.getUpstreamStatus(), e.getMessage());
+            throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "PROFILE_MATCH_SERVICE_UNAVAILABLE", "프로필-비문 일치 검증 서비스를 사용할 수 없습니다.");
+        }
+
+        return evaluateProfileConsistency(response);
+    }
+
+    private ProfileConsistencyDecision evaluateProfileConsistency(EmbedClient.ProfileNoseMatchBatchResponse response) {
+        double threshold = profileNoseMatchProperties.getThreshold();
+        int minPassCount = profileNoseMatchProperties.getMinPassCount();
+        String aggregate = normalizedProfileAggregate();
+
+        List<ProfileMatchScoreResponse> scores = new ArrayList<>();
+        for (int i = 0; i < response.scores().size(); i++) {
+            EmbedClient.ProfileNoseMatchBatchScore score = response.scores().get(i);
+            Double value = score.similarityScore();
+            scores.add(new ProfileMatchScoreResponse(
+                    score.index() <= 0 ? i + 1 : score.index(),
+                    value,
+                    value != null && value >= threshold
+            ));
+        }
+
+        int passCount = (int) scores.stream().filter(ProfileMatchScoreResponse::passed).count();
+        Double medianScore = median(scores.stream()
+                .map(ProfileMatchScoreResponse::score)
+                .filter(value -> value != null)
+                .toList());
+
+        String failureReason = valueOrNull(response.failureReason());
+        int expectedCount = noseRegistrationProperties.getReferenceMaxCount();
+        boolean scoreCountValid = scores.size() == expectedCount;
+        boolean allowed = response.profileNoseExtracted()
+                && scoreCountValid
+                && failureReason == null
+                && medianScore != null
+                && passCount >= minPassCount
+                && medianScore >= threshold;
+        if (!allowed && failureReason == null) {
+            failureReason = scoreCountValid ? PROFILE_NOSE_MISMATCH : "PROFILE_MATCH_SCORE_COUNT_INVALID";
+        }
+
+        return new ProfileConsistencyDecision(
+                allowed,
+                threshold,
+                minPassCount,
+                passCount,
+                medianScore,
+                aggregate,
+                List.copyOf(scores),
+                false,
+                response.model(),
+                response.dimension(),
+                failureReason
+        );
+    }
+
+    private DogNoseVerificationResponse buildProfileMismatchResponse(
+            String dogId,
+            ProfileConsistencyDecision profileDecision
+    ) {
+        return new DogNoseVerificationResponse(
+                dogId,
+                false,
+                "FAILED",
+                profileDecision.threshold(),
+                profileDecision.minPassCount(),
+                profileDecision.passCount(),
+                profileDecision.medianScore(),
+                profileDecision.aggregate(),
+                profileDecision.scores(),
+                profileDecision.thresholdCalibrated(),
+                false,
+                DogStatus.PENDING.name(),
+                "PENDING",
+                "PENDING",
+                null,
+                profileDecision.model(),
+                profileDecision.dimension(),
+                null,
+                null,
+                null,
+                null,
+                null,
+                List.of(),
+                profileDecision.failureReason(),
+                "프로필 사진 속 강아지와 비문 이미지가 충분히 일치하지 않아 인증을 완료할 수 없습니다."
+        );
+    }
+
+    private DogNoseVerificationResponse buildProfilePassedResponse(
+            DogRegisterResponse registrationResponse,
+            ProfileConsistencyDecision profileDecision
+    ) {
+        String message = registrationResponse.registrationAllowed()
+                ? "프로필 사진과 비문 이미지가 같은 강아지로 판단되어 등록이 완료되었습니다."
+                : registrationResponse.message();
+        return new DogNoseVerificationResponse(
+                registrationResponse.dogId(),
+                true,
+                "PASSED",
+                profileDecision.threshold(),
+                profileDecision.minPassCount(),
+                profileDecision.passCount(),
+                profileDecision.medianScore(),
+                profileDecision.aggregate(),
+                profileDecision.scores(),
+                profileDecision.thresholdCalibrated(),
+                registrationResponse.registrationAllowed(),
+                registrationResponse.status(),
+                registrationResponse.verificationStatus(),
+                registrationResponse.embeddingStatus(),
+                registrationResponse.qdrantPointId(),
+                registrationResponse.model(),
+                registrationResponse.dimension(),
+                registrationResponse.maxSimilarityScore(),
+                registrationResponse.topMatch(),
+                registrationResponse.embeddingMode(),
+                registrationResponse.referenceCount(),
+                registrationResponse.scoreBreakdown(),
+                registrationResponse.noseImageUrls(),
+                null,
+                message
+        );
+    }
+
+    private List<NoseImageUpload> readNoseImages(List<? extends MultipartFile> noseImages) {
         if (noseImages == null || noseImages.stream().noneMatch(file -> file != null && !file.isEmpty())) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "NOSE_IMAGES_REQUIRED", "nose_images는 필수입니다.");
         }
 
-        List<MultipartFile> presentImages = noseImages.stream()
+        List<? extends MultipartFile> presentImages = noseImages.stream()
                 .filter(file -> file != null && !file.isEmpty())
                 .toList();
 
@@ -884,6 +1266,55 @@ public class DogRegistrationService {
         return value.trim();
     }
 
+    private User loadActiveUserOrThrow(Long userId) {
+        if (userId == null) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "USER_ID_REQUIRED", "user_id는 필수입니다.");
+        }
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "USER_NOT_FOUND", "존재하지 않는 user_id 입니다."));
+        if (!user.isActive()) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "USER_INACTIVE", "비활성화된 사용자입니다.");
+        }
+        return user;
+    }
+
+    private String normalizedProfileAggregate() {
+        String aggregate = profileNoseMatchProperties.getAggregate();
+        if (aggregate == null || aggregate.isBlank()) {
+            return MEDIAN_AGGREGATE;
+        }
+        return MEDIAN_AGGREGATE.equalsIgnoreCase(aggregate.trim()) ? MEDIAN_AGGREGATE : MEDIAN_AGGREGATE;
+    }
+
+    private Double median(List<Double> values) {
+        if (values == null || values.isEmpty()) {
+            return null;
+        }
+        List<Double> sorted = values.stream().sorted().toList();
+        int size = sorted.size();
+        int middle = size / 2;
+        if (size % 2 == 1) {
+            return sorted.get(middle);
+        }
+        return (sorted.get(middle - 1) + sorted.get(middle)) / 2.0;
+    }
+
+    private static String valueOrNull(Object value) {
+        return value == null ? null : String.valueOf(value);
+    }
+
+    private static Double numberAsDouble(Object value) {
+        return value instanceof Number number ? number.doubleValue() : null;
+    }
+
+    private static Integer numberAsInteger(Object value) {
+        return value instanceof Number number ? number.intValue() : null;
+    }
+
+    private static boolean booleanValue(Object value) {
+        return value instanceof Boolean bool && bool;
+    }
+
     private String filenameOrDefault(String filename, int referenceIndex) {
         return filename == null || filename.isBlank() ? "nose_image_%d.jpg".formatted(referenceIndex) : filename;
     }
@@ -980,6 +1411,21 @@ public class DogRegistrationService {
             DogNoseEmbeddingKind embeddingKind,
             Long dogImageId,
             Integer referenceIndex
+    ) {
+    }
+
+    private record ProfileConsistencyDecision(
+            boolean allowed,
+            double threshold,
+            int minPassCount,
+            int passCount,
+            Double medianScore,
+            String aggregate,
+            List<ProfileMatchScoreResponse> scores,
+            boolean thresholdCalibrated,
+            String model,
+            Integer dimension,
+            String failureReason
     ) {
     }
 }

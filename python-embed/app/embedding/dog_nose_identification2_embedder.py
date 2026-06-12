@@ -249,7 +249,7 @@ class DogNoseIdentification2Embedder(BaseEmbedder):
             def forward(self, x):
                 p = self.p.clamp(min=self.eps)
                 x = x.clamp(min=self.eps).pow(p)
-                x = F.avg_pool2d(x, kernel_size=(x.size(-2), x.size(-1)))
+                x = F.adaptive_avg_pool2d(x, output_size=(1, 1))
                 return x.pow(1.0 / p).flatten(1)
 
         class BNNeckHead(nn.Module):

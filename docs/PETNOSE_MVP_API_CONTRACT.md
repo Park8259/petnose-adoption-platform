@@ -44,7 +44,7 @@ Base URL: `http://<host>/api`
 | 2 | `POST /api/auth/login` | 구현됨 | Bearer access token과 current user payload를 받는다. |
 | 3 | `GET /api/users/me` | 구현됨 | profile readiness field를 읽는다. |
 | 4 | `PATCH /api/users/me/profile` | 구현됨 | 누락된 `display_name`과 선택적 phone/region을 채운다. |
-| 5 | `POST /api/dogs/register` | 구현됨 | dog identity 등록, 비문 embedding, Qdrant duplicate search, Qdrant upsert의 유일한 진입점이다. |
+| 5 | `POST /api/dogs/profile-draft` -> `POST /api/dogs/{dog_id}/nose-verification` | 구현됨 | 프로필/기본정보를 먼저 PENDING dog로 저장한 뒤 비문 5장으로 profile consistency와 기존 중복탐지를 완료한다. |
 | 6 | `registration_allowed=false` | 구현됨 | duplicate suspected 화면으로 분기하고 post creation을 막는다. Qdrant upsert는 수행하지 않는다. |
 | 7 | `registration_allowed=true` | 구현됨 | response `dog_id`를 분양글 작성 form state에 저장한다. dog nose v2의 `qdrant_point_id` response field는 `null`이며 Qdrant point ids는 `dog_nose_references`가 추적한다. |
 | 8 | `POST /api/adoption-posts` | 구현됨 | 이미 등록된 `dog_id`, title, content, status, required `profile_image`로 `DRAFT` 또는 `OPEN` post를 만든다. |
@@ -111,7 +111,7 @@ Final implemented app-requested endpoints:
 - Auth/User: `POST /api/auth/register` with `application/json`, `POST /api/auth/register` with `multipart/form-data`, optional multipart `profile_image`, `POST /api/auth/login`, `GET /api/users/me`, `PATCH /api/users/me/profile`, `PATCH /api/users/me/profile-image`, `PATCH /api/users/me/password`, `POST /api/auth/password-reset/request`, `POST /api/auth/password-reset/confirm`.
 - Firebase Chat: `POST /api/firebase/custom-token`, `PUT /api/users/me/fcm-token`, `POST /api/chat/rooms`, `GET /api/chat/rooms`, `POST /api/chat/rooms/{room_id}/messages`, `PATCH /api/chat/rooms/{room_id}/read`. `FIREBASE_DISABLED` is a normal disabled-runtime response after Spring authentication succeeds.
 - Adoption Posts: `POST /api/adoption-posts`, `GET /api/adoption-posts`, `GET /api/adoption-posts/{post_id}`, `GET /api/adoption-posts/me`, `PATCH /api/adoption-posts/{post_id}/status`, `PUT /api/adoption-posts/{post_id}/like`, `DELETE /api/adoption-posts/{post_id}/like`, `GET /api/adoption-posts/liked/me`.
-- Dogs: `POST /api/dogs/register`, `GET /api/dogs/me`, `GET /api/dogs/{dog_id}`, `GET /api/dogs/adopted/me`.
+- Dogs: `POST /api/dogs/profile-draft`, `POST /api/dogs/{dog_id}/nose-verification`, backward-compatible `POST /api/dogs/register`, `GET /api/dogs/me`, `GET /api/dogs/{dog_id}`, `GET /api/dogs/adopted/me`.
 - Handover: `POST /api/adoption-posts/{post_id}/handover-verifications` remains the existing handover-time verification API. It is not a post-adoption periodic verification API.
 
 ### A. 회원가입 multipart
@@ -877,6 +877,129 @@ Error codes:
 
 ## Dog Registration
 
+### Profile-first two-step Dog 등록
+
+This is the active profile-first flow for product demos. It keeps Spring Boot as the orchestration layer. Python Embed only receives image bytes and returns crop/embedding/similarity JSON; it never writes DB rows and never calls Qdrant.
+
+Step 1 creates a draft dog:
+
+```http
+POST /api/dogs/profile-draft
+Content-Type: multipart/form-data
+Authorization: Bearer <JWT>
+```
+
+Dev fallback: if `Authorization` is omitted, `user_id` may be supplied in multipart form data. If both are present, the Bearer principal wins.
+
+Fields:
+
+- `user_id`: long, optional when Bearer token is present
+- `name`: string, required
+- `breed`: string, required
+- `gender`: required, `MALE`, `FEMALE`, or `UNKNOWN`
+- `birth_date`: `YYYY-MM-DD`, optional
+- `description`: string, optional
+- `profile_image`: file, required
+
+Behavior:
+
+- Creates `dogs.status=PENDING`.
+- Stores `profile_image` as exactly one `dog_images.image_type=PROFILE` row.
+- Does not store `NOSE` images.
+- Does not create `verification_logs`.
+- Does not call Qdrant search or upsert.
+- Optionally calls Python `/internal/nose/extract` for a non-blocking preview. If the detector is unavailable, `profile_nose_preview.failure_reason=DETECTOR_UNAVAILABLE`; draft creation still succeeds.
+
+Response `201`:
+
+```json
+{
+  "dog_id": "uuid",
+  "status": "PENDING",
+  "profile_image_url": "/files/dogs/{dog_id}/profile/profile.jpg",
+  "profile_nose_preview": {
+    "extracted": true,
+    "confidence": 0.95484,
+    "crop_width": 224,
+    "crop_height": 224,
+    "failure_reason": null
+  },
+  "message": "강아지 프로필 정보가 임시 등록되었습니다. 비문 5장을 업로드해 인증을 완료하세요."
+}
+```
+
+Step 2 verifies the pending dog:
+
+```http
+POST /api/dogs/{dog_id}/nose-verification
+Content-Type: multipart/form-data
+Authorization: Bearer <JWT>
+```
+
+Fields:
+
+- `user_id`: long, optional when Bearer token is present
+- `nose_image`: file repeated exactly `5`, canonical
+- `nose_images`: file repeated exactly `5`, legacy alias
+
+Profile consistency policy:
+
+- `PROFILE_NOSE_MATCH_THRESHOLD=0.65`
+- `PROFILE_NOSE_MATCH_MIN_PASS_COUNT=4`
+- `PROFILE_NOSE_MATCH_AGGREGATE=median`
+- Pass if at least 4 of 5 profile-vs-nose scores are `>= 0.65` and the median score is `>= 0.65`.
+- `threshold_calibrated=false`; this is a dev/demo threshold and must be calibrated with positive/negative dog-pair data before production identity decisions.
+- This threshold is separate from the Qdrant duplicate threshold. The existing duplicate threshold is unchanged.
+
+Pass behavior:
+
+- Reads the stored `PROFILE` image.
+- Calls Python `/internal/nose/profile-match-batch` once for profile-derived nose crop vs 5 close-up nose images.
+- Only after profile consistency passes, runs the existing 5-image registration duplicate flow for the existing PENDING dog.
+- Stores `NOSE` images after profile consistency passes.
+- Calls Qdrant search after profile consistency passes.
+- Upserts Qdrant `REFERENCE`/`CENTROID` points only when the existing duplicate decision allows registration.
+- Updates `dogs.status` to `REGISTERED` or `DUPLICATE_SUSPECTED` according to the existing duplicate decision.
+
+Profile mismatch behavior:
+
+- Returns HTTP `200` with `registration_allowed=false`.
+- Keeps `dogs.status=PENDING`.
+- Does not store `NOSE` images.
+- Does not create `verification_logs`.
+- Does not call Qdrant search or upsert.
+- Allows the user to upload another set of 5 nose images later.
+
+Profile mismatch response shape:
+
+```json
+{
+  "dog_id": "uuid",
+  "profile_match_allowed": false,
+  "profile_match_status": "FAILED",
+  "profile_match_threshold": 0.65,
+  "profile_match_min_pass_count": 4,
+  "profile_match_pass_count": 2,
+  "profile_match_median_score": 0.52,
+  "profile_match_aggregate": "median",
+  "profile_match_scores": [
+    {"index": 1, "score": 0.51, "passed": false}
+  ],
+  "threshold_calibrated": false,
+  "registration_allowed": false,
+  "status": "PENDING",
+  "verification_status": "PENDING",
+  "embedding_status": "PENDING",
+  "qdrant_point_id": null,
+  "model": "dog-nose-identification2:s101_224",
+  "dimension": 2048,
+  "failure_reason": "PROFILE_NOSE_MISMATCH",
+  "message": "프로필 사진 속 강아지와 비문 이미지가 충분히 일치하지 않아 인증을 완료할 수 없습니다."
+}
+```
+
+The existing `POST /api/dogs/register` remains backward compatible. It still accepts repeated `nose_image` as canonical and `nose_images` as legacy alias, and its duplicate detection/Qdrant behavior is unchanged.
+
 ### Nose Images로 Dog 등록
 
 ```http
@@ -978,7 +1101,7 @@ Normal registration fields:
 App integration notes:
 
 - Flutter adoption-post creation uses the returned `dog_id` when `registration_allowed=true`.
-- Dog registration does not accept or store `profile_image`; dog profile image is uploaded later through `POST /api/adoption-posts` and stored as `dog_images.image_type=PROFILE`.
+- Backward-compatible `POST /api/dogs/register` does not accept or store `profile_image`; the profile-first flow stores it through `POST /api/dogs/profile-draft`.
 - Clients should use `dog_id`, `registration_allowed`, `status`, `verification_status`, `embedding_status`, `top_match`, and `message` for the active registration UI flow.
 - Current response also includes diagnostic fields such as `model`, `dimension`, `max_similarity_score`, `score_breakdown`, and owner-scoped `nose_image_url`/`nose_image_urls`; app screens should not require these for normal flow rendering.
 

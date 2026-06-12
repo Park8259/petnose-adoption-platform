@@ -45,6 +45,9 @@ param(
     [ValidateRange(1, 100)]
     [int]$Runs = 3,
 
+    [ValidateRange(1, 100000)]
+    [int]$ExpectedDimension = 2048,
+
     [switch]$RegisterUserPerRun,
 
     [string]$EmailPrefix = "latency",
@@ -84,6 +87,8 @@ Common:
 Outputs:
   <OutputDir>/<timestamp>/latency.csv
   <OutputDir>/<timestamp>/summary.json
+  summary.json includes registration model/dimension, error-rate, and
+  ExpectedDimension checks for dog_registration rows.
 
 Notes:
   - Calls the external API only.
@@ -357,6 +362,7 @@ function Convert-ResultToRow {
 
     $errorCode = Get-JsonProperty -Object $json -Name "error_code"
     if ($null -eq $errorCode) { $errorCode = Get-JsonProperty -Object $json -Name "error" }
+    $dimension = To-IntOrNull (Get-JsonProperty -Object $json -Name "dimension")
 
     return [pscustomobject]@{
         timestamp = (Get-Date).ToString("o")
@@ -381,6 +387,11 @@ function Convert-ResultToRow {
         registration_allowed = Get-JsonProperty -Object $json -Name "registration_allowed"
         verification_status = Get-JsonProperty -Object $json -Name "verification_status"
         embedding_status = Get-JsonProperty -Object $json -Name "embedding_status"
+        embedding_mode = Get-JsonProperty -Object $json -Name "embedding_mode"
+        reference_count = To-IntOrNull (Get-JsonProperty -Object $json -Name "reference_count")
+        model = Get-JsonProperty -Object $json -Name "model"
+        dimension = $dimension
+        dimension_correct = if ($null -eq $dimension) { $null } else { $dimension -eq $ExpectedDimension }
         max_similarity_score = Get-JsonProperty -Object $json -Name "max_similarity_score"
         error_code = $errorCode
         message = Get-JsonProperty -Object $json -Name "message"
@@ -403,20 +414,55 @@ function Get-Percentile {
 
 function Get-Stats {
     param([object[]]$Rows)
-    $values = @($Rows | ForEach-Object { $_.curl_total_ms } | Where-Object { $null -ne $_ } | ForEach-Object { [double]$_ })
+    $rowList = @($Rows)
+    $totalCount = $rowList.Count
+    $successCount = @($rowList | Where-Object {
+        $_.curl_exit_code -eq 0 -and $null -ne $_.http_status -and $_.http_status -ge 200 -and $_.http_status -lt 300
+    }).Count
+    $errorCount = [math]::Max(0, $totalCount - $successCount)
+    $errorRate = if ($totalCount -gt 0) { [math]::Round($errorCount / $totalCount, 4) } else { $null }
+
+    $values = @($rowList | ForEach-Object { $_.curl_total_ms } | Where-Object { $null -ne $_ } | ForEach-Object { [double]$_ })
     if ($values.Count -eq 0) {
-        return [ordered]@{ count = 0 }
+        return [ordered]@{
+            count = 0
+            total_count = $totalCount
+            success_count = $successCount
+            error_count = $errorCount
+            error_rate = $errorRate
+        }
     }
     $sum = 0.0
     foreach ($value in $values) { $sum += $value }
     return [ordered]@{
         count = $values.Count
+        total_count = $totalCount
+        success_count = $successCount
+        error_count = $errorCount
+        error_rate = $errorRate
         mean_ms = [math]::Round($sum / $values.Count, 2)
         p50_ms = Get-Percentile -Values $values -Percentile 50
         p95_ms = Get-Percentile -Values $values -Percentile 95
         min_ms = [math]::Round(($values | Measure-Object -Minimum).Minimum, 2)
         max_ms = [math]::Round(($values | Measure-Object -Maximum).Maximum, 2)
     }
+}
+
+function Get-ValueCounts {
+    param(
+        [object[]]$Rows,
+        [Parameter(Mandatory = $true)][string]$Property
+    )
+
+    $counts = [ordered]@{}
+    foreach ($group in (@($Rows) | Group-Object -Property $Property)) {
+        $name = [string]$group.Name
+        if ([string]::IsNullOrWhiteSpace($name)) {
+            $name = "<null>"
+        }
+        $counts[$name] = $group.Count
+    }
+    return $counts
 }
 
 if (-not (Get-Command curl.exe -ErrorAction SilentlyContinue)) {
@@ -585,16 +631,37 @@ foreach ($image in $imageEvidence) {
 }
 
 $dogRows = @($rows | Where-Object { $_.label -eq "dog_registration" })
+$dogRowsWithDimension = @($dogRows | Where-Object { $null -ne $_.dimension })
+$dogDimensionMismatches = @($dogRowsWithDimension | Where-Object { $_.dimension -ne $ExpectedDimension })
 $summary = [ordered]@{
     generated_at = (Get-Date).ToString("o")
     root_url = $RootUrl
     base_url = $BaseUrl
     runs = $Runs
+    expected_dimension = $ExpectedDimension
     register_user_per_run = [bool]$RegisterUserPerRun
     output_dir = (Join-Path $OutputDir $runStamp)
     images = $imageEvidence
     total_image_bytes_per_registration = $totalImageBytes
     stats_by_label = $summaryByLabel
+    dog_registration_status_counts = Get-ValueCounts -Rows $dogRows -Property "dog_status"
+    dog_registration_embedding_status_counts = Get-ValueCounts -Rows $dogRows -Property "embedding_status"
+    dog_registration_dimension_counts = Get-ValueCounts -Rows $dogRows -Property "dimension"
+    dog_registration_dimension_check = [ordered]@{
+        expected_dimension = $ExpectedDimension
+        checked_count = $dogRowsWithDimension.Count
+        mismatch_count = $dogDimensionMismatches.Count
+        passed = ($dogRows.Count -gt 0 -and $dogRowsWithDimension.Count -eq $dogRows.Count -and $dogDimensionMismatches.Count -eq 0)
+        mismatches = @($dogDimensionMismatches | ForEach-Object {
+            [ordered]@{
+                iteration = $_.iteration
+                dog_id = $_.dog_id
+                dimension = $_.dimension
+                http_status = $_.http_status
+                error_code = $_.error_code
+            }
+        })
+    }
     dog_registration_statuses = @($dogRows | ForEach-Object {
         [ordered]@{
             iteration = $_.iteration
@@ -606,6 +673,11 @@ $summary = [ordered]@{
             dog_status = $_.dog_status
             verification_status = $_.verification_status
             embedding_status = $_.embedding_status
+            embedding_mode = $_.embedding_mode
+            reference_count = $_.reference_count
+            model = $_.model
+            dimension = $_.dimension
+            dimension_correct = $_.dimension_correct
             error_code = $_.error_code
             message = $_.message
         }
@@ -630,6 +702,11 @@ Write-Host ""
 Write-Host "[SUMMARY]"
 foreach ($key in $summaryByLabel.Keys) {
     $stats = $summaryByLabel[$key]
-    Write-Host ("  {0}: count={1}, mean={2}ms, p50={3}ms, p95={4}ms, min={5}ms, max={6}ms" -f `
-        $key, $stats.count, $stats.mean_ms, $stats.p50_ms, $stats.p95_ms, $stats.min_ms, $stats.max_ms)
+    Write-Host ("  {0}: count={1}, mean={2}ms, p50={3}ms, p95={4}ms, min={5}ms, max={6}ms, errors={7}, error_rate={8}" -f `
+        $key, $stats.count, $stats.mean_ms, $stats.p50_ms, $stats.p95_ms, $stats.min_ms, $stats.max_ms, $stats.error_count, $stats.error_rate)
 }
+Write-Host ("  dog_registration dimension: expected={0}, checked={1}, mismatches={2}, passed={3}" -f `
+    $summary.dog_registration_dimension_check.expected_dimension,
+    $summary.dog_registration_dimension_check.checked_count,
+    $summary.dog_registration_dimension_check.mismatch_count,
+    $summary.dog_registration_dimension_check.passed)

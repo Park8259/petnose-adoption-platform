@@ -15,20 +15,53 @@ from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 
 from .embedding import create_embedder_from_env
 from .embedding.base import BaseEmbedder, EmbedInput, EmbedResult, EmbedderError, EmbedderNotReadyError
+from .nose_extraction import (
+    DogNoseExtractor,
+    INTERNAL_ERROR,
+    INVALID_IMAGE,
+    NoseExtractionResult,
+    cosine_similarity,
+)
+
+
+def _parse_float_env(name: str, default: float) -> float:
+    value = os.getenv(name)
+    try:
+        return float(value) if value is not None and value.strip() else default
+    except ValueError:
+        return default
+
+
+def _parse_int_env(name: str, default: int) -> int:
+    value = os.getenv(name)
+    try:
+        return int(value) if value is not None and value.strip() else default
+    except ValueError:
+        return default
+
 
 MAX_IMAGE_SIZE: int = int(os.getenv("MAX_IMAGE_BYTES", str(20 * 1024 * 1024)))
 MAX_BATCH_IMAGES: int = int(os.getenv("MAX_BATCH_IMAGES", os.getenv("MAX_EMBED_BATCH_IMAGES", "5")))
 MAX_BATCH_TOTAL_BYTES: int = int(os.getenv("MAX_BATCH_TOTAL_BYTES", str(80 * 1024 * 1024)))
 ALLOWED_CONTENT_TYPES = {"image/jpeg", "image/png", "image/jpg"}
+PROFILE_NOSE_MATCH_THRESHOLD: float = _parse_float_env("PROFILE_NOSE_MATCH_THRESHOLD", 0.65)
+PROFILE_NOSE_MATCH_MIN_PASS_COUNT: int = _parse_int_env("PROFILE_NOSE_MATCH_MIN_PASS_COUNT", 4)
+PROFILE_NOSE_MATCH_AGGREGATE: str = os.getenv("PROFILE_NOSE_MATCH_AGGREGATE", "median").strip().lower() or "median"
+PROFILE_NOSE_MATCH_EXPECTED_COUNT: int = 5
+PROFILE_NOSE_MATCH_EXPECTED_DIMENSION: int = 2048
+NOSE_IMAGES_COUNT_INVALID = "NOSE_IMAGES_COUNT_INVALID"
+EMBEDDING_DIMENSION_MISMATCH = "EMBEDDING_DIMENSION_MISMATCH"
 
 _embedder: BaseEmbedder | None = None
+_nose_extractor: DogNoseExtractor | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _embedder
+    global _embedder, _nose_extractor
     _embedder = create_embedder_from_env()
     loaded = _embedder.load()
+    _nose_extractor = DogNoseExtractor.from_env()
     mode = "MOCK" if _embedder.requested_model_name == "mock-v1" else "REAL"
     print(
         "[EmbedService] start - "
@@ -37,6 +70,11 @@ async def lifespan(app: FastAPI):
     )
     if _embedder.load_error:
         print(f"[EmbedService] load_error={_embedder.load_error}")
+    print(
+        "[EmbedService] nose_extraction - "
+        f"enabled={_nose_extractor.config.enabled}, detector={_nose_extractor.detector_name}, "
+        f"crop_size={_nose_extractor.config.crop_size}"
+    )
     yield
     print("[EmbedService] 종료")
 
@@ -54,6 +92,13 @@ def _require_embedder() -> BaseEmbedder:
             },
         )
     return _embedder
+
+
+def _require_nose_extractor() -> DogNoseExtractor:
+    global _nose_extractor
+    if _nose_extractor is None:
+        _nose_extractor = DogNoseExtractor.from_env()
+    return _nose_extractor
 
 
 async def _read_validated_image(image: UploadFile) -> EmbedInput:
@@ -87,6 +132,15 @@ async def _read_validated_image(image: UploadFile) -> EmbedInput:
         )
 
     return EmbedInput(image_bytes=content, content_type=content_type)
+
+
+async def _read_upload_bytes(image: UploadFile) -> bytes:
+    content = await image.read()
+    if not content:
+        raise ValueError("empty image")
+    if len(content) > MAX_IMAGE_SIZE:
+        raise ValueError("image too large")
+    return content
 
 
 def _ensure_model_loaded(embedder: BaseEmbedder) -> None:
@@ -150,6 +204,78 @@ def _embed_exception_to_http(exc: Exception) -> HTTPException:
     )
 
 
+def _profile_match_failure(
+    *,
+    threshold: float,
+    failure_reason: str,
+    extraction: NoseExtractionResult | None = None,
+    model: str | None = None,
+    dimension: int | None = None,
+) -> dict[str, object]:
+    return {
+        "matched": False,
+        "similarity_score": None,
+        "threshold": threshold,
+        "threshold_calibrated": False,
+        "profile_nose_extracted": extraction.extracted if extraction else False,
+        "profile_crop_width": extraction.crop_width if extraction else None,
+        "profile_crop_height": extraction.crop_height if extraction else None,
+        "profile_confidence": extraction.confidence if extraction else None,
+        "model": model,
+        "dimension": dimension,
+        "failure_reason": failure_reason,
+    }
+
+
+def _profile_match_batch_failure(
+    *,
+    threshold: float,
+    required_pass_count: int,
+    failure_reason: str,
+    extraction: NoseExtractionResult | None = None,
+    model: str | None = None,
+    dimension: int | None = None,
+) -> dict[str, object]:
+    return {
+        "matched": False,
+        "threshold": threshold,
+        "threshold_calibrated": False,
+        "pass_count": 0,
+        "required_pass_count": required_pass_count,
+        "aggregate": _profile_match_aggregate(),
+        "median_score": None,
+        "mean_score": None,
+        "min_score": None,
+        "max_score": None,
+        "profile_nose_extracted": extraction.extracted if extraction else False,
+        "profile_confidence": extraction.confidence if extraction else None,
+        "profile_crop_width": extraction.crop_width if extraction else None,
+        "profile_crop_height": extraction.crop_height if extraction else None,
+        "model": model,
+        "dimension": dimension,
+        "scores": [],
+        "failure_reason": failure_reason,
+    }
+
+
+def _profile_match_aggregate() -> str:
+    return "median" if PROFILE_NOSE_MATCH_AGGREGATE != "median" else PROFILE_NOSE_MATCH_AGGREGATE
+
+
+def _embedding_dimension_valid(embedder: BaseEmbedder, result: EmbedResult) -> bool:
+    if result.dimension <= 0 or len(result.vector) != result.dimension:
+        return False
+    return embedder.vector_dim <= 0 or result.dimension == embedder.vector_dim
+
+
+def _median(values: list[float]) -> float:
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2 == 1:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / 2.0
+
+
 @app.get("/health")
 def health():
     embedder = _require_embedder()
@@ -179,6 +305,253 @@ async def embed(image: UploadFile = File(...)):
         return _embed_payload(result)
     except Exception as exc:
         raise _embed_exception_to_http(exc) from exc
+
+
+@app.post("/internal/nose/extract")
+async def extract_profile_nose(image: UploadFile = File(...)):
+    extractor = _require_nose_extractor()
+
+    try:
+        image_bytes = await _read_upload_bytes(image)
+    except ValueError:
+        return extractor.failure_result(INVALID_IMAGE).to_response()
+
+    result = extractor.extract(image_bytes)
+    return result.to_response()
+
+
+@app.post("/internal/nose/profile-match")
+async def profile_nose_match(
+    profile_image: UploadFile = File(...),
+    nose_image: UploadFile = File(...),
+):
+    extractor = _require_nose_extractor()
+    threshold = PROFILE_NOSE_MATCH_THRESHOLD
+
+    try:
+        profile_bytes = await _read_upload_bytes(profile_image)
+    except ValueError:
+        return _profile_match_failure(threshold=threshold, failure_reason=INVALID_IMAGE)
+
+    extraction = extractor.extract(profile_bytes)
+    if not extraction.extracted or extraction.crop_bytes is None:
+        return _profile_match_failure(
+            threshold=threshold,
+            failure_reason=extraction.failure_reason or INTERNAL_ERROR,
+            extraction=extraction,
+        )
+
+    try:
+        nose_input = await _read_validated_image(nose_image)
+    except HTTPException:
+        return _profile_match_failure(
+            threshold=threshold,
+            failure_reason=INVALID_IMAGE,
+            extraction=extraction,
+        )
+
+    embedder = _require_embedder()
+    if not embedder.model_loaded:
+        return _profile_match_failure(
+            threshold=threshold,
+            failure_reason=INTERNAL_ERROR,
+            extraction=extraction,
+            model=embedder.model_name,
+            dimension=embedder.vector_dim or None,
+        )
+
+    try:
+        profile_result = embedder.embed(extraction.crop_bytes, "image/png")
+        nose_result = embedder.embed(nose_input.image_bytes, nose_input.content_type)
+    except Exception:
+        return _profile_match_failure(
+            threshold=threshold,
+            failure_reason=INTERNAL_ERROR,
+            extraction=extraction,
+            model=embedder.model_name,
+            dimension=embedder.vector_dim or None,
+        )
+
+    if (
+        not _embedding_dimension_valid(embedder, profile_result)
+        or not _embedding_dimension_valid(embedder, nose_result)
+        or profile_result.dimension != nose_result.dimension
+    ):
+        return _profile_match_failure(
+            threshold=threshold,
+            failure_reason=INTERNAL_ERROR,
+            extraction=extraction,
+            model=profile_result.model,
+            dimension=profile_result.dimension,
+        )
+
+    try:
+        similarity = cosine_similarity(profile_result.vector, nose_result.vector)
+    except ValueError:
+        return _profile_match_failure(
+            threshold=threshold,
+            failure_reason=INTERNAL_ERROR,
+            extraction=extraction,
+            model=profile_result.model,
+            dimension=profile_result.dimension,
+        )
+
+    return {
+        "matched": similarity >= threshold,
+        "similarity_score": round(similarity, 6),
+        "threshold": threshold,
+        "threshold_calibrated": False,
+        "profile_nose_extracted": True,
+        "profile_crop_width": extraction.crop_width,
+        "profile_crop_height": extraction.crop_height,
+        "profile_confidence": extraction.confidence,
+        "model": profile_result.model,
+        "dimension": profile_result.dimension,
+        "failure_reason": None,
+    }
+
+
+@app.post("/internal/nose/profile-match-batch")
+async def profile_nose_match_batch(
+    profile_image: UploadFile = File(...),
+    nose_image: list[UploadFile] = File(...),
+):
+    extractor = _require_nose_extractor()
+    threshold = PROFILE_NOSE_MATCH_THRESHOLD
+    required_pass_count = PROFILE_NOSE_MATCH_MIN_PASS_COUNT
+
+    try:
+        profile_bytes = await _read_upload_bytes(profile_image)
+    except ValueError:
+        return _profile_match_batch_failure(
+            threshold=threshold,
+            required_pass_count=required_pass_count,
+            failure_reason=INVALID_IMAGE,
+        )
+
+    extraction = extractor.extract(profile_bytes)
+    if not extraction.extracted or extraction.crop_bytes is None:
+        return _profile_match_batch_failure(
+            threshold=threshold,
+            required_pass_count=required_pass_count,
+            failure_reason=extraction.failure_reason or INTERNAL_ERROR,
+            extraction=extraction,
+        )
+
+    if len(nose_image) != PROFILE_NOSE_MATCH_EXPECTED_COUNT:
+        return _profile_match_batch_failure(
+            threshold=threshold,
+            required_pass_count=required_pass_count,
+            failure_reason=NOSE_IMAGES_COUNT_INVALID,
+            extraction=extraction,
+        )
+
+    try:
+        nose_inputs = [await _read_validated_image(image) for image in nose_image]
+    except HTTPException:
+        return _profile_match_batch_failure(
+            threshold=threshold,
+            required_pass_count=required_pass_count,
+            failure_reason=INVALID_IMAGE,
+            extraction=extraction,
+        )
+
+    embedder = _require_embedder()
+    if not embedder.model_loaded:
+        return _profile_match_batch_failure(
+            threshold=threshold,
+            required_pass_count=required_pass_count,
+            failure_reason=INTERNAL_ERROR,
+            extraction=extraction,
+            model=embedder.model_name,
+            dimension=embedder.vector_dim or None,
+        )
+
+    try:
+        profile_result = embedder.embed(extraction.crop_bytes, "image/png")
+        nose_results = embedder.embed_batch(nose_inputs)
+    except Exception:
+        return _profile_match_batch_failure(
+            threshold=threshold,
+            required_pass_count=required_pass_count,
+            failure_reason=INTERNAL_ERROR,
+            extraction=extraction,
+            model=embedder.model_name,
+            dimension=embedder.vector_dim or None,
+        )
+
+    if len(nose_results) != len(nose_inputs):
+        return _profile_match_batch_failure(
+            threshold=threshold,
+            required_pass_count=required_pass_count,
+            failure_reason=INTERNAL_ERROR,
+            extraction=extraction,
+            model=profile_result.model,
+            dimension=profile_result.dimension,
+        )
+
+    if (
+        not _embedding_dimension_valid(embedder, profile_result)
+        or profile_result.dimension != PROFILE_NOSE_MATCH_EXPECTED_DIMENSION
+        or any(not _embedding_dimension_valid(embedder, result) for result in nose_results)
+        or any(result.dimension != profile_result.dimension for result in nose_results)
+    ):
+        return _profile_match_batch_failure(
+            threshold=threshold,
+            required_pass_count=required_pass_count,
+            failure_reason=EMBEDDING_DIMENSION_MISMATCH,
+            extraction=extraction,
+            model=profile_result.model,
+            dimension=profile_result.dimension,
+        )
+
+    scores: list[dict[str, object]] = []
+    similarity_values: list[float] = []
+    try:
+        for index, nose_result in enumerate(nose_results, start=1):
+            similarity = round(cosine_similarity(profile_result.vector, nose_result.vector), 6)
+            similarity_values.append(similarity)
+            scores.append(
+                {
+                    "index": index,
+                    "similarity_score": similarity,
+                    "passed": similarity >= threshold,
+                }
+            )
+    except ValueError:
+        return _profile_match_batch_failure(
+            threshold=threshold,
+            required_pass_count=required_pass_count,
+            failure_reason=INTERNAL_ERROR,
+            extraction=extraction,
+            model=profile_result.model,
+            dimension=profile_result.dimension,
+        )
+
+    pass_count = sum(1 for score in similarity_values if score >= threshold)
+    median_score = round(_median(similarity_values), 6)
+    matched = pass_count >= required_pass_count and median_score >= threshold
+
+    return {
+        "matched": matched,
+        "threshold": threshold,
+        "threshold_calibrated": False,
+        "pass_count": pass_count,
+        "required_pass_count": required_pass_count,
+        "aggregate": _profile_match_aggregate(),
+        "median_score": median_score,
+        "mean_score": round(sum(similarity_values) / len(similarity_values), 6),
+        "min_score": min(similarity_values),
+        "max_score": max(similarity_values),
+        "profile_nose_extracted": True,
+        "profile_confidence": extraction.confidence,
+        "profile_crop_width": extraction.crop_width,
+        "profile_crop_height": extraction.crop_height,
+        "model": profile_result.model,
+        "dimension": profile_result.dimension,
+        "scores": scores,
+        "failure_reason": None,
+    }
 
 
 @app.post("/embed-batch")
