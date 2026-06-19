@@ -40,6 +40,7 @@
 | 앱 요청 후속 API 계획 | `reference/APP_REQUESTED_API_PR_PLAN.md` | 앱팀 추가 요청사항의 PR 분할/범위 확인 |
 | 앱 요청 API 최종 체크리스트 | `reference/APP_API_FINAL_HANDOFF_CHECKLIST.md` | 앱팀 endpoint/header/field 연결 전 최종 확인 |
 | 실제 runtime E2E | `ops-evidence/dog-nose-v2-smoke-plan.md`, `reference/MVP_BACKEND_FLOW_HANDOFF.md` | dog nose v2 real-model Docker flow 검증 |
+| 모델 파이프라인 분석/성능 증거 | `ops-evidence/model-pipeline-analysis/README.md` | multi-reference matching, local batch/ONNX/tuning, AWS profiling 증거 확인 |
 | 로컬 정리 | `reference/LOCAL_CLEANUP_GUIDE.md` | ignored/generated 파일 수동 정리 |
 | 운영 증거 | `ops-evidence/dev-cd-validation-log.md` | 배포/운영 검증 이력 확인 |
 | 앱 요청 API 회귀 증거 | `ops-evidence/app-requested-api-regression-log.md` | PR 8 regression/evidence 결과 확인 |
