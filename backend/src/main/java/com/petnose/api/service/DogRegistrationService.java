@@ -107,7 +107,7 @@ public class DogRegistrationService {
     @Value("${petnose.profile-first.enabled:false}")
     private boolean profileFirstEnabled;
 
-    @Value("${petnose.registration-timing-log-enabled:true}")
+    @Value("${petnose.registration-timing-log-enabled:false}")
     private boolean registrationTimingLogEnabled;
 
     public DogProfileDraftResponse createProfileDraft(DogProfileDraftRequest request) {
