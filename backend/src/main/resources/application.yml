@@ -94,6 +94,8 @@ nose:
   preprocess-version: ${NOSE_PREPROCESS_VERSION:rgb_resize224_bicubic_imagenet_l2_v1}
 
 petnose:
+  profile-first:
+    enabled: ${PETNOSE_PROFILE_FIRST_ENABLED:false}
   registration-timing-log-enabled: ${PETNOSE_REGISTRATION_TIMING_LOG_ENABLED:true}
   profile-nose-match:
     threshold: ${PROFILE_NOSE_MATCH_THRESHOLD:0.65}
