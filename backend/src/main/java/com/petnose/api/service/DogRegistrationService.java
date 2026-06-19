@@ -74,6 +74,7 @@ public class DogRegistrationService {
     private static final String EMBEDDING_MODE_MULTI_REFERENCE = "MULTI_REFERENCE";
     private static final String SCORE_POLICY = DogNoseScoreBreakdown.MAX_REFERENCE_OR_CENTROID_POLICY;
     private static final String PROFILE_NOSE_MISMATCH = "PROFILE_NOSE_MISMATCH";
+    private static final String PROFILE_FIRST_DISABLED = "PROFILE_FIRST_DISABLED";
     private static final String DETECTOR_UNAVAILABLE = "DETECTOR_UNAVAILABLE";
     private static final String MEDIAN_AGGREGATE = "median";
 
@@ -103,10 +104,14 @@ public class DogRegistrationService {
     @Value("${qdrant.search-score-threshold:0.55}")
     private double qdrantSearchScoreThreshold;
 
-    @Value("${petnose.registration-timing-log-enabled:true}")
+    @Value("${petnose.profile-first.enabled:false}")
+    private boolean profileFirstEnabled;
+
+    @Value("${petnose.registration-timing-log-enabled:false}")
     private boolean registrationTimingLogEnabled;
 
     public DogProfileDraftResponse createProfileDraft(DogProfileDraftRequest request) {
+        requireProfileFirstEnabled();
         validateRequiredFields(new DogRegisterRequest(
                 request.userId(),
                 request.name(),
@@ -153,6 +158,7 @@ public class DogRegistrationService {
             Long userId,
             List<? extends MultipartFile> noseImages
     ) {
+        requireProfileFirstEnabled();
         User user = loadActiveUserOrThrow(userId);
         Dog dog = dogRepository.findById(dogId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "DOG_NOT_FOUND", "강아지 정보를 찾을 수 없습니다."));
@@ -185,6 +191,16 @@ public class DogRegistrationService {
 
         DogRegisterResponse registrationResponse = verifyExistingPendingDogWithNoseImages(dog, user, uploads);
         return buildProfilePassedResponse(registrationResponse, profileDecision);
+    }
+
+    private void requireProfileFirstEnabled() {
+        if (!profileFirstEnabled) {
+            throw new ApiException(
+                    HttpStatus.NOT_FOUND,
+                    PROFILE_FIRST_DISABLED,
+                    "프로필 우선 강아지 인증 기능은 현재 비활성화되어 있습니다."
+            );
+        }
     }
 
     public DogRegisterResponse register(DogRegisterRequest request) {

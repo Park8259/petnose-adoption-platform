@@ -881,6 +881,8 @@ Error codes:
 
 This is the active profile-first flow for product demos. It keeps Spring Boot as the orchestration layer. Python Embed only receives image bytes and returns crop/embedding/similarity JSON; it never writes DB rows and never calls Qdrant.
 
+Release gate: production default is `PETNOSE_PROFILE_FIRST_ENABLED=false`. When disabled, both profile-first endpoints return HTTP `404` with `PROFILE_FIRST_DISABLED` before auth resolution, DB inserts, file writes, or Python Embed calls. `404` is used so the default-off flow is not exposed as an active production API surface until explicitly enabled.
+
 Step 1 creates a draft dog:
 
 ```http

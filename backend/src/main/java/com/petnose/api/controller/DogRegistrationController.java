@@ -9,6 +9,7 @@ import com.petnose.api.exception.ApiException;
 import com.petnose.api.service.AuthService;
 import com.petnose.api.service.DogRegistrationService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -25,6 +26,9 @@ public class DogRegistrationController {
     private final AuthService authService;
     private final DogRegistrationService dogRegistrationService;
 
+    @Value("${petnose.profile-first.enabled:false}")
+    private boolean profileFirstEnabled;
+
     @PostMapping(value = "/profile-draft", consumes = "multipart/form-data")
     public ResponseEntity<DogProfileDraftResponse> createProfileDraft(
             @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization,
@@ -36,6 +40,7 @@ public class DogRegistrationController {
             @RequestParam(value = "description", required = false) String description,
             @RequestParam(value = "profile_image", required = false) MultipartFile profileImage
     ) {
+        requireProfileFirstEnabled();
         Long ownerUserId = resolveOwnerUserId(authorization, userId);
         DogProfileDraftResponse response = dogRegistrationService.createProfileDraft(
                 new DogProfileDraftRequest(ownerUserId, name, breed, gender, birthDate, description, profileImage)
@@ -51,6 +56,7 @@ public class DogRegistrationController {
             @RequestParam(value = "nose_image", required = false) List<MultipartFile> noseImage,
             @RequestParam(value = "nose_images", required = false) List<MultipartFile> noseImages
     ) {
+        requireProfileFirstEnabled();
         Long ownerUserId = resolveOwnerUserId(authorization, userId);
         DogNoseVerificationResponse response = dogRegistrationService.verifyPendingDogWithNoseImages(
                 dogId,
@@ -58,6 +64,16 @@ public class DogRegistrationController {
                 selectNoseImages(noseImage, noseImages)
         );
         return ResponseEntity.ok(response);
+    }
+
+    private void requireProfileFirstEnabled() {
+        if (!profileFirstEnabled) {
+            throw new ApiException(
+                    HttpStatus.NOT_FOUND,
+                    "PROFILE_FIRST_DISABLED",
+                    "프로필 우선 강아지 인증 기능은 현재 비활성화되어 있습니다."
+            );
+        }
     }
 
     @PostMapping(value = "/register", consumes = "multipart/form-data")

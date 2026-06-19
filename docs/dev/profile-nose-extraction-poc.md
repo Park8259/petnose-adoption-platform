@@ -87,6 +87,12 @@ Spring only proxies to `python-embed` through `EmbedClient`; Flutter still does 
 
 ## Spring Product Endpoints
 
+These endpoints are release-gated. Production default is
+`PETNOSE_PROFILE_FIRST_ENABLED=false`; disabled requests return HTTP `404` with
+`PROFILE_FIRST_DISABLED` before auth resolution, DB writes, file writes, or Python
+Embed calls. Use `404` so the default-off flow is not advertised as an active
+production API surface.
+
 ```text
 POST /api/dogs/profile-draft
 multipart/form-data:
@@ -112,6 +118,8 @@ multipart/form-data:
 ## Environment
 
 ```bash
+PETNOSE_PROFILE_FIRST_ENABLED=true
+DOG_NOSE_RUNTIME=torch
 DOG_NOSE_EXTRACT_ENABLED=true
 DOG_NOSE_DETECTOR_WEIGHTS=/absolute/path/to/dog_nose_yolo.pt
 DOG_NOSE_DETECTOR_BACKEND=ultralytics
@@ -125,6 +133,10 @@ PROFILE_NOSE_MATCH_THRESHOLD=0.65
 PROFILE_NOSE_MATCH_MIN_PASS_COUNT=4
 PROFILE_NOSE_MATCH_AGGREGATE=median
 ```
+
+`PETNOSE_PROFILE_FIRST_ENABLED` defaults to `false`. Keep it false for production
+until detector availability, latency, threshold calibration, and regression gates
+are complete.
 
 `DOG_NOSE_EXTRACT_ENABLED` defaults to `false`. If Ultralytics is not installed, the env var is false, the legacy local YOLOv5 repo is missing, or the custom weight file is missing, the service still starts and extraction returns `DETECTOR_UNAVAILABLE`.
 
