@@ -33,6 +33,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.springframework.http.HttpStatus;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -121,6 +122,7 @@ class DogRegistrationServiceTest {
         ReflectionTestUtils.setField(service, "expectedVectorDimension", 3);
         ReflectionTestUtils.setField(service, "qdrantSearchTopK", 5);
         ReflectionTestUtils.setField(service, "qdrantSearchScoreThreshold", 0.55);
+        ReflectionTestUtils.setField(service, "profileFirstEnabled", true);
 
         User user = new User();
         user.setId(1L);
@@ -269,6 +271,24 @@ class DogRegistrationServiceTest {
     }
 
     @Test
+    void profileDraftDisabledFailsBeforeFileDbOrEmbedSideEffects() {
+        ReflectionTestUtils.setField(service, "profileFirstEnabled", false);
+
+        assertThatThrownBy(() -> service.createProfileDraft(profileDraftRequest()))
+                .isInstanceOfSatisfying(ApiException.class, e -> {
+                    assertThat(e.getStatus()).isEqualTo(HttpStatus.NOT_FOUND);
+                    assertThat(e.getErrorCode()).isEqualTo("PROFILE_FIRST_DISABLED");
+                });
+
+        assertNoPipelineRows();
+        verify(userRepository, never()).findById(any());
+        verify(fileStorageService, never()).storeProfileImage(anyString(), any());
+        verify(embedClient, never()).extractProfileNose(any(), anyString(), anyString());
+        verify(embedClient, never()).embedBatch(anyList());
+        verify(qdrantDogVectorClient, never()).upsertAll(anyList());
+    }
+
+    @Test
     void pendingDogNoseVerificationPassRunsExistingDuplicateFlowAfterProfileMatch() {
         savePendingDogWithProfile("draft-dog");
         when(embedClient.profileNoseMatchBatch(any(), anyString(), anyString(), anyList()))
@@ -315,6 +335,27 @@ class DogRegistrationServiceTest {
         assertThat(dogImages).hasSize(1);
         assertThat(verificationLogs).isEmpty();
         verify(fileStorageService, never()).storeNoseImage(anyString(), any());
+        verify(embedClient, never()).embedBatch(anyList());
+        verify(qdrantDogVectorClient, never()).searchReferencePoints(anyList(), anyInt(), anyDouble());
+        verify(qdrantDogVectorClient, never()).upsertAll(anyList());
+    }
+
+    @Test
+    void pendingDogNoseVerificationDisabledFailsBeforeDbFileOrEmbedSideEffects() {
+        ReflectionTestUtils.setField(service, "profileFirstEnabled", false);
+
+        assertThatThrownBy(() -> service.verifyPendingDogWithNoseImages("draft-dog", 1L, noseImages(5)))
+                .isInstanceOfSatisfying(ApiException.class, e -> {
+                    assertThat(e.getStatus()).isEqualTo(HttpStatus.NOT_FOUND);
+                    assertThat(e.getErrorCode()).isEqualTo("PROFILE_FIRST_DISABLED");
+                });
+
+        assertNoPipelineRows();
+        verify(userRepository, never()).findById(any());
+        verify(dogRepository, never()).findById(anyString());
+        verify(fileStorageService, never()).readStoredImage(anyString(), any(), any(), any());
+        verify(fileStorageService, never()).storeNoseImage(anyString(), any());
+        verify(embedClient, never()).profileNoseMatchBatch(any(), anyString(), anyString(), anyList());
         verify(embedClient, never()).embedBatch(anyList());
         verify(qdrantDogVectorClient, never()).searchReferencePoints(anyList(), anyInt(), anyDouble());
         verify(qdrantDogVectorClient, never()).upsertAll(anyList());

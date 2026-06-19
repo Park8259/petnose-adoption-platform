@@ -14,6 +14,7 @@ import com.petnose.api.dto.registration.ScoreBreakdownResponse;
 import com.petnose.api.exception.ApiException;
 import com.petnose.api.service.AuthService;
 import com.petnose.api.service.DogRegistrationService;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.ArgumentMatchers;
@@ -23,6 +24,7 @@ import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
@@ -49,11 +51,54 @@ class DogRegistrationControllerTest {
     @Autowired
     private ObjectMapper objectMapper;
 
+    @Autowired
+    private DogRegistrationController dogRegistrationController;
+
     @MockBean
     private DogRegistrationService dogRegistrationService;
 
     @MockBean
     private AuthService authService;
+
+    @BeforeEach
+    void setUpProfileFirstFlag() {
+        ReflectionTestUtils.setField(dogRegistrationController, "profileFirstEnabled", true);
+    }
+
+    @Test
+    void profileDraftDisabledReturnsNotFoundBeforeAuthOrService() throws Exception {
+        ReflectionTestUtils.setField(dogRegistrationController, "profileFirstEnabled", false);
+
+        mockMvc.perform(multipart("/api/dogs/profile-draft")
+                        .file(new MockMultipartFile("profile_image", "profile.jpg", "image/jpeg", new byte[]{1, 2, 3}))
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer test-token")
+                        .param("name", "Bori")
+                        .param("breed", "Jindo")
+                        .param("gender", "MALE")
+                        .param("birth_date", "2024-01-01"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error_code").value("PROFILE_FIRST_DISABLED"));
+
+        verify(authService, never()).currentActiveUserId(ArgumentMatchers.anyString());
+        verify(dogRegistrationService, never()).createProfileDraft(ArgumentMatchers.any());
+    }
+
+    @Test
+    void noseVerificationDisabledReturnsNotFoundBeforeAuthOrService() throws Exception {
+        ReflectionTestUtils.setField(dogRegistrationController, "profileFirstEnabled", false);
+
+        mockMvc.perform(canonicalNoseVerificationMultipartRequest()
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer test-token"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error_code").value("PROFILE_FIRST_DISABLED"));
+
+        verify(authService, never()).currentActiveUserId(ArgumentMatchers.anyString());
+        verify(dogRegistrationService, never()).verifyPendingDogWithNoseImages(
+                ArgumentMatchers.anyString(),
+                ArgumentMatchers.anyLong(),
+                ArgumentMatchers.any()
+        );
+    }
 
     @Test
     void profileDraftAcceptsUserIdFallbackAndReturnsCreated() throws Exception {
