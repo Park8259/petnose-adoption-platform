@@ -40,10 +40,12 @@ services:
       dockerfile: Dockerfile
       args:
         INSTALL_REAL_MODEL_DEPS: ${PYTHON_EMBED_INSTALL_REAL_DEPS:-0}
-      environment:
-        EMBED_VECTOR_DIM: ${QDRANT_VECTOR_DIM:-128}
-        EMBED_MODEL: ${EMBED_MODEL:-mock-v1}
-        EMBED_DEVICE: ${EMBED_DEVICE:-cpu}
+    environment:
+      EMBED_VECTOR_DIM: ${QDRANT_VECTOR_DIM:-128}
+      EMBED_MODEL: ${EMBED_MODEL:-mock-v1}
+      DOG_NOSE_RUNTIME: ${DOG_NOSE_RUNTIME:-torch}
+      DOG_NOSE_EXTRACT_ENABLED: ${DOG_NOSE_EXTRACT_ENABLED:-false}
+      EMBED_DEVICE: ${EMBED_DEVICE:-cpu}
       DOG_NOSE_MODEL_DIR: ${DOG_NOSE_MODEL_DIR:-/models/dog_nose_identification2}
       DOG_NOSE_MODEL_PATH: ${DOG_NOSE_MODEL_PATH:-}
       MAX_IMAGE_BYTES: ${MAX_UPLOAD_SIZE_MB:-20}000000

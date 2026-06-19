@@ -34,6 +34,12 @@ POST /api/dogs/profile-draft
 POST /api/dogs/{dog_id}/nose-verification
 ```
 
+The two product endpoints are release-gated by Spring. Keep
+`PETNOSE_PROFILE_FIRST_ENABLED=false` in production. When disabled, Spring returns
+HTTP `404` with `PROFILE_FIRST_DISABLED` before auth resolution, DB inserts, file
+writes, or Python Embed calls. The `404` status intentionally keeps the disabled
+profile-first flow out of the production API surface until it is explicitly enabled.
+
 or, when Spring is not running:
 
 ```text
@@ -45,6 +51,8 @@ POST /internal/nose/profile-match-batch
 Use these variables only in the local demo shell or disposable container:
 
 ```bash
+PETNOSE_PROFILE_FIRST_ENABLED=true
+DOG_NOSE_RUNTIME=torch
 DOG_NOSE_EXTRACT_ENABLED=true
 DOG_NOSE_DETECTOR_BACKEND=yolov5_legacy
 DOG_NOSE_DETECTOR_WEIGHTS=/absolute/local/path/to/best.pt
@@ -81,6 +89,8 @@ Accepted-dog Qdrant upsert still happens only inside the Spring dog registration
 - In the profile-first flow, `POST /api/dogs/profile-draft` creates only `dogs.status=PENDING` plus a `PROFILE` image.
 - `POST /api/dogs/{dog_id}/nose-verification` calls profile consistency first and enters Qdrant duplicate search/upsert only after the profile-vs-5-nose check passes.
 - On profile mismatch, the dog remains `PENDING`, no `NOSE` images are stored, no `verification_logs` row is created, and Qdrant is not called.
+- With `PETNOSE_PROFILE_FIRST_ENABLED=false`, both profile-first endpoints return `404 PROFILE_FIRST_DISABLED` and do none of the side effects above.
+- Keep `PETNOSE_REGISTRATION_TIMING_LOG_ENABLED=false` by default. Set it to `true` only for latency measurement; timing logs contain dog id, result, and stage durations only.
 
 ## POC endpoint boundary
 
