@@ -4,8 +4,9 @@ import argparse
 import csv
 import json
 import math
+import re
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import statistics
 import sys
 import time
@@ -21,6 +22,22 @@ from app.embedding.dog_nose_identification2_onnx_embedder import DogNoseIdentifi
 
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
+SCHEMA_VERSION = 1
+SCOPE_LOCAL_MODEL_ONLY = "local-model-only"
+SCOPE_LOCAL_DIRECT_EMBEDDER = "local-direct-embedder"
+STATISTICS_SCHEMA = {
+    "mean": "arithmetic_mean",
+    "p50": "linear_interpolated_50th_percentile",
+    "p95": "linear_interpolated_95th_percentile",
+    "warmup": "excluded_from_statistics",
+}
+STATISTICS_HELP = """Statistical definitions:
+  Mean: arithmetic average of measured latencies.
+  P50: median measured latency.
+  P95: 95th percentile measured latency.
+  Warm-up runs are excluded from all reported statistics.
+  Percentiles use linear interpolation between sorted samples.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,36 +50,68 @@ class FixtureImage:
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Export and compare dog-nose-identification2 ONNX Runtime CPU inference.",
+        epilog=STATISTICS_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    export_parser = subparsers.add_parser("export", help="Export torch+timm embedder to ONNX.")
+    export_parser = subparsers.add_parser(
+        "export",
+        help="Export torch+timm embedder to ONNX.",
+        epilog=STATISTICS_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     add_model_args(export_parser)
     export_parser.add_argument("--output", required=True, help="Output .onnx path.")
-    export_parser.add_argument("--opset", type=int, default=17)
+    export_parser.add_argument("--opset", type=positive_int, default=17)
     export_parser.add_argument("--no-dynamic-batch", action="store_true")
     export_parser.add_argument("--summary-json", default="")
     export_parser.set_defaults(func=export_onnx)
 
-    compare_parser = subparsers.add_parser("compare", help="Compare PyTorch and ONNX vectors.")
+    compare_parser = subparsers.add_parser(
+        "compare",
+        help="Compare PyTorch and ONNX vectors.",
+        epilog=STATISTICS_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     add_model_args(compare_parser)
     add_onnx_args(compare_parser)
     add_fixture_args(compare_parser)
     compare_parser.add_argument("--output-dir", default="")
     compare_parser.set_defaults(func=compare_vectors)
 
-    benchmark_parser = subparsers.add_parser("benchmark", help="Benchmark PyTorch and ONNX direct inference.")
+    benchmark_parser = subparsers.add_parser(
+        "benchmark",
+        help="Benchmark PyTorch and ONNX direct inference.",
+        epilog=STATISTICS_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     add_model_args(benchmark_parser)
     add_onnx_args(benchmark_parser)
     add_fixture_args(benchmark_parser)
     benchmark_parser.add_argument("--batch-sizes", default="1,5")
-    benchmark_parser.add_argument("--warmup", type=int, default=3)
-    benchmark_parser.add_argument("--runs", type=int, default=20)
+    benchmark_parser.add_argument("--warmup", type=non_negative_int, default=3)
+    benchmark_parser.add_argument("--runs", type=positive_int, default=20)
     benchmark_parser.add_argument("--output-dir", default="")
     benchmark_parser.set_defaults(func=benchmark_runtimes)
 
+    batch_compare_parser = subparsers.add_parser(
+        "batch-compare",
+        help="Compare five sequential PyTorch embed calls with one PyTorch embed_batch call.",
+        epilog=STATISTICS_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    add_model_args(batch_compare_parser)
+    add_fixture_args(batch_compare_parser)
+    batch_compare_parser.add_argument("--batch-size", type=positive_int, default=5)
+    batch_compare_parser.add_argument("--warmup", type=non_negative_int, default=2)
+    batch_compare_parser.add_argument("--runs", type=positive_int, default=10)
+    batch_compare_parser.add_argument("--output-dir", default="")
+    batch_compare_parser.set_defaults(func=batch_compare)
+
     args = parser.parse_args()
     result = args.func(args)
+    assert_sanitized_payload(result)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
@@ -75,12 +124,18 @@ def add_model_args(parser: argparse.ArgumentParser) -> None:
 def add_onnx_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--onnx", required=True, help="Exported ONNX model path.")
     parser.add_argument("--model-tag", default="s101_224")
-    parser.add_argument("--image-size", type=int, default=224)
+    parser.add_argument("--image-size", type=positive_int, default=224)
 
 
 def add_fixture_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--fixtures", nargs="+", required=True, help="Image files or directories.")
-    parser.add_argument("--limit", type=int, default=0, help="Optional maximum number of images.")
+    parser.add_argument("--limit", type=non_negative_int, default=0, help="Optional maximum number of images.")
+    parser.add_argument(
+        "--label-mode",
+        choices=("basename", "index"),
+        default="index",
+        help="Fixture label written to summaries. Use index to avoid local filename disclosure.",
+    )
 
 
 def export_onnx(args: argparse.Namespace) -> dict[str, Any]:
@@ -127,26 +182,31 @@ def export_onnx(args: argparse.Namespace) -> dict[str, Any]:
     except Exception as exc:  # pragma: no cover - optional dependency
         checker_status = f"failed: {type(exc).__name__}"
 
-    result = {
-        "status": "ok",
-        "onnx_path": str(output_path),
-        "onnx_size_bytes": output_path.stat().st_size,
-        "model": embedder.model_name,
-        "source_backend": embedder.backend,
-        "target_backend": "onnxruntime-cpu",
-        "image_size": embedder._image_size,
-        "vector_dim": embedder.vector_dim,
-        "opset": args.opset,
-        "dynamic_batch": not args.no_dynamic_batch,
-        "onnx_checker": checker_status,
-    }
+    result = with_schema(
+        SCOPE_LOCAL_MODEL_ONLY,
+        {
+            "status": "ok",
+            "onnx_path": safe_path_name(output_path),
+            "onnx_artifact": safe_path_name(output_path),
+            "onnx_size_bytes": output_path.stat().st_size,
+            "model": embedder.model_name,
+            "checkpoint": safe_path_name(getattr(embedder, "_resolved_model_path", None)),
+            "source_backend": embedder.backend,
+            "target_backend": "onnxruntime-cpu",
+            "image_size": embedder._image_size,
+            "vector_dim": embedder.vector_dim,
+            "opset": args.opset,
+            "dynamic_batch": not args.no_dynamic_batch,
+            "onnx_checker": checker_status,
+        },
+    )
     if args.summary_json:
         write_json(Path(args.summary_json), result)
     return result
 
 
 def compare_vectors(args: argparse.Namespace) -> dict[str, Any]:
-    fixtures = collect_fixtures(args.fixtures, args.limit)
+    fixtures = collect_fixtures(args.fixtures, args.limit, args.label_mode)
     torch_embedder = load_torch_embedder(args.model_dir, args.model_path)
     onnx_embedder = load_onnx_embedder(args)
     np = onnx_embedder._np
@@ -162,36 +222,43 @@ def compare_vectors(args: argparse.Namespace) -> dict[str, Any]:
         onnx_norm = float(np.linalg.norm(onnx_vector))
         cosine = float(np.dot(torch_vector, onnx_vector) / max(torch_norm * onnx_norm, 1e-12))
         rows.append(
-            {
-                "label": fixture.label,
-                "dimension": int(torch_vector.shape[0]),
-                "max_abs_diff": float(diff.max()),
-                "mean_abs_diff": float(diff.mean()),
-                "cosine": cosine,
-                "torch_norm": torch_norm,
-                "onnx_norm": onnx_norm,
-            }
+            with_row_schema(
+                SCOPE_LOCAL_MODEL_ONLY,
+                {
+                    "label": fixture.label,
+                    "dimension": int(torch_vector.shape[0]),
+                    "max_abs_diff": float(diff.max()),
+                    "mean_abs_diff": float(diff.mean()),
+                    "cosine": cosine,
+                    "torch_norm": torch_norm,
+                    "onnx_norm": onnx_norm,
+                },
+            )
         )
 
-    summary = {
-        "status": "ok",
-        "fixtures": len(fixtures),
-        "torch_model": torch_embedder.model_name,
-        "torch_backend": torch_embedder.backend,
-        "onnx_model": onnx_embedder.model_name,
-        "onnx_backend": onnx_embedder.backend,
-        "max_abs_diff": max(row["max_abs_diff"] for row in rows),
-        "mean_abs_diff": statistics.fmean(row["mean_abs_diff"] for row in rows),
-        "min_cosine": min(row["cosine"] for row in rows),
-        "mean_cosine": statistics.fmean(row["cosine"] for row in rows),
-        "rows": rows,
-    }
+    summary = with_schema(
+        SCOPE_LOCAL_MODEL_ONLY,
+        {
+            "status": "ok",
+            "statistics": STATISTICS_SCHEMA,
+            "fixtures": len(fixtures),
+            "torch_model": torch_embedder.model_name,
+            "torch_backend": torch_embedder.backend,
+            "onnx_model": onnx_embedder.model_name,
+            "onnx_backend": onnx_embedder.backend,
+            "max_abs_diff": max(row["max_abs_diff"] for row in rows),
+            "mean_abs_diff": statistics.fmean(row["mean_abs_diff"] for row in rows),
+            "min_cosine": min(row["cosine"] for row in rows),
+            "mean_cosine": statistics.fmean(row["cosine"] for row in rows),
+            "rows": rows,
+        },
+    )
     write_outputs(args.output_dir, "comparison", summary, rows)
     return summary
 
 
 def benchmark_runtimes(args: argparse.Namespace) -> dict[str, Any]:
-    fixtures = collect_fixtures(args.fixtures, args.limit)
+    fixtures = collect_fixtures(args.fixtures, args.limit, args.label_mode)
     batch_sizes = parse_batch_sizes(args.batch_sizes)
     torch_embedder = load_torch_embedder(args.model_dir, args.model_path)
     onnx_embedder = load_onnx_embedder(args)
@@ -213,19 +280,72 @@ def benchmark_runtimes(args: argparse.Namespace) -> dict[str, Any]:
                     raise RuntimeError(f"Unexpected result count: expected={batch_size}, actual={len(results)}")
                 total_ms.append(elapsed_ms)
 
-            rows.append(summarize_latency(runtime_name, embedder.backend, batch_size, total_ms))
+            rows.append(
+                summarize_latency(
+                    runtime_name,
+                    embedder.backend,
+                    batch_size,
+                    total_ms,
+                    int(getattr(embedder, "vector_dim", 0) or 0),
+                )
+            )
 
-    summary = {
-        "status": "ok",
-        "fixtures": len(fixtures),
-        "warmup": args.warmup,
-        "runs": args.runs,
-        "batch_sizes": batch_sizes,
-        "torch_model": torch_embedder.model_name,
-        "onnx_model": onnx_embedder.model_name,
-        "rows": rows,
-    }
+    summary = with_schema(
+        SCOPE_LOCAL_MODEL_ONLY,
+        {
+            "status": "ok",
+            "statistics": STATISTICS_SCHEMA,
+            "fixtures": len(fixtures),
+            "warmup": args.warmup,
+            "runs": args.runs,
+            "batch_sizes": batch_sizes,
+            "torch_model": torch_embedder.model_name,
+            "onnx_model": onnx_embedder.model_name,
+            "rows": rows,
+        },
+    )
     write_outputs(args.output_dir, "benchmark", summary, rows)
+    return summary
+
+
+def batch_compare(args: argparse.Namespace) -> dict[str, Any]:
+    fixtures = collect_fixtures(args.fixtures, args.limit, args.label_mode)
+    if len(fixtures) < args.batch_size:
+        raise RuntimeError(f"At least {args.batch_size} fixture images are required.")
+
+    selected = fixtures[: args.batch_size]
+    embedder = load_torch_embedder(args.model_dir, args.model_path)
+
+    for _ in range(args.warmup):
+        run_sequential_embed(embedder, selected)
+        run_batch_embed(embedder, selected)
+
+    sequential_ms: list[float] = []
+    batch_ms: list[float] = []
+    dimension = int(getattr(embedder, "vector_dim", 0) or 0)
+    for _ in range(args.runs):
+        started = time.perf_counter()
+        sequential_results = run_sequential_embed(embedder, selected)
+        sequential_ms.append((time.perf_counter() - started) * 1000.0)
+
+        started = time.perf_counter()
+        batch_results = run_batch_embed(embedder, selected)
+        batch_ms.append((time.perf_counter() - started) * 1000.0)
+
+        result = (batch_results or sequential_results)[0]
+        dimension = int(getattr(result, "dimension", dimension) or dimension)
+
+    summary = build_batch_compare_summary(
+        embedder=embedder,
+        fixtures=selected,
+        batch_size=args.batch_size,
+        warmup=args.warmup,
+        runs=args.runs,
+        sequential_ms=sequential_ms,
+        batch_ms=batch_ms,
+        dimension=dimension,
+    )
+    write_outputs(args.output_dir, "batch_compare", summary, summary["rows"])
     return summary
 
 
@@ -252,12 +372,113 @@ def load_onnx_embedder(args: argparse.Namespace) -> DogNoseIdentification2OnnxEm
     return embedder
 
 
-def collect_fixtures(paths: list[str], limit: int) -> list[FixtureImage]:
+def run_sequential_embed(embedder: Any, fixtures: list[FixtureImage]) -> list[Any]:
+    results = [embedder.embed(item.image_bytes, item.content_type) for item in fixtures]
+    if len(results) != len(fixtures):
+        raise RuntimeError(f"Unexpected sequential result count: expected={len(fixtures)}, actual={len(results)}")
+    return results
+
+
+def run_batch_embed(embedder: Any, fixtures: list[FixtureImage]) -> list[Any]:
+    inputs = [EmbedInput(item.image_bytes, item.content_type) for item in fixtures]
+    results = embedder.embed_batch(inputs)
+    if len(results) != len(fixtures):
+        raise RuntimeError(f"Unexpected batch result count: expected={len(fixtures)}, actual={len(results)}")
+    return results
+
+
+def build_batch_compare_summary(
+    *,
+    embedder: Any,
+    fixtures: list[FixtureImage],
+    batch_size: int,
+    warmup: int,
+    runs: int,
+    sequential_ms: list[float],
+    batch_ms: list[float],
+    dimension: int,
+) -> dict[str, Any]:
+    stats = summarize_batch_comparison(sequential_ms, batch_ms)
+    row = with_row_schema(
+        SCOPE_LOCAL_DIRECT_EMBEDDER,
+        {
+            "runtime": "torch",
+            "backend": str(getattr(embedder, "backend", "")),
+            "dimension": dimension,
+            "batch_size": batch_size,
+            "runs": runs,
+            **stats,
+        },
+    )
+    return with_schema(
+        SCOPE_LOCAL_DIRECT_EMBEDDER,
+        {
+            "status": "ok",
+            "statistics": STATISTICS_SCHEMA,
+            "runtime": "torch",
+            "backend": str(getattr(embedder, "backend", "")),
+            "dimension": dimension,
+            "model": str(getattr(embedder, "model_name", "")),
+            "checkpoint": safe_path_name(getattr(embedder, "_resolved_model_path", None)),
+            "fixtures": len(fixtures),
+            "fixture_labels": [item.label for item in fixtures],
+            "batch_size": batch_size,
+            "warmup": warmup,
+            "runs": runs,
+            **stats,
+            "rows": [row],
+        },
+    )
+
+
+def summarize_batch_comparison(sequential_ms: list[float], batch_ms: list[float]) -> dict[str, float]:
+    sequential_mean = statistics.fmean(sequential_ms)
+    sequential_p50 = percentile(sequential_ms, 50)
+    sequential_p95 = percentile(sequential_ms, 95)
+    batch_mean = statistics.fmean(batch_ms)
+    batch_p50 = percentile(batch_ms, 50)
+    batch_p95 = percentile(batch_ms, 95)
+    mean_saved = sequential_mean - batch_mean
+    return {
+        "sequential_mean_ms": sequential_mean,
+        "sequential_p50_ms": sequential_p50,
+        "sequential_p95_ms": sequential_p95,
+        "batch_mean_ms": batch_mean,
+        "batch_p50_ms": batch_p50,
+        "batch_p95_ms": batch_p95,
+        "mean_saved_ms": mean_saved,
+        "mean_reduction_percent": reduction_percent(sequential_mean, batch_mean),
+        "p95_reduction_percent": reduction_percent(sequential_p95, batch_p95),
+        "speedup": speedup(sequential_mean, batch_mean),
+    }
+
+
+def reduction_percent(original_ms: float, new_ms: float) -> float:
+    if original_ms <= 0 or math.isnan(original_ms):
+        return math.nan
+    return ((original_ms - new_ms) / original_ms) * 100.0
+
+
+def speedup(original_ms: float, new_ms: float) -> float:
+    if new_ms <= 0 or math.isnan(new_ms):
+        return math.inf
+    return original_ms / new_ms
+
+
+def collect_fixtures(paths: list[str], limit: int, label_mode: str = "index") -> list[FixtureImage]:
+    if label_mode not in {"basename", "index"}:
+        raise ValueError("--label-mode must be basename or index.")
+
     hits: list[Path] = []
     for raw in paths:
         path = Path(raw)
         if path.is_dir():
-            hits.extend(sorted(p for p in path.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_SUFFIXES))
+            hits.extend(
+                sorted(
+                    (p for p in path.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_SUFFIXES),
+                    key=fixture_sort_key,
+                )
+            )
         elif path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES:
             hits.append(path)
         else:
@@ -270,15 +491,26 @@ def collect_fixtures(paths: list[str], limit: int) -> list[FixtureImage]:
         raise RuntimeError("No fixture images found.")
 
     fixtures = []
-    for path in unique:
+    for index, path in enumerate(unique, start=1):
         fixtures.append(
             FixtureImage(
-                label=f"{path.parent.name}/{path.name}",
+                label=fixture_label(path, index, label_mode),
                 content_type=content_type_for(path),
                 image_bytes=path.read_bytes(),
             )
         )
     return fixtures
+
+
+def fixture_sort_key(path: Path) -> list[tuple[int, int | str]]:
+    parts = re.split(r"(\d+)", path.name.lower())
+    return [(0, int(part)) if part.isdigit() else (1, part) for part in parts]
+
+
+def fixture_label(path: Path, index: int, label_mode: str) -> str:
+    if label_mode == "basename":
+        return path.name
+    return f"fixture_{index:03d}"
 
 
 def content_type_for(path: Path) -> str:
@@ -291,10 +523,42 @@ def content_type_for(path: Path) -> str:
 
 
 def parse_batch_sizes(raw: str) -> list[int]:
-    values = [int(part.strip()) for part in raw.split(",") if part.strip()]
-    if not values or any(value <= 0 for value in values):
+    parsed = [parse_positive_int(part.strip(), "--batch-sizes") for part in raw.split(",") if part.strip()]
+    if not parsed:
         raise ValueError("--batch-sizes must contain positive integers.")
+
+    values: list[int] = []
+    for value in parsed:
+        if value not in values:
+            values.append(value)
     return values
+
+
+def positive_int(raw: str) -> int:
+    try:
+        return parse_positive_int(raw, "value")
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def non_negative_int(raw: str) -> int:
+    try:
+        value = int(str(raw).strip())
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("value must be an integer.") from exc
+    if value < 0:
+        raise argparse.ArgumentTypeError("value must be zero or a positive integer.")
+    return value
+
+
+def parse_positive_int(raw: str, option_name: str) -> int:
+    try:
+        value = int(str(raw).strip())
+    except ValueError as exc:
+        raise ValueError(f"{option_name} must contain positive integers.") from exc
+    if value <= 0:
+        raise ValueError(f"{option_name} must contain positive integers.")
+    return value
 
 
 def make_batches(fixtures: list[FixtureImage], batch_size: int, count: int) -> list[list[FixtureImage]]:
@@ -305,22 +569,32 @@ def make_batches(fixtures: list[FixtureImage], batch_size: int, count: int) -> l
     return batches
 
 
-def summarize_latency(runtime_name: str, backend: str, batch_size: int, total_ms: list[float]) -> dict[str, Any]:
+def summarize_latency(
+    runtime_name: str,
+    backend: str,
+    batch_size: int,
+    total_ms: list[float],
+    dimension: int,
+) -> dict[str, Any]:
     per_image_ms = [value / batch_size for value in total_ms]
-    return {
-        "runtime": runtime_name,
-        "backend": backend,
-        "batch_size": batch_size,
-        "runs": len(total_ms),
-        "total_mean_ms": statistics.fmean(total_ms),
-        "total_p50_ms": percentile(total_ms, 50),
-        "total_p95_ms": percentile(total_ms, 95),
-        "total_min_ms": min(total_ms),
-        "total_max_ms": max(total_ms),
-        "per_image_mean_ms": statistics.fmean(per_image_ms),
-        "per_image_p50_ms": percentile(per_image_ms, 50),
-        "per_image_p95_ms": percentile(per_image_ms, 95),
-    }
+    return with_row_schema(
+        SCOPE_LOCAL_MODEL_ONLY,
+        {
+            "runtime": runtime_name,
+            "backend": backend,
+            "dimension": dimension,
+            "batch_size": batch_size,
+            "runs": len(total_ms),
+            "total_mean_ms": statistics.fmean(total_ms),
+            "total_p50_ms": percentile(total_ms, 50),
+            "total_p95_ms": percentile(total_ms, 95),
+            "total_min_ms": min(total_ms),
+            "total_max_ms": max(total_ms),
+            "per_image_mean_ms": statistics.fmean(per_image_ms),
+            "per_image_p50_ms": percentile(per_image_ms, 50),
+            "per_image_p95_ms": percentile(per_image_ms, 95),
+        },
+    )
 
 
 def percentile(values: list[float], percent: float) -> float:
@@ -345,6 +619,7 @@ def write_outputs(output_dir: str, stem: str, summary: dict[str, Any], rows: lis
     root.mkdir(parents=True, exist_ok=True)
     write_json(root / f"{stem}_summary.json", summary)
     if rows:
+        assert_sanitized_payload(rows)
         with (root / f"{stem}.csv").open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
             writer.writeheader()
@@ -352,8 +627,72 @@ def write_outputs(output_dir: str, stem: str, summary: dict[str, Any], rows: lis
 
 
 def write_json(path: Path, data: dict[str, Any]) -> None:
+    assert_sanitized_payload(data)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def with_schema(scope: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return {"schema_version": SCHEMA_VERSION, "benchmark_scope": scope, **payload}
+
+
+def with_row_schema(scope: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return {"schema_version": SCHEMA_VERSION, "benchmark_scope": scope, **payload}
+
+
+def safe_path_name(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    candidates = [
+        PureWindowsPath(text).name,
+        PurePosixPath(text).name,
+        Path(text).name,
+    ]
+    names = [candidate for candidate in candidates if candidate]
+    return min(names, key=len) if names else text
+
+
+def assert_sanitized_payload(payload: Any) -> None:
+    validate_sanitized_value(payload, [])
+
+
+def validate_sanitized_value(value: Any, path: list[str]) -> None:
+    key = path[-1].lower() if path else ""
+    if key in {"vector", "vectors", "embedding", "embeddings", "image_bytes", "raw_image", "raw_vector"}:
+        raise ValueError(f"Unsafe raw data field in benchmark output: {'.'.join(path)}")
+
+    if isinstance(value, str):
+        if looks_like_absolute_path(value):
+            raise ValueError(f"Unsafe absolute path in benchmark output: {'.'.join(path)}")
+        return
+
+    if isinstance(value, dict):
+        for child_key, child_value in value.items():
+            validate_sanitized_value(child_value, [*path, str(child_key)])
+        return
+
+    if isinstance(value, (list, tuple)):
+        if len(value) > 16 and all(isinstance(item, (int, float)) for item in value):
+            raise ValueError(f"Unsafe raw vector-like array in benchmark output: {'.'.join(path)}")
+        for index, child_value in enumerate(value):
+            validate_sanitized_value(child_value, [*path, str(index)])
+
+
+def looks_like_absolute_path(value: str) -> bool:
+    text = value.strip()
+    if not text:
+        return False
+    if re.match(r"^[A-Za-z]:[\\/]", text):
+        return True
+    if text.startswith(("/", "\\")):
+        return True
+    if PureWindowsPath(text).is_absolute() or PurePosixPath(text).is_absolute():
+        return True
+    lowered = text.replace("\\", "/").lower()
+    return "/users/" in lowered or "/home/" in lowered
 
 
 if __name__ == "__main__":
