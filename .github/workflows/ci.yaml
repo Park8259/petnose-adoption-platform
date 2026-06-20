@@ -271,6 +271,14 @@ jobs:
       - name: Verify PowerShell availability
         run: pwsh -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
 
+      - name: Check production inference release guardrails
+        run: |
+          set -euo pipefail
+          pwsh -NoProfile -File ./scripts/verify-server-release-readiness.ps1 -Help
+          pwsh -NoProfile -File ./scripts/tests/verify-server-release-policy.ps1
+          bash -n infra/scripts/deploy-real-model.sh
+          bash infra/scripts/tests/test-production-runtime-policy.sh
+
       - name: Check reconciliation script help and syntax
         run: |
           set -euo pipefail
