@@ -630,7 +630,7 @@ Test-ForbiddenTrackedFiles
 
 Write-Host ""
 Write-Host "Result summary"
-$script:Results | Format-Table -AutoSize
+$script:Results | Format-Table -AutoSize -Wrap
 Write-Host "Failures: $script:FailedCount"
 Write-Host "Warnings: $script:WarnCount"
 
