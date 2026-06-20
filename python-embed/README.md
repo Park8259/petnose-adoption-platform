@@ -162,25 +162,75 @@ curl.exe -i -X POST "http://localhost/api/dogs/register" `
 - `.pt`, `.pth`, `.ckpt`, `.onnx`, `.h5`, `.keras` 등 weight 파일은 git 커밋 금지
 - 모델은 외부 경로/볼륨 마운트로 주입
 
-## ONNX Runtime CPU experiment
+## Local benchmark tooling
 
-`DOG_NOSE_RUNTIME=onnxruntime` 경로는 AWS CPU latency와 vector parity가 증명될 때까지 opt-in 실험 기능입니다.
+`scripts/onnx_runtime_experiment.py`는 PR #108의 batch inference 및 ONNX Runtime 근거를 로컬에서 다시 생성하기 위한 benchmark 도구입니다. production runtime을 켜는 절차가 아니며, 현재 production 기본값은 `DOG_NOSE_RUNTIME=torch`입니다.
+
+범위:
+- `export`, `compare`, `benchmark`: `benchmark_scope=local-model-only`
+- `batch-compare`: `benchmark_scope=local-direct-embedder`
+- FastAPI, Spring Boot, Docker, AWS end-to-end latency는 포함하지 않음
+
+Optional dependencies:
+- PyTorch/timm 실제 모델 실행: `requirements-real.txt`
+- ONNX export/checker/runtime 실험: `requirements-onnx.txt`
 
 ```bash
 pip install -r requirements-real.txt -r requirements-onnx.txt
+```
 
+PR #108 evidence 재현 예시:
+
+```bash
+python scripts/onnx_runtime_experiment.py batch-compare \
+  --model-dir <model-dir> \
+  --model-path <checkpoint-path> \
+  --fixtures <fixture-dir> \
+  --batch-size 5 \
+  --warmup 2 \
+  --runs 10 \
+  --output-dir <output-dir>
+```
+
+```bash
 python scripts/onnx_runtime_experiment.py export \
-  --model-dir /models/dog_nose_identification2 \
-  --output /tmp/petnose-onnx-runtime-experiment/dog_nose_s101_224.onnx
+  --model-dir <model-dir> \
+  --model-path <checkpoint-path> \
+  --output <output-dir>/dog_nose_s101_224.onnx \
+  --summary-json <output-dir>/export_summary.json
 
 python scripts/onnx_runtime_experiment.py compare \
-  --model-dir /models/dog_nose_identification2 \
-  --onnx /tmp/petnose-onnx-runtime-experiment/dog_nose_s101_224.onnx \
-  --fixtures /path/to/nose-fixtures \
-  --output-dir /tmp/petnose-onnx-runtime-experiment
+  --model-dir <model-dir> \
+  --model-path <checkpoint-path> \
+  --onnx <output-dir>/dog_nose_s101_224.onnx \
+  --fixtures <fixture-dir> \
+  --output-dir <output-dir>
 
-EMBED_MODEL=dog-nose-identification2 \
-DOG_NOSE_RUNTIME=onnxruntime \
-DOG_NOSE_ONNX_PATH=/tmp/petnose-onnx-runtime-experiment/dog_nose_s101_224.onnx \
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+python scripts/onnx_runtime_experiment.py benchmark \
+  --model-dir <model-dir> \
+  --model-path <checkpoint-path> \
+  --onnx <output-dir>/dog_nose_s101_224.onnx \
+  --fixtures <fixture-dir> \
+  --batch-sizes 1,5 \
+  --warmup 3 \
+  --runs 20 \
+  --output-dir <output-dir>
 ```
+
+출력:
+- `<output-dir>/*_summary.json`
+- `<output-dir>/*.csv`
+- console JSON summary
+
+Sanitization policy:
+- fixture label 기본값은 `--label-mode index`이며, 안전한 파일명만 필요할 때 `--label-mode basename`을 사용할 수 있음
+- JSON/CSV/console summary에는 절대 fixture/model/checkpoint/ONNX 경로를 쓰지 않음
+- raw image bytes와 raw embedding vector를 저장하지 않음
+- 생성된 `.onnx`, checkpoint(`.pt`, `.pth`, `.ckpt`), raw image, raw vector, benchmark temp output은 Git commit 금지
+
+통계 정의:
+- Mean: 모든 측정 latency의 산술 평균
+- P50: 측정 latency의 중앙값
+- P95: 측정값의 95번째 백분위
+- Warm-up run: 통계 집계에서 제외
+- Percentile: 정렬된 측정값 사이를 linear interpolation으로 계산
