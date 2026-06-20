@@ -14,6 +14,7 @@
 - 기본 `requirements.txt`는 mock 회귀/CI 경량 유지를 위한 최소 의존성과 profile nose crop POC용 Pillow만 포함
 - 실제 모델 의존성은 `requirements-real.txt`로 분리
 - Docker 빌드 인자 `PYTHON_EMBED_INSTALL_REAL_DEPS=1`일 때만 실제 모델 의존성 설치
+- ONNX Runtime 의존성은 `requirements-onnx.txt`로 분리하며 Docker 빌드 인자 `INSTALL_ONNX_RUNTIME_DEPS=1`일 때만 설치
 - Ultralytics 또는 legacy YOLOv5 local repo runtime은 custom dog-nose YOLO weights가 있는 로컬 POC에서만 별도 설치/참조
 
 ## 환경변수
@@ -92,7 +93,7 @@ curl -X POST http://localhost:8000/embed-batch \
     {
       "index": 0,
       "filename": "nose-1.jpg",
-      "vector": [0.01, -0.02]
+      "vector": "<2048-dim vector omitted>"
     }
   ]
 }
@@ -102,7 +103,7 @@ curl -X POST http://localhost:8000/embed-batch \
 1. `infra/docker/.env` 설정
 - `EMBED_MODEL=dog-nose-identification2`
 - `PYTHON_EMBED_INSTALL_REAL_DEPS=1`
-- `DOG_NOSE_MODEL_DIR_HOST=C:/Dev/dog_nose_identification2/dog_nose_identification2` (Windows 예시)
+- `DOG_NOSE_MODEL_DIR_HOST=<host-model-dir>`
 - `QDRANT_COLLECTION=dog_nose_embeddings_real_v1` (권장)
 - `QDRANT_VECTOR_DIM=2048` (현재 분석 기준)
 
@@ -140,7 +141,7 @@ curl.exe -i -X POST "http://localhost/api/dogs/register" `
   -F "gender=MALE" `
   -F "birth_date=2023-01-01" `
   -F "description=real model first register" `
-  -F "nose_image=@C:\Dev\sample\1.jpg;type=image/jpeg"
+  -F "nose_image=@<sample-dir>\1.jpg;type=image/jpeg"
 ```
 
 ```powershell
@@ -151,7 +152,7 @@ curl.exe -i -X POST "http://localhost/api/dogs/register" `
   -F "gender=MALE" `
   -F "birth_date=2023-01-01" `
   -F "description=real model duplicate test" `
-  -F "nose_image=@C:\Dev\sample\1.jpg;type=image/jpeg"
+  -F "nose_image=@<sample-dir>\1.jpg;type=image/jpeg"
 ```
 
 기대:
@@ -227,6 +228,14 @@ Sanitization policy:
 - JSON/CSV/console summary에는 절대 fixture/model/checkpoint/ONNX 경로를 쓰지 않음
 - raw image bytes와 raw embedding vector를 저장하지 않음
 - 생성된 `.onnx`, checkpoint(`.pt`, `.pth`, `.ckpt`), raw image, raw vector, benchmark temp output은 Git commit 금지
+
+## Optional ONNX Runtime readiness
+
+- Production 기본값은 `DOG_NOSE_RUNTIME=torch`이며 ONNX는 optional/default-off 경로입니다.
+- ONNX dependency는 기본 Python/Docker image에 설치하지 않으며, 명시적으로 `pip install -r requirements-onnx.txt` 또는 Docker build arg `INSTALL_ONNX_RUNTIME_DEPS=1`을 사용한 경우에만 설치합니다.
+- 실제 checkpoint와 exported `.onnx` artifact는 Git commit 금지입니다. production server에서 export 또는 benchmark를 실행하지 않습니다.
+- CI의 optional ONNX smoke는 test temp directory와 runner temp directory에 synthetic ONNX graph를 생성해 adapter, Docker dependency, `/health`, `/embed`, `/embed-batch` contract만 검증합니다.
+- Synthetic smoke는 실제 dog-nose 모델 정확도, PyTorch parity, latency를 검증하지 않습니다. 실제 ONNX parity/latency 근거는 PR #108 evidence를 참고합니다.
 
 통계 정의:
 - Mean: 모든 측정 latency의 산술 평균
