@@ -247,8 +247,13 @@ function Test-ProductionRuntimePolicy {
     }
 
     if ($errors.Count -eq 0) {
+        Write-Host "inference runtime policy: PASS"
         Add-Result -Name "inference runtime policy" -Status "PASS" -Note "torch runtime; ONNX/YOLO/profile-first/timing disabled"
     } else {
+        Write-Host "inference runtime policy: FAIL"
+        foreach ($errorMessage in $errors) {
+            Write-Host $errorMessage
+        }
         Add-Result -Name "inference runtime policy" -Status "FAIL" -Note ($errors -join "; ")
     }
 }
@@ -269,8 +274,13 @@ function Test-ImmutableImageTags {
     }
 
     if ($errors.Count -eq 0) {
+        Write-Host "immutable image tags: PASS"
         Add-Result -Name "immutable image tags" -Status "PASS" -Note "Spring/Python images are pinned to main-<sha7>"
     } else {
+        Write-Host "immutable image tags: FAIL"
+        foreach ($errorMessage in $errors) {
+            Write-Host $errorMessage
+        }
         Add-Result -Name "immutable image tags" -Status "FAIL" -Note ($errors -join "; ")
     }
 }
