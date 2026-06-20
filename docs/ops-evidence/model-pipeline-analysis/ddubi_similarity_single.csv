@@ -1,0 +1,9 @@
+reference_image_number,reference_filename,target_image_number,target_filename,cosine_similarity,model,dimension
+1,1.png,6,6.png,0.8834536829,dog-nose-identification2:s101_224,2048
+1,1.png,7,7.png,0.8393060067,dog-nose-identification2:s101_224,2048
+1,1.png,8,8.png,0.7654983763,dog-nose-identification2:s101_224,2048
+1,1.png,9,9.png,0.9018847264,dog-nose-identification2:s101_224,2048
+1,1.png,10,10.png,0.8390939273,dog-nose-identification2:s101_224,2048
+1,1.png,11,11.png,0.8220769005,dog-nose-identification2:s101_224,2048
+1,1.png,12,12.png,0.7817680388,dog-nose-identification2:s101_224,2048
+1,1.png,13,13.png,0.7555731543,dog-nose-identification2:s101_224,2048
