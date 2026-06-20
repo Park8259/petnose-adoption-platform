@@ -75,6 +75,175 @@ jobs:
       - name: Run pytest
         run: pytest -q
 
+  optional-onnx-runtime-smoke:
+    name: Optional ONNX runtime smoke
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 20
+    env:
+      ONNX_IMAGE: petnose-python-embed-onnx:ci
+      ONNX_CONTAINER: petnose-python-embed-onnx-ci
+      ONNX_PORT: "18080"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            python-embed/requirements.txt
+            python-embed/requirements-onnx.txt
+
+      - name: Install optional ONNX test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r python-embed/requirements.txt
+          pip install -r python-embed/requirements-onnx.txt
+          pip install pytest
+
+      - name: Run optional ONNX adapter tests
+        env:
+          PETNOSE_REQUIRE_ONNX_TESTS: "1"
+        run: pytest -q python-embed/tests/test_embedder_factory.py python-embed/tests/test_dog_nose_onnx_embedder.py
+
+      - name: Build optional ONNX Python embed image
+        run: |
+          docker build \
+            --build-arg INSTALL_REAL_MODEL_DEPS=0 \
+            --build-arg INSTALL_ONNX_RUNTIME_DEPS=1 \
+            -t "${ONNX_IMAGE}" \
+            ./python-embed
+
+      - name: Check optional ONNX imports in image
+        run: |
+          docker run --rm "${ONNX_IMAGE}" \
+            python -c "import numpy, PIL, onnx, onnxruntime; print(onnxruntime.__version__)"
+
+      - name: Generate synthetic ONNX smoke inputs
+        run: |
+          set -euo pipefail
+          SMOKE_DIR="${RUNNER_TEMP}/petnose-onnx-smoke"
+          mkdir -p "${SMOKE_DIR}/images"
+          python python-embed/tests/synthetic_onnx_model.py \
+            --output "${SMOKE_DIR}/smoke.onnx" \
+            --images-dir "${SMOKE_DIR}/images" \
+            --count 5
+          test -f "${SMOKE_DIR}/smoke.onnx"
+          test "$(find "${SMOKE_DIR}/images" -name '*.png' | wc -l)" -eq 5
+
+      - name: Run synthetic ONNX Docker API smoke
+        run: |
+          set -euo pipefail
+          SMOKE_DIR="${RUNNER_TEMP}/petnose-onnx-smoke"
+
+          on_error() {
+            echo "[ERROR] Optional ONNX Docker API smoke failed."
+            docker logs --tail=120 "${ONNX_CONTAINER}" || true
+          }
+          trap on_error ERR
+
+          docker rm -f "${ONNX_CONTAINER}" >/dev/null 2>&1 || true
+          docker run -d \
+            --name "${ONNX_CONTAINER}" \
+            -p "${ONNX_PORT}:8000" \
+            -v "${SMOKE_DIR}:/models:ro" \
+            -e EMBED_MODEL=dog-nose-identification2 \
+            -e EMBED_VECTOR_DIM=2048 \
+            -e DOG_NOSE_RUNTIME=onnxruntime \
+            -e DOG_NOSE_ONNX_PATH=/models/smoke.onnx \
+            -e DOG_NOSE_MODEL_DIR=/models \
+            "${ONNX_IMAGE}"
+
+          for attempt in $(seq 1 40); do
+            if curl -fsS --max-time 5 "http://localhost:${ONNX_PORT}/health" > "${RUNNER_TEMP}/onnx-health.json"; then
+              break
+            fi
+            if [ "${attempt}" -eq 40 ]; then
+              echo "[ERROR] ONNX Python embed health did not become ready."
+              exit 1
+            fi
+            sleep 2
+          done
+
+          python - <<'PY'
+          import json
+          import os
+          with open(os.path.join(os.environ["RUNNER_TEMP"], "onnx-health.json"), encoding="utf-8") as handle:
+              body = json.load(handle)
+          assert body["status"] == "ok", body
+          assert body["model_loaded"] is True, body
+          assert body["backend"] == "onnxruntime-cpu", body
+          assert body["device"] == "cpu", body
+          assert body["vector_dim"] == 2048, body
+          assert body["image_size"] == 224, body
+          PY
+
+          curl -fsS -X POST "http://localhost:${ONNX_PORT}/embed" \
+            -F "image=@${SMOKE_DIR}/images/nose-1.png;type=image/png" \
+            > "${RUNNER_TEMP}/onnx-embed.json"
+          python - <<'PY'
+          import json
+          import math
+          import os
+          with open(os.path.join(os.environ["RUNNER_TEMP"], "onnx-embed.json"), encoding="utf-8") as handle:
+              body = json.load(handle)
+          vector = body["vector"]
+          norm = math.sqrt(sum(value * value for value in vector))
+          summary = {"status": body.get("status"), "dimension": body.get("dimension"), "vector_length": len(vector)}
+          assert body["status"] == "ok", summary
+          assert body["dimension"] == 2048, summary
+          assert len(vector) == 2048, summary
+          assert all(math.isfinite(value) for value in vector), summary
+          assert abs(norm - 1.0) < 1e-5, {**summary, "norm": norm}
+          PY
+
+          curl -fsS -X POST "http://localhost:${ONNX_PORT}/embed-batch" \
+            -F "images=@${SMOKE_DIR}/images/nose-1.png;type=image/png" \
+            -F "images=@${SMOKE_DIR}/images/nose-2.png;type=image/png" \
+            -F "images=@${SMOKE_DIR}/images/nose-3.png;type=image/png" \
+            -F "images=@${SMOKE_DIR}/images/nose-4.png;type=image/png" \
+            -F "images=@${SMOKE_DIR}/images/nose-5.png;type=image/png" \
+            > "${RUNNER_TEMP}/onnx-embed-batch.json"
+          python - <<'PY'
+          import json
+          import math
+          import os
+          with open(os.path.join(os.environ["RUNNER_TEMP"], "onnx-embed-batch.json"), encoding="utf-8") as handle:
+              body = json.load(handle)
+          summary = {
+              "status": body.get("status"),
+              "dimension": body.get("dimension"),
+              "count": body.get("count"),
+              "item_count": len(body.get("items", [])),
+          }
+          assert body["status"] == "ok", summary
+          assert body["dimension"] == 2048, summary
+          assert body["count"] == 5, summary
+          assert len(body["items"]) == 5, summary
+          for item in body["items"]:
+              vector = item["vector"]
+              norm = math.sqrt(sum(value * value for value in vector))
+              item_summary = {**summary, "index": item.get("index"), "vector_length": len(vector)}
+              assert len(vector) == 2048, item_summary
+              assert all(math.isfinite(value) for value in vector), item_summary
+              assert abs(norm - 1.0) < 1e-5, {**item_summary, "norm": norm}
+          PY
+
+      - name: Collect optional ONNX container logs on failure
+        if: failure()
+        run: docker logs --tail=120 "${ONNX_CONTAINER}" || true
+
+      - name: Cleanup optional ONNX smoke
+        if: always()
+        run: |
+          docker rm -f "${ONNX_CONTAINER}" >/dev/null 2>&1 || true
+          rm -rf "${RUNNER_TEMP}/petnose-onnx-smoke"
+
   docs-script-check:
     name: Docs and script sanity
     runs-on: ubuntu-latest
@@ -317,4 +486,4 @@ jobs:
         run: docker build -t petnose-spring-api:ci ./backend
 
       - name: Build python embed mock image
-        run: docker build --build-arg INSTALL_REAL_MODEL_DEPS=0 -t petnose-python-embed:ci ./python-embed
+        run: docker build --build-arg INSTALL_REAL_MODEL_DEPS=0 --build-arg INSTALL_ONNX_RUNTIME_DEPS=0 -t petnose-python-embed:ci ./python-embed
