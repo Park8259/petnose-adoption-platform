@@ -13,6 +13,9 @@ pwsh ./scripts/verify-server-release-readiness.ps1 -EnvFile infra/docker/.env -I
 
 .EXAMPLE
 pwsh ./scripts/verify-server-release-readiness.ps1 -EnvFile infra/docker/.env -IncludeFirebase -HealthCheck
+
+.EXAMPLE
+pwsh ./scripts/verify-server-release-readiness.ps1 -EnvFile infra/docker/.env -PolicyOnly
 #>
 [CmdletBinding()]
 param(
@@ -28,6 +31,7 @@ param(
     [string]$HealthUrl = "http://localhost/actuator/health",
     [int]$HealthTimeoutSeconds = 60,
     [int]$HealthIntervalSeconds = 3,
+    [switch]$PolicyOnly,
     [switch]$Help
 )
 
@@ -53,6 +57,9 @@ Options:
   -HealthUrl <url>             Default: http://localhost/actuator/health
   -HealthTimeoutSeconds <int>  Default: 60
   -HealthIntervalSeconds <int> Default: 3
+  -PolicyOnly                  Check env policy only for CI/unit tests. This skips Docker daemon,
+                               compose config, model checkpoint, Firebase JSON, and HTTP health.
+                               It is not a substitute for production deploy readiness.
   -Help                        Print this help text
 
 Expected server paths:
@@ -105,6 +112,17 @@ function Test-TrueValue {
 
     $text = ([string]$Value).Trim().ToLowerInvariant()
     return @("true", "1", "yes", "y", "on") -contains $text
+}
+
+function Test-FalseValue {
+    param([AllowNull()][object]$Value)
+
+    if ($null -eq $Value) {
+        return $false
+    }
+
+    $text = ([string]$Value).Trim().ToLowerInvariant()
+    return @("false", "0", "no", "n", "off") -contains $text
 }
 
 function ConvertFrom-EnvFile {
@@ -184,6 +202,76 @@ function Test-EnvPlaceholders {
         Add-Result -Name "env placeholders" -Status "PASS" -Note "no placeholder-only values"
     } else {
         Add-Result -Name "env placeholders" -Status "WARN" -Note "placeholder-only values: $($placeholderKeys -join ', ')"
+    }
+}
+
+function Test-ProductionRuntimePolicy {
+    param([Parameter(Mandatory = $true)][hashtable]$EnvMap)
+
+    $errors = New-Object 'System.Collections.Generic.List[string]'
+
+    if ((Get-EnvValue -EnvMap $EnvMap -Key "DOG_NOSE_RUNTIME") -ne "torch") {
+        $errors.Add("DOG_NOSE_RUNTIME must be torch for current production release") | Out-Null
+    }
+
+    if (-not (Test-FalseValue (Get-EnvValue -EnvMap $EnvMap -Key "DOG_NOSE_EXTRACT_ENABLED"))) {
+        $errors.Add("DOG_NOSE_EXTRACT_ENABLED must be false for current production release") | Out-Null
+    }
+
+    if (-not (Test-FalseValue (Get-EnvValue -EnvMap $EnvMap -Key "PETNOSE_PROFILE_FIRST_ENABLED"))) {
+        $errors.Add("PETNOSE_PROFILE_FIRST_ENABLED must be false for current production release") | Out-Null
+    }
+
+    if (-not (Test-FalseValue (Get-EnvValue -EnvMap $EnvMap -Key "PETNOSE_REGISTRATION_TIMING_LOG_ENABLED"))) {
+        $errors.Add("PETNOSE_REGISTRATION_TIMING_LOG_ENABLED must be false for current production release") | Out-Null
+    }
+
+    if ((Get-EnvValue -EnvMap $EnvMap -Key "EMBED_MODEL") -ne "dog-nose-identification2") {
+        $errors.Add("EMBED_MODEL must be dog-nose-identification2 for current production release") | Out-Null
+    }
+
+    if ((Get-EnvValue -EnvMap $EnvMap -Key "EMBED_VECTOR_DIM") -ne "2048") {
+        $errors.Add("EMBED_VECTOR_DIM must be 2048 for current production release") | Out-Null
+    }
+
+    if (-not (Test-TrueValue (Get-EnvValue -EnvMap $EnvMap -Key "PYTHON_EMBED_INSTALL_REAL_DEPS"))) {
+        $errors.Add("PYTHON_EMBED_INSTALL_REAL_DEPS must be true or 1 for current production release") | Out-Null
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace((Get-EnvValue -EnvMap $EnvMap -Key "DOG_NOSE_ONNX_PATH"))) {
+        $errors.Add("DOG_NOSE_ONNX_PATH must be empty for current production release") | Out-Null
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace((Get-EnvValue -EnvMap $EnvMap -Key "DOG_NOSE_DETECTOR_WEIGHTS"))) {
+        $errors.Add("DOG_NOSE_DETECTOR_WEIGHTS must be empty for current production release") | Out-Null
+    }
+
+    if ($errors.Count -eq 0) {
+        Add-Result -Name "inference runtime policy" -Status "PASS" -Note "torch runtime; ONNX/YOLO/profile-first/timing disabled"
+    } else {
+        Add-Result -Name "inference runtime policy" -Status "FAIL" -Note ($errors -join "; ")
+    }
+}
+
+function Test-ImmutableImageTags {
+    param([Parameter(Mandatory = $true)][hashtable]$EnvMap)
+
+    $errors = New-Object 'System.Collections.Generic.List[string]'
+    $springImage = Get-EnvValue -EnvMap $EnvMap -Key "SPRING_API_IMAGE"
+    $pythonImage = Get-EnvValue -EnvMap $EnvMap -Key "PYTHON_EMBED_REAL_IMAGE"
+
+    if ($springImage -cnotmatch "^ghcr\.io/jaaesung/petnose-spring-api:main-[0-9a-f]{7}$") {
+        $errors.Add("SPRING_API_IMAGE must match ghcr.io/jaaesung/petnose-spring-api:main-<sha7>") | Out-Null
+    }
+
+    if ($pythonImage -cnotmatch "^ghcr\.io/jaaesung/petnose-python-embed-real:main-[0-9a-f]{7}$") {
+        $errors.Add("PYTHON_EMBED_REAL_IMAGE must match ghcr.io/jaaesung/petnose-python-embed-real:main-<sha7>") | Out-Null
+    }
+
+    if ($errors.Count -eq 0) {
+        Add-Result -Name "immutable image tags" -Status "PASS" -Note "Spring/Python images are pinned to main-<sha7>"
+    } else {
+        Add-Result -Name "immutable image tags" -Status "FAIL" -Note ($errors -join "; ")
     }
 }
 
@@ -432,6 +520,10 @@ $requiredKeys = @(
     "AUTH_JWT_ACCESS_TOKEN_TTL_SECONDS",
     "EMBED_MODEL",
     "EMBED_VECTOR_DIM",
+    "DOG_NOSE_RUNTIME",
+    "DOG_NOSE_EXTRACT_ENABLED",
+    "PETNOSE_PROFILE_FIRST_ENABLED",
+    "PETNOSE_REGISTRATION_TIMING_LOG_ENABLED",
     "PYTHON_EMBED_INSTALL_REAL_DEPS",
     "DOG_NOSE_MODEL_DIR_HOST",
     "QDRANT_COLLECTION",
@@ -462,63 +554,76 @@ $requiredKeys = @(
 
 Test-RequiredEnvKeys -EnvMap $envMap -Keys $requiredKeys
 Test-EnvPlaceholders -EnvMap $envMap
+Test-ProductionRuntimePolicy -EnvMap $envMap
+Test-ImmutableImageTags -EnvMap $envMap
 
-$firebaseEnabled = $IncludeFirebase -or (Test-TrueValue (Get-EnvValue -EnvMap $envMap -Key "FIREBASE_ENABLED")) -or (Test-TrueValue (Get-EnvValue -EnvMap $envMap -Key "PETNOSE_INCLUDE_FIREBASE"))
-if ($firebaseEnabled) {
-    $firebasePath = Get-EnvValue -EnvMap $envMap -Key "FIREBASE_CREDENTIALS_HOST_PATH"
-    Test-ServiceAccount -Path $firebasePath -ExpectedProjectId "petnose-c6ec5"
+if ($PolicyOnly) {
+    Add-Result -Name "firebase service account json" -Status "SKIP" -Note "skipped by -PolicyOnly"
+    Add-Result -Name "real model directory" -Status "SKIP" -Note "skipped by -PolicyOnly"
+    Add-Result -Name "model_final.pth" -Status "SKIP" -Note "skipped by -PolicyOnly"
+    Add-Result -Name "docker version" -Status "SKIP" -Note "skipped by -PolicyOnly"
+    Add-Result -Name "docker compose version" -Status "SKIP" -Note "skipped by -PolicyOnly"
+    Add-Result -Name "docker daemon" -Status "SKIP" -Note "skipped by -PolicyOnly"
+    Add-Result -Name "compose config" -Status "SKIP" -Note "skipped by -PolicyOnly"
+    Add-Result -Name "health check" -Status "SKIP" -Note "skipped by -PolicyOnly"
 } else {
-    Add-Result -Name "firebase service account json" -Status "SKIP" -Note "Firebase disabled"
-}
-
-$realModelEnabled = ((Get-EnvValue -EnvMap $envMap -Key "EMBED_MODEL") -eq "dog-nose-identification2") -or
-    (Test-TrueValue (Get-EnvValue -EnvMap $envMap -Key "PYTHON_EMBED_INSTALL_REAL_DEPS")) -or
-    (-not [string]::IsNullOrWhiteSpace((Get-EnvValue -EnvMap $envMap -Key "PYTHON_EMBED_REAL_IMAGE")))
-
-if ($realModelEnabled) {
-    Test-RealModelArtifact -ModelDir (Get-EnvValue -EnvMap $envMap -Key "DOG_NOSE_MODEL_DIR_HOST")
-} else {
-    Add-Result -Name "real model directory" -Status "SKIP" -Note "real-model env not enabled"
-    Add-Result -Name "model_final.pth" -Status "SKIP" -Note "real-model env not enabled"
-}
-
-$composeFilesResolved = New-Object 'System.Collections.Generic.List[string]'
-foreach ($path in $ComposeFile) {
-    $resolved = Resolve-RepoPath $path
-    if (Test-Path -LiteralPath $resolved -PathType Leaf) {
-        Add-Result -Name "compose file: $path" -Status "PASS" -Note "file exists"
-        $composeFilesResolved.Add($resolved) | Out-Null
+    $firebaseEnabled = $IncludeFirebase -or (Test-TrueValue (Get-EnvValue -EnvMap $envMap -Key "FIREBASE_ENABLED")) -or (Test-TrueValue (Get-EnvValue -EnvMap $envMap -Key "PETNOSE_INCLUDE_FIREBASE"))
+    if ($firebaseEnabled) {
+        $firebasePath = Get-EnvValue -EnvMap $envMap -Key "FIREBASE_CREDENTIALS_HOST_PATH"
+        Test-ServiceAccount -Path $firebasePath -ExpectedProjectId "petnose-c6ec5"
     } else {
-        Add-Result -Name "compose file: $path" -Status "FAIL" -Note "missing"
+        Add-Result -Name "firebase service account json" -Status "SKIP" -Note "Firebase disabled"
     }
-}
 
-if ($firebaseEnabled) {
-    $firebaseCompose = Resolve-RepoPath "infra/docker/compose.firebase.yaml"
-    if ($composeFilesResolved -notcontains $firebaseCompose) {
-        if (Test-Path -LiteralPath $firebaseCompose -PathType Leaf) {
-            Add-Result -Name "compose file: infra/docker/compose.firebase.yaml" -Status "PASS" -Note "file exists"
-            $composeFilesResolved.Add($firebaseCompose) | Out-Null
+    $realModelEnabled = ((Get-EnvValue -EnvMap $envMap -Key "EMBED_MODEL") -eq "dog-nose-identification2") -or
+        (Test-TrueValue (Get-EnvValue -EnvMap $envMap -Key "PYTHON_EMBED_INSTALL_REAL_DEPS")) -or
+        (-not [string]::IsNullOrWhiteSpace((Get-EnvValue -EnvMap $envMap -Key "PYTHON_EMBED_REAL_IMAGE")))
+
+    if ($realModelEnabled) {
+        Test-RealModelArtifact -ModelDir (Get-EnvValue -EnvMap $envMap -Key "DOG_NOSE_MODEL_DIR_HOST")
+    } else {
+        Add-Result -Name "real model directory" -Status "SKIP" -Note "real-model env not enabled"
+        Add-Result -Name "model_final.pth" -Status "SKIP" -Note "real-model env not enabled"
+    }
+
+    $composeFilesResolved = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($path in $ComposeFile) {
+        $resolved = Resolve-RepoPath $path
+        if (Test-Path -LiteralPath $resolved -PathType Leaf) {
+            Add-Result -Name "compose file: $path" -Status "PASS" -Note "file exists"
+            $composeFilesResolved.Add($resolved) | Out-Null
         } else {
-            Add-Result -Name "compose file: infra/docker/compose.firebase.yaml" -Status "FAIL" -Note "missing"
+            Add-Result -Name "compose file: $path" -Status "FAIL" -Note "missing"
         }
     }
-}
 
-Test-Docker
+    if ($firebaseEnabled) {
+        $firebaseCompose = Resolve-RepoPath "infra/docker/compose.firebase.yaml"
+        if ($composeFilesResolved -notcontains $firebaseCompose) {
+            if (Test-Path -LiteralPath $firebaseCompose -PathType Leaf) {
+                Add-Result -Name "compose file: infra/docker/compose.firebase.yaml" -Status "PASS" -Note "file exists"
+                $composeFilesResolved.Add($firebaseCompose) | Out-Null
+            } else {
+                Add-Result -Name "compose file: infra/docker/compose.firebase.yaml" -Status "FAIL" -Note "missing"
+            }
+        }
+    }
 
-if ($SkipComposeConfig) {
-    Add-Result -Name "compose config" -Status "SKIP" -Note "skipped by -SkipComposeConfig"
-} elseif ($composeFilesResolved.Count -gt 0 -and (Test-Path -LiteralPath $envFilePath -PathType Leaf)) {
-    Test-ComposeConfig -EnvFilePath $envFilePath -ComposeFiles $composeFilesResolved.ToArray()
-} else {
-    Add-Result -Name "compose config" -Status "FAIL" -Note "missing env or compose files"
-}
+    Test-Docker
 
-if ($HealthCheck) {
-    Test-HealthEndpoint -Url $HealthUrl -TimeoutSeconds $HealthTimeoutSeconds -IntervalSeconds $HealthIntervalSeconds
-} else {
-    Add-Result -Name "health check" -Status "SKIP" -Note "not requested"
+    if ($SkipComposeConfig) {
+        Add-Result -Name "compose config" -Status "SKIP" -Note "skipped by -SkipComposeConfig"
+    } elseif ($composeFilesResolved.Count -gt 0 -and (Test-Path -LiteralPath $envFilePath -PathType Leaf)) {
+        Test-ComposeConfig -EnvFilePath $envFilePath -ComposeFiles $composeFilesResolved.ToArray()
+    } else {
+        Add-Result -Name "compose config" -Status "FAIL" -Note "missing env or compose files"
+    }
+
+    if ($HealthCheck) {
+        Test-HealthEndpoint -Url $HealthUrl -TimeoutSeconds $HealthTimeoutSeconds -IntervalSeconds $HealthIntervalSeconds
+    } else {
+        Add-Result -Name "health check" -Status "SKIP" -Note "not requested"
+    }
 }
 
 Test-ForbiddenTrackedFiles
