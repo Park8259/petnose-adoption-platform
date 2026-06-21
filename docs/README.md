@@ -47,6 +47,7 @@
 | 앱 요청 API 회귀 증거 | `ops-evidence/app-requested-api-regression-log.md` | PR 8 regression/evidence 결과 확인 |
 | 최종 제출 real-model E2E 증적 | `ops-evidence/submission-real-model-e2e-log.md` | 최종 real-model E2E 증적 |
 | inference runtime 배포 정책 | `reference/INFERENCE_RUNTIME_DEPLOYMENT_POLICY.md` | production PyTorch 고정, ONNX/YOLO default-off, 향후 inference server 분리/ONNX gate 확인 |
+| AWS g4dn GPU 단일 서버 배포 | `../infra/aws/g4dn-single-host-gpu.md` | NVIDIA T4 기반 PyTorch CUDA real-model 배포/검증/rollback |
 | Archive | `archive/**` | 과거 문서 확인용. active 기준으로 사용 금지 |
 
 추가 참고 문서는 `docs/reference/` 아래에 있다. 예를 들어 운영 절차, 환경변수, 백업, 온보딩, 파일 저장 정책은 active canonical을 보조하는 문서로만 사용한다.
