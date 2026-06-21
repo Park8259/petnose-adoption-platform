@@ -1,0 +1,55 @@
+category,metric,value,status,notes
+source,develop_sha,c912b3c0144491204bd05fec82897906dcdf3db8,PASS,latest origin/develop after fetch
+artifact,yolo_weight_basename,best.pt,PASS,not committed
+artifact,yolo_weight_size_bytes,3782269,PASS,not committed
+artifact,yolo_weight_sha256,a43cbdbb3da3346b93134f6ca1151eda3f75982f41262d6cd26c9163de42d402,PASS,checksum unchanged after tests
+artifact,yolo_repo_safe_id,reference_repos/dognose_recognition_management_service/backend/dogback/yolov05,PASS,hubconf present
+artifact,embedding_checkpoint_basename,model_final.pth,PASS,not committed
+artifact,embedding_checkpoint_size_bytes,702987378,PASS,local reference artifact
+artifact,embedding_checkpoint_sha256,7868f51018b8f36b900302c0203ff14258db542925f69367f30711f65847bd4d,PASS,local reference artifact
+artifact,onnx_basename,dog_nose_s101_224.onnx,PASS,generated outside repo
+artifact,onnx_size_bytes,185108431,PASS,not committed
+artifact,onnx_sha256,a1afff51f868b077c114135c945ca92bcfbebeee7eb9c2bbd054fefec713019a,PASS,generated outside repo
+provenance,license_status,LICENSE_PARTIAL,WARN,YOLO source license present; top-level/weight/dataset license unresolved
+yolo_load,cpu_class_names,"{0: dog_nose}",PASS,legacy YOLOv5 load
+yolo_load,cuda_class_names,"{0: dog_nose}",PASS,legacy YOLOv5 load
+yolo_functional,positive_profile_detection,confidence_0.954840_crop_224x224,PASS,cpu profile fixture
+yolo_functional,cuda_positive_profile_detection,confidence_0.954842_crop_224x224,PASS,cuda profile fixture
+yolo_functional,closeup_detection_attempts,5_no_nose_detected,INFO,close-up nose images are not face/profile positives
+yolo_functional,invalid_image,INVALID_IMAGE,PASS,actual detector loaded
+yolo_latency,cpu_total_p50_ms,82.237,PASS,detection-only
+yolo_latency,cpu_total_p95_ms,96.270,PASS,detection-only
+yolo_latency,cuda_total_p50_ms,42.816,PASS,detection-only
+yolo_latency,cuda_total_p95_ms,53.079,PASS,detection-only
+onnx_export,opset,17,PASS,dynamic batch
+onnx_export,checker,ok,PASS,onnx.checker
+parity,cpu_min_cosine,1.0,PASS,PyTorch CPU vs ONNX CPU
+parity,cpu_max_abs_diff,6.50761649e-08,PASS,gate <= 1e-5
+parity,cpu_max_l2_diff,6.51844573e-07,PASS,gate <= 1e-4
+parity,cuda_min_cosine,1.0,PASS,PyTorch CUDA vs ONNX CPU
+parity,cuda_max_abs_diff,1.08033419e-07,PASS,gate <= 1e-5 with TF32 disabled by default
+parity,cuda_max_l2_diff,7.44004240e-07,PASS,gate <= 1e-4 with TF32 disabled by default
+direct_embedding,pytorch_cpu_batch1_p50_ms,1365.589,PASS,30 measured runs
+direct_embedding,pytorch_cpu_batch5_p50_ms,3380.324,PASS,30 measured runs
+direct_embedding,pytorch_cuda_batch1_p50_ms,30.742,PASS,30 measured runs
+direct_embedding,pytorch_cuda_batch5_p50_ms,66.394,PASS,30 measured runs
+direct_embedding,onnx_cpu_batch1_p50_ms,109.360,PASS,30 measured runs
+direct_embedding,onnx_cpu_batch5_p50_ms,411.888,PASS,30 measured runs
+integrated,yolo_cpu_torch_cpu_total_p50_ms,4055.302,PASS,profile plus five nose images
+integrated,yolo_cpu_torch_cpu_total_p95_ms,4288.071,PASS,profile plus five nose images
+integrated,yolo_cuda_torch_cuda_total_p50_ms,116.561,PASS,profile plus five nose images
+integrated,yolo_cuda_torch_cuda_total_p95_ms,127.486,PASS,profile plus five nose images
+integrated,yolo_cuda_onnx_cpu_total_p50_ms,539.025,PASS,profile plus five nose images
+integrated,yolo_cuda_onnx_cpu_total_p95_ms,621.981,PASS,profile plus five nose images
+profile_match_batch,pass_count,5,PASS,required 4
+profile_match_batch,median_score,0.772269,PASS,threshold 0.65
+resource,yolo_cuda_gpu_util_peak_percent,45,PASS,detection-only
+resource,yolo_cuda_vram_peak_mib,2530,PASS,detection-only
+resource,integrated_cuda_gpu_util_peak_percent,76,PASS,YOLO CUDA -> PyTorch CUDA
+resource,integrated_cuda_vram_peak_mib,4254,PASS,YOLO CUDA -> PyTorch CUDA
+endpoint,yolo_torch_cpu_http_statuses,all_200,PASS,health ready embed batch extract profile-match profile-match-batch
+endpoint,yolo_torch_cuda_http_statuses,all_200,PASS,health ready embed batch extract profile-match profile-match-batch
+endpoint,yolo_onnx_cpu_inference_statuses,all_inference_200,PASS,/health/ready remains 503 policy BACKEND_MISMATCH
+production,prod_env_defaults_changed,no,PASS,
+production,deploy_guardrails_changed,no,PASS,
+recommendation,g4dn_candidate_runtime,YOLO_CUDA_PLUS_PYTORCH_CUDA,PASS,revalidate on AWS T4

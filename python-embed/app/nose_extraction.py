@@ -42,6 +42,7 @@ class DogNoseExtractionConfig:
     weights_path: str | None
     detector_backend: str
     yolov5_repo_path: str | None
+    detector_device: str
     conf_threshold: float
     crop_size: int
     bbox_expand: float
@@ -55,6 +56,7 @@ class DogNoseExtractionConfig:
             weights_path=_blank_to_none(os.getenv("DOG_NOSE_DETECTOR_WEIGHTS")),
             detector_backend=_parse_detector_backend(os.getenv("DOG_NOSE_DETECTOR_BACKEND")),
             yolov5_repo_path=_blank_to_none(os.getenv("DOG_NOSE_YOLOV5_REPO")),
+            detector_device=_parse_detector_device(os.getenv("DOG_NOSE_DETECTOR_DEVICE")),
             conf_threshold=_parse_float(os.getenv("DOG_NOSE_DETECT_CONF_THRESHOLD"), 0.35),
             crop_size=max(1, _parse_int(os.getenv("DOG_NOSE_CROP_SIZE"), 224)),
             bbox_expand=max(1.0, _parse_float(os.getenv("DOG_NOSE_BBOX_EXPAND"), 1.40)),
@@ -72,6 +74,7 @@ class NoseExtractionResult:
     bbox_xyxy: list[float] | None
     bbox_expand: float
     detector: str
+    detector_device: str
     crop_bytes: bytes | None
     failure_reason: str | None
 
@@ -88,6 +91,7 @@ class NoseExtractionResult:
             "bbox_xyxy": self.bbox_xyxy,
             "bbox_expand": self.bbox_expand,
             "detector": self.detector,
+            "detector_device": self.detector_device,
             "crop_base64": crop_base64,
             "failure_reason": self.failure_reason,
         }
@@ -96,27 +100,35 @@ class NoseExtractionResult:
 class UltralyticsDogNoseDetector:
     name = "ultralytics"
 
-    def __init__(self, weights_path: str) -> None:
+    def __init__(self, weights_path: str, device: str = "cpu") -> None:
         self.weights_path = weights_path
+        self.requested_device = device
+        self.device = "cpu"
         self._model: Any | None = None
         self.load_error: str | None = None
 
     @classmethod
-    def create_if_available(cls, weights_path: str | None) -> "UltralyticsDogNoseDetector | None":
+    def create_if_available(
+        cls,
+        weights_path: str | None,
+        device: str = "cpu",
+    ) -> "UltralyticsDogNoseDetector | None":
         if not weights_path or not Path(weights_path).is_file():
             return None
 
-        detector = cls(weights_path)
+        detector = cls(weights_path, device)
         return detector if detector.load() else None
 
     def load(self) -> bool:
         try:
+            import torch  # type: ignore
             from ultralytics import YOLO  # type: ignore
         except Exception as exc:  # pragma: no cover - depends on optional local install
             self.load_error = f"ultralytics import failed: {exc}"
             return False
 
         try:
+            self.device = _resolve_detector_device(self.requested_device, torch)
             self._model = YOLO(self.weights_path)
             return True
         except Exception as exc:  # pragma: no cover - depends on optional local weights
@@ -127,7 +139,7 @@ class UltralyticsDogNoseDetector:
         if self._model is None:
             raise RuntimeError("YOLO detector is not loaded.")
 
-        results = self._model.predict(image, verbose=False)
+        results = self._model.predict(image, verbose=False, device=self.device)
         names = getattr(self._model, "names", {}) or {}
         detections: list[NoseDetection] = []
 
@@ -163,9 +175,11 @@ class UltralyticsDogNoseDetector:
 class LegacyYolov5DogNoseDetector:
     name = LEGACY_YOLOV5_BACKEND
 
-    def __init__(self, weights_path: str, repo_path: str) -> None:
+    def __init__(self, weights_path: str, repo_path: str, device: str = "cpu") -> None:
         self.weights_path = weights_path
         self.repo_path = repo_path
+        self.requested_device = device
+        self.device = "cpu"
         self._model: Any | None = None
         self.load_error: str | None = None
 
@@ -174,19 +188,21 @@ class LegacyYolov5DogNoseDetector:
         cls,
         weights_path: str | None,
         repo_path: str | None,
+        device: str = "cpu",
     ) -> "LegacyYolov5DogNoseDetector | None":
         if not weights_path or not Path(weights_path).is_file():
             return None
         if not repo_path or not Path(repo_path).is_dir() or not (Path(repo_path) / "hubconf.py").is_file():
             return None
 
-        detector = cls(weights_path, repo_path)
+        detector = cls(weights_path, repo_path, device)
         return detector if detector.load() else None
 
     def load(self) -> bool:
         try:
             import torch  # type: ignore
 
+            self.device = _resolve_detector_device(self.requested_device, torch)
             # Local POC only: this executes the configured local YOLOv5 repo and PyTorch checkpoint.
             self._model = torch.hub.load(
                 self.repo_path,
@@ -194,7 +210,7 @@ class LegacyYolov5DogNoseDetector:
                 path=self.weights_path,
                 source="local",
                 verbose=False,
-                device="cpu",
+                device=self.device,
             )
             return True
         except Exception as exc:  # pragma: no cover - depends on optional local YOLOv5 runtime
@@ -248,9 +264,10 @@ class DogNoseExtractor:
                 detector = LegacyYolov5DogNoseDetector.create_if_available(
                     config.weights_path,
                     config.yolov5_repo_path,
+                    config.detector_device,
                 )
             else:
-                detector = UltralyticsDogNoseDetector.create_if_available(config.weights_path)
+                detector = UltralyticsDogNoseDetector.create_if_available(config.weights_path, config.detector_device)
         return cls(config=config, detector=detector)
 
     @property
@@ -258,6 +275,12 @@ class DogNoseExtractor:
         if self.config.enabled and self.detector is not None:
             return self.detector.name
         return "unavailable"
+
+    @property
+    def detector_device(self) -> str:
+        if self.config.enabled and self.detector is not None:
+            return str(getattr(self.detector, "device", self.config.detector_device))
+        return self.config.detector_device
 
     def is_available(self) -> bool:
         return self.config.enabled and self.detector is not None
@@ -271,6 +294,7 @@ class DogNoseExtractor:
             bbox_xyxy=None,
             bbox_expand=self.config.bbox_expand,
             detector=self.detector_name,
+            detector_device=self.detector_device,
             crop_bytes=None,
             failure_reason=failure_reason,
         )
@@ -324,6 +348,7 @@ class DogNoseExtractor:
             bbox_xyxy=[round(float(value), 3) for value in detection.bbox_xyxy],
             bbox_expand=self.config.bbox_expand,
             detector=self.detector_name,
+            detector_device=self.detector_device,
             crop_bytes=crop_bytes,
             failure_reason=None,
         )
@@ -440,6 +465,33 @@ def _parse_detector_backend(value: str | None) -> str:
     if backend in {DEFAULT_DETECTOR_BACKEND, LEGACY_YOLOV5_BACKEND}:
         return backend
     return DEFAULT_DETECTOR_BACKEND
+
+
+def _parse_detector_device(value: str | None) -> str:
+    if value is None or value.strip() == "":
+        return "cpu"
+    device = value.strip().lower()
+    if device in {"cpu", "cuda", "auto"}:
+        return device
+    if device.startswith("cuda:"):
+        suffix = device.removeprefix("cuda:")
+        if suffix.isdigit():
+            return device
+    return "cpu"
+
+
+def _resolve_detector_device(requested: str, torch_module: Any) -> str:
+    device = _parse_detector_device(requested)
+    cuda_available = bool(torch_module.cuda.is_available())
+    if device == "auto":
+        return "cuda:0" if cuda_available else "cpu"
+    if device.startswith("cuda"):
+        if not cuda_available:
+            raise RuntimeError(
+                f"DOG_NOSE_DETECTOR_DEVICE={device} was requested, but CUDA is not available."
+            )
+        return device
+    return "cpu"
 
 
 def _parse_class_names(value: str | None) -> tuple[str, ...]:

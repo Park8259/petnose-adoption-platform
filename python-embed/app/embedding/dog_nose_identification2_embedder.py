@@ -25,6 +25,7 @@ class DogNoseIdentification2Embedder(BaseEmbedder):
         model_path: str | None,
         embed_device: str = "cpu",
         embed_device_required: bool = False,
+        cuda_allow_tf32: bool = False,
         default_image_size: int = 224,
     ) -> None:
         super().__init__(requested_model_name="dog-nose-identification2")
@@ -33,6 +34,7 @@ class DogNoseIdentification2Embedder(BaseEmbedder):
         self.device = embed_device
         self.requested_device = embed_device
         self.embed_device_required = embed_device_required
+        self.cuda_allow_tf32 = cuda_allow_tf32
 
         self._model_dir = Path(model_dir)
         self._configured_model_path = Path(model_path) if model_path else None
@@ -81,6 +83,8 @@ class DogNoseIdentification2Embedder(BaseEmbedder):
             model.eval()
 
             runtime_device = self._select_device(self.device)
+            if str(runtime_device).lower().startswith("cuda"):
+                self._configure_cuda_precision()
             model.to(runtime_device)
             self._runtime_device = runtime_device
             self._model = model
@@ -154,6 +158,7 @@ class DogNoseIdentification2Embedder(BaseEmbedder):
                 "image_size": self._image_size,
                 "requested_device": self.requested_device,
                 "embed_device_required": self.embed_device_required,
+                "cuda_allow_tf32": self.cuda_allow_tf32,
             }
         )
         return data
@@ -215,6 +220,14 @@ class DogNoseIdentification2Embedder(BaseEmbedder):
             return self._torch.load(path, map_location="cpu", weights_only=False)
         except TypeError:
             return self._torch.load(path, map_location="cpu")
+
+    def _configure_cuda_precision(self) -> None:
+        if self.cuda_allow_tf32:
+            return
+        if hasattr(self._torch.backends, "cuda"):
+            self._torch.backends.cuda.matmul.allow_tf32 = False
+        if hasattr(self._torch.backends, "cudnn"):
+            self._torch.backends.cudnn.allow_tf32 = False
 
     @staticmethod
     def _extract_model_state(checkpoint: Any) -> dict[str, Any]:

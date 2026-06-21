@@ -54,6 +54,21 @@ class CreateEmbedderFromEnvTest(unittest.TestCase):
         self.assertEqual(embedder.backend, "torch+timm")
         self.assertEqual(embedder.device, "cuda:0")
         self.assertTrue(embedder.embed_device_required)
+        self.assertFalse(embedder.cuda_allow_tf32)
+
+    def test_dog_nose_can_opt_in_to_cuda_tf32(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "EMBED_MODEL": "dog-nose-identification2",
+                "DOG_NOSE_RUNTIME": "torch",
+                "EMBED_DEVICE": "cuda:0",
+                "DOG_NOSE_CUDA_ALLOW_TF32": "true",
+            },
+        ):
+            embedder = create_embedder_from_env()
+
+        self.assertTrue(embedder.cuda_allow_tf32)
 
 
 class StrictCudaDevicePolicyTest(unittest.TestCase):

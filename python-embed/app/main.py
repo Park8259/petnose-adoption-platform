@@ -81,7 +81,7 @@ async def lifespan(app: FastAPI):
     print(
         "[EmbedService] nose_extraction - "
         f"enabled={_nose_extractor.config.enabled}, detector={_nose_extractor.detector_name}, "
-        f"crop_size={_nose_extractor.config.crop_size}"
+        f"detector_device={_nose_extractor.detector_device}, crop_size={_nose_extractor.config.crop_size}"
     )
     yield
     print("[EmbedService] 종료")

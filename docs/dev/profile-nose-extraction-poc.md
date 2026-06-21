@@ -124,6 +124,7 @@ DOG_NOSE_EXTRACT_ENABLED=true
 DOG_NOSE_DETECTOR_WEIGHTS=/absolute/path/to/dog_nose_yolo.pt
 DOG_NOSE_DETECTOR_BACKEND=ultralytics
 DOG_NOSE_YOLOV5_REPO=/absolute/path/to/local/yolov5/repo
+DOG_NOSE_DETECTOR_DEVICE=cpu
 DOG_NOSE_DETECT_CONF_THRESHOLD=0.35
 DOG_NOSE_CROP_SIZE=224
 DOG_NOSE_BBOX_EXPAND=1.40
@@ -141,6 +142,8 @@ are complete.
 `DOG_NOSE_EXTRACT_ENABLED` defaults to `false`. If Ultralytics is not installed, the env var is false, the legacy local YOLOv5 repo is missing, or the custom weight file is missing, the service still starts and extraction returns `DETECTOR_UNAVAILABLE`.
 
 `DOG_NOSE_DETECTOR_BACKEND` defaults to `ultralytics` to preserve the original optional adapter behavior. `yolov5_legacy` is only for local POC validation of legacy YOLOv5 checkpoints and requires `DOG_NOSE_YOLOV5_REPO` to point at a local YOLOv5 directory containing `hubconf.py`. For the DI-LEE clone checked in `.codex_local/reference_repos`, the working local YOLOv5 directory is `backend/dogback/yolov05`.
+
+`DOG_NOSE_DETECTOR_DEVICE` defaults to `cpu` for backward-compatible local behavior. For local benchmark only, set `cuda`, `cuda:0`, or `auto`; explicit CUDA requests fail instead of silently falling back to CPU when CUDA is unavailable.
 
 `PROFILE_NOSE_MATCH_THRESHOLD` is an uncalibrated local dev value. The current dev observation threshold is `0.65`; the earlier POC value `0.75` was temporary. It must be tuned later with positive and negative dog-pair data before any production identity decision depends on it. This setting is separate from production registration duplicate thresholds and does not change the existing Qdrant duplicate threshold.
 
