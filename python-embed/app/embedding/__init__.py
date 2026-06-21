@@ -6,6 +6,13 @@ from .base import BaseEmbedder, EmbedderError
 from .mock_embedder import MockEmbedder
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def create_embedder_from_env() -> BaseEmbedder:
     embed_model = os.getenv("EMBED_MODEL", "mock-v1").strip()
     vector_dim = int(os.getenv("EMBED_VECTOR_DIM", "128"))
@@ -22,10 +29,12 @@ def create_embedder_from_env() -> BaseEmbedder:
 
             model_path = os.getenv("DOG_NOSE_MODEL_PATH", "").strip() or None
             embed_device = os.getenv("EMBED_DEVICE", "cpu")
+            embed_device_required = _env_bool("EMBED_DEVICE_REQUIRED")
             return DogNoseIdentification2Embedder(
                 model_dir=model_dir,
                 model_path=model_path,
                 embed_device=embed_device,
+                embed_device_required=embed_device_required,
             )
 
         if runtime in {"onnx", "onnxruntime", "ort"}:

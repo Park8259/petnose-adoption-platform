@@ -12,6 +12,7 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse
 
 from .embedding import create_embedder_from_env
 from .embedding.base import BaseEmbedder, EmbedInput, EmbedResult, EmbedderError, EmbedderNotReadyError
@@ -38,6 +39,13 @@ def _parse_int_env(name: str, default: int) -> int:
         return int(value) if value is not None and value.strip() else default
     except ValueError:
         return default
+
+
+def _parse_bool_env(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 MAX_IMAGE_SIZE: int = int(os.getenv("MAX_IMAGE_BYTES", str(20 * 1024 * 1024)))
@@ -292,6 +300,149 @@ def health():
         "load_error": data.get("load_error"),
         "image_size": data.get("image_size"),
     }
+
+
+def _safe_readiness_reason(code: str, message: str) -> dict[str, str]:
+    return {"code": code, "message": message}
+
+
+def _readiness_payload(embedder: BaseEmbedder) -> tuple[int, dict[str, object]]:
+    data = embedder.health_dict()
+    expected_model = os.getenv("EMBED_MODEL", embedder.requested_model_name).strip() or embedder.requested_model_name
+    expected_dim = _parse_int_env("EMBED_VECTOR_DIM", int(data.get("vector_dim") or 0))
+    model = str(data.get("model") or "")
+    backend = data.get("backend")
+    device = str(data.get("device") or "")
+    requested_device = str(data.get("requested_device") or os.getenv("EMBED_DEVICE", "cpu") or "cpu")
+    requested_device_lower = requested_device.lower()
+    device_lower = device.lower()
+    model_loaded = bool(data.get("model_loaded"))
+    vector_dim = int(data.get("vector_dim") or 0)
+    model_path_exists = data.get("model_path_exists")
+    device_required = bool(data.get("embed_device_required", _parse_bool_env("EMBED_DEVICE_REQUIRED")))
+
+    reasons: list[dict[str, str]] = []
+
+    if not model_loaded:
+        code = "MODEL_LOAD_ERROR" if data.get("load_error") else "MODEL_NOT_LOADED"
+        reasons.append(
+            _safe_readiness_reason(
+                code,
+                "Embedding model is not loaded.",
+            )
+        )
+
+    if expected_model == "dog-nose-identification2" and not model.startswith("dog-nose-identification2"):
+        reasons.append(
+            _safe_readiness_reason(
+                "MODEL_MISMATCH",
+                "Loaded model does not match the dog-nose-identification2 runtime.",
+            )
+        )
+
+    if expected_model == "dog-nose-identification2" and backend != "torch+timm":
+        reasons.append(
+            _safe_readiness_reason(
+                "BACKEND_MISMATCH",
+                "Dog nose production readiness requires the torch+timm backend.",
+            )
+        )
+
+    if expected_dim > 0 and vector_dim != expected_dim:
+        reasons.append(
+            _safe_readiness_reason(
+                "VECTOR_DIM_MISMATCH",
+                "Embedding vector dimension does not match the configured runtime.",
+            )
+        )
+
+    if expected_model == "dog-nose-identification2" and model_path_exists is not True:
+        reasons.append(
+            _safe_readiness_reason(
+                "MODEL_PATH_NOT_READY",
+                "Dog nose model checkpoint is not available to the container.",
+            )
+        )
+
+    if requested_device_lower.startswith("cuda") and not device_lower.startswith("cuda"):
+        reasons.append(
+            _safe_readiness_reason(
+                "CUDA_REQUESTED_BUT_NOT_ACTIVE",
+                "CUDA was requested, but the loaded model is not using a CUDA device.",
+            )
+        )
+
+    if device_required and requested_device_lower and not requested_device_lower.startswith("cuda"):
+        if device_lower != requested_device_lower:
+            reasons.append(
+                _safe_readiness_reason(
+                    "REQUIRED_DEVICE_MISMATCH",
+                    "The loaded model device does not match the required device.",
+                )
+            )
+
+    if device_required and requested_device_lower.startswith("cuda") and device_lower.startswith("cuda"):
+        device_required_satisfied = True
+    elif device_required:
+        device_required_satisfied = False
+    else:
+        device_required_satisfied = True
+
+    if not device_required_satisfied and not any(reason["code"] == "CUDA_REQUESTED_BUT_NOT_ACTIVE" for reason in reasons):
+        reasons.append(
+            _safe_readiness_reason(
+                "REQUIRED_DEVICE_MISMATCH",
+                "The loaded model device does not satisfy EMBED_DEVICE_REQUIRED.",
+            )
+        )
+
+    ready = not reasons
+    body: dict[str, object] = {
+        "status": "ready" if ready else "not_ready",
+        "model_loaded": model_loaded,
+        "model": model,
+        "vector_dim": vector_dim,
+        "backend": backend,
+        "device": device,
+        "requested_device": requested_device,
+        "device_required": device_required,
+        "device_required_satisfied": device_required_satisfied,
+        "model_path_exists": model_path_exists,
+        "image_size": data.get("image_size"),
+        "checks": {
+            "model_loaded": model_loaded,
+            "model_matches_expected": expected_model != "dog-nose-identification2"
+            or model.startswith("dog-nose-identification2"),
+            "backend_matches_expected": expected_model != "dog-nose-identification2" or backend == "torch+timm",
+            "vector_dim_matches_expected": expected_dim <= 0 or vector_dim == expected_dim,
+            "model_path_exists": expected_model != "dog-nose-identification2" or model_path_exists is True,
+            "device_matches_requested": not requested_device_lower.startswith("cuda") or device_lower.startswith("cuda"),
+            "device_required_satisfied": device_required_satisfied,
+        },
+        "reasons": reasons,
+    }
+    return (200 if ready else 503), body
+
+
+@app.get("/health/ready")
+def readiness():
+    if _embedder is None:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "not_ready",
+                "model_loaded": False,
+                "reasons": [
+                    _safe_readiness_reason(
+                        "SERVICE_NOT_INITIALIZED",
+                        "Embedding service is not initialized.",
+                    )
+                ],
+            },
+        )
+
+    status_code, body = _readiness_payload(_embedder)
+    return JSONResponse(status_code=status_code, content=body)
 
 
 @app.post("/embed")
