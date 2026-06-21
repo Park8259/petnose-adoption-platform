@@ -38,6 +38,7 @@ APP_ENV=prod
 SPRING_PROFILES_ACTIVE=prod
 SPRING_API_IMAGE=ghcr.io/jaaesung/petnose-spring-api:main-8edd2dc
 PYTHON_EMBED_REAL_IMAGE=ghcr.io/jaaesung/petnose-python-embed-real:main-8edd2dc
+PYTHON_EMBED_GPU_REAL_IMAGE=ghcr.io/jaaesung/petnose-python-embed-gpu-real:main-8edd2dc
 MYSQL_PASSWORD=${SECRET_MARKER}
 MYSQL_ROOT_PASSWORD=${SECRET_MARKER}
 SPRING_DATASOURCE_PASSWORD=${SECRET_MARKER}
@@ -53,7 +54,9 @@ DOG_NOSE_ONNX_PATH=
 DOG_NOSE_DETECTOR_WEIGHTS=
 DOG_NOSE_MODEL_DIR_HOST=/opt/petnose/models/dog_nose_identification2
 EMBED_DEVICE=cpu
+EMBED_DEVICE_REQUIRED=false
 PETNOSE_INCLUDE_FIREBASE=false
+PETNOSE_INCLUDE_GPU=false
 GHCR_USERNAME=
 GHCR_TOKEN=
 EOF
@@ -165,9 +168,50 @@ EOF
   echo "[PASS] validation failure stops before pull/up"
 }
 
+expect_gpu_pass() {
+  local name="gpu-safe-env"
+  local env_path="${TEMP_DIR}/${name}.env"
+  local output_path="${TEMP_DIR}/${name}.out"
+
+  write_safe_env "${env_path}"
+  set_env_value "${env_path}" "EMBED_DEVICE" "cuda:0"
+  set_env_value "${env_path}" "EMBED_DEVICE_REQUIRED" "true"
+  run_deploy_script "${env_path}" "${output_path}" --gpu --validate-only || {
+    cat "${output_path}"
+    fail "${name} expected pass"
+  }
+  assert_contains "${output_path}" "[OK] inference runtime policy"
+  assert_contains "${output_path}" "GPU compose included: true"
+  assert_not_contains "${output_path}" "${SECRET_MARKER}"
+  echo "[PASS] ${name}"
+}
+
+expect_gpu_fail() {
+  local name="$1"
+  local key="$2"
+  local value="$3"
+  local expected="$4"
+  local env_path="${TEMP_DIR}/${name}.env"
+  local output_path="${TEMP_DIR}/${name}.out"
+
+  write_safe_env "${env_path}"
+  set_env_value "${env_path}" "EMBED_DEVICE" "cuda:0"
+  set_env_value "${env_path}" "EMBED_DEVICE_REQUIRED" "true"
+  set_env_value "${env_path}" "${key}" "${value}"
+  if run_deploy_script "${env_path}" "${output_path}" --gpu --validate-only; then
+    cat "${output_path}"
+    fail "${name} expected fail"
+  fi
+  assert_contains "${output_path}" "${expected}"
+  assert_not_contains "${output_path}" "${SECRET_MARKER}"
+  echo "[PASS] ${name}"
+}
+
 expect_pass "safe-env"
 expect_fail "unsafe-runtime" "DOG_NOSE_RUNTIME" "onnxruntime" "DOG_NOSE_RUNTIME must be torch"
 expect_fail "mutable-spring-tag" "SPRING_API_IMAGE" "ghcr.io/jaaesung/petnose-spring-api:main-latest" "SPRING_API_IMAGE must be ghcr.io/jaaesung/petnose-spring-api:main-<sha7>"
+expect_gpu_pass
+expect_gpu_fail "gpu-mutable-image-tag" "PYTHON_EMBED_GPU_REAL_IMAGE" "ghcr.io/jaaesung/petnose-python-embed-gpu-real:main-latest" "PYTHON_EMBED_GPU_REAL_IMAGE must be ghcr.io/jaaesung/petnose-python-embed-gpu-real:main-<sha7>"
 expect_validation_failure_before_pull_up
 
 echo "[OK] test-production-runtime-policy completed"

@@ -2,6 +2,7 @@
 # AWS EC2 real-model deploy script (GHCR pull-based).
 # - no source build on server
 # - uses base + prod + prod-real-model compose files
+# - optionally includes the g4dn GPU override only when explicitly requested
 # - optionally includes Firebase only when explicitly requested
 # - fail-fast on the Nginx-routed Spring actuator healthcheck
 set -euo pipefail
@@ -12,18 +13,21 @@ ENV_FILE="${PETNOSE_DEPLOY_ENV_FILE:-${DOCKER_DIR}/.env}"
 COMPOSE_BASE="${DOCKER_DIR}/compose.yaml"
 COMPOSE_PROD="${DOCKER_DIR}/compose.prod.yaml"
 COMPOSE_REAL_PROD="${DOCKER_DIR}/compose.prod-real-model.yaml"
+COMPOSE_GPU="${DOCKER_DIR}/compose.prod-gpu.yaml"
 COMPOSE_FIREBASE="${DOCKER_DIR}/compose.firebase.yaml"
 MODEL_CHECKPOINT_RELATIVE="logs/s101_224/model_final.pth"
 
 SPRING_IMAGE_DEFAULT="ghcr.io/jaaesung/petnose-spring-api:main-latest"
 PYTHON_REAL_IMAGE_DEFAULT="ghcr.io/jaaesung/petnose-python-embed-real:main-latest"
+PYTHON_GPU_IMAGE_DEFAULT="ghcr.io/jaaesung/petnose-python-embed-gpu-real:main-latest"
 
 INCLUDE_FIREBASE="false"
+INCLUDE_GPU="false"
 VALIDATE_ONLY="${PETNOSE_DEPLOY_VALIDATE_ONLY:-false}"
 
 usage() {
   cat <<'EOF'
-Usage: bash infra/scripts/deploy-real-model.sh [--firebase] [--validate-only]
+Usage: bash infra/scripts/deploy-real-model.sh [--firebase] [--gpu] [--validate-only]
 
 Deploy the AWS EC2 production stack with the real dog-nose model override.
 
@@ -39,13 +43,18 @@ Firebase is disabled by default. Include infra/docker/compose.firebase.yaml
 only by passing --firebase or setting:
   PETNOSE_INCLUDE_FIREBASE=true
 
+GPU is disabled by default. Include infra/docker/compose.prod-gpu.yaml only by
+passing --gpu or setting:
+  PETNOSE_INCLUDE_GPU=true
+
 Validation-only mode checks production env/image/runtime policy and exits before
-Docker, model checkpoint, GHCR login, compose pull/up, or health checks. It is for
-CI/unit guardrail tests only and does not replace production readiness checks.
+Docker, NVIDIA, model checkpoint, GHCR login, compose pull/up, or health checks.
+It is for CI/unit guardrail tests only and does not replace production readiness checks.
 
 Expected production images:
   SPRING_API_IMAGE=ghcr.io/jaaesung/petnose-spring-api:main-<sha7>
   PYTHON_EMBED_REAL_IMAGE=ghcr.io/jaaesung/petnose-python-embed-real:main-<sha7>
+  PYTHON_EMBED_GPU_REAL_IMAGE=ghcr.io/jaaesung/petnose-python-embed-gpu-real:main-<sha7>
 
 Required .env highlights:
   DOG_NOSE_MODEL_DIR_HOST=/opt/petnose/models/dog_nose_identification2
@@ -56,6 +65,8 @@ The model checkpoint must exist at:
 Examples:
   bash infra/scripts/deploy-real-model.sh
   bash infra/scripts/deploy-real-model.sh --validate-only
+  bash infra/scripts/deploy-real-model.sh --gpu
+  PETNOSE_INCLUDE_GPU=true bash infra/scripts/deploy-real-model.sh
   PETNOSE_INCLUDE_FIREBASE=true bash infra/scripts/deploy-real-model.sh
   bash infra/scripts/deploy-real-model.sh --firebase
 EOF
@@ -65,6 +76,9 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --firebase)
       INCLUDE_FIREBASE="true"
+      ;;
+    --gpu)
+      INCLUDE_GPU="true"
       ;;
     --validate-only)
       VALIDATE_ONLY="true"
@@ -150,22 +164,28 @@ is_false() {
 
 validate_production_runtime_policy() {
   local failures=0
+  local app_env
   local dog_nose_runtime
   local dog_nose_extract_enabled
   local profile_first_enabled
   local timing_log_enabled
   local embed_model
   local embed_vector_dim
+  local embed_device
+  local embed_device_required
   local install_real_deps
   local dog_nose_onnx_path
   local dog_nose_detector_weights
 
+  app_env="$(read_config_var APP_ENV)"
   dog_nose_runtime="$(read_config_var DOG_NOSE_RUNTIME)"
   dog_nose_extract_enabled="$(read_config_var DOG_NOSE_EXTRACT_ENABLED)"
   profile_first_enabled="$(read_config_var PETNOSE_PROFILE_FIRST_ENABLED)"
   timing_log_enabled="$(read_config_var PETNOSE_REGISTRATION_TIMING_LOG_ENABLED)"
   embed_model="$(read_config_var EMBED_MODEL)"
   embed_vector_dim="$(read_config_var EMBED_VECTOR_DIM)"
+  embed_device="$(read_config_var EMBED_DEVICE)"
+  embed_device_required="$(read_config_var EMBED_DEVICE_REQUIRED)"
   install_real_deps="$(read_config_var PYTHON_EMBED_INSTALL_REAL_DEPS)"
   dog_nose_onnx_path="$(read_config_var DOG_NOSE_ONNX_PATH)"
   dog_nose_detector_weights="$(read_config_var DOG_NOSE_DETECTOR_WEIGHTS)"
@@ -217,14 +237,46 @@ validate_production_runtime_policy() {
     failures=1
   fi
 
-  if [[ ! "${SPRING_IMAGE_EFFECTIVE}" =~ ^ghcr\.io/jaaesung/petnose-spring-api:main-[0-9a-f]{7}$ ]]; then
-    echo "[ERROR] SPRING_API_IMAGE must be ghcr.io/jaaesung/petnose-spring-api:main-<sha7>."
+  if [ "${app_env:-prod}" = "prod" ]; then
+    if [[ ! "${SPRING_IMAGE_EFFECTIVE}" =~ ^ghcr\.io/jaaesung/petnose-spring-api:main-[0-9a-f]{7}$ ]]; then
+      echo "[ERROR] SPRING_API_IMAGE must be ghcr.io/jaaesung/petnose-spring-api:main-<sha7>."
+      failures=1
+    fi
+  elif [[ ! "${SPRING_IMAGE_EFFECTIVE}" =~ ^ghcr\.io/jaaesung/petnose-spring-api:develop-(latest|[0-9a-f]{7})$ ]]; then
+    echo "[ERROR] Non-prod SPRING_API_IMAGE must use develop-latest or develop-<sha7>."
     failures=1
   fi
 
-  if [[ ! "${PYTHON_REAL_IMAGE_EFFECTIVE}" =~ ^ghcr\.io/jaaesung/petnose-python-embed-real:main-[0-9a-f]{7}$ ]]; then
-    echo "[ERROR] PYTHON_EMBED_REAL_IMAGE must be ghcr.io/jaaesung/petnose-python-embed-real:main-<sha7>."
-    failures=1
+  if [ "${INCLUDE_GPU}" = "true" ]; then
+    if [ "${app_env:-prod}" = "prod" ]; then
+      if [[ ! "${PYTHON_GPU_IMAGE_EFFECTIVE}" =~ ^ghcr\.io/jaaesung/petnose-python-embed-gpu-real:main-[0-9a-f]{7}$ ]]; then
+        echo "[ERROR] PYTHON_EMBED_GPU_REAL_IMAGE must be ghcr.io/jaaesung/petnose-python-embed-gpu-real:main-<sha7>."
+        failures=1
+      fi
+    elif [[ ! "${PYTHON_GPU_IMAGE_EFFECTIVE}" =~ ^ghcr\.io/jaaesung/petnose-python-embed-gpu-real:develop-(latest|[0-9a-f]{7})$ ]]; then
+      echo "[ERROR] Non-prod PYTHON_EMBED_GPU_REAL_IMAGE must use develop-latest or develop-<sha7>."
+      failures=1
+    fi
+
+    if [ "${embed_device}" != "cuda:0" ]; then
+      echo "[ERROR] EMBED_DEVICE must be cuda:0 for GPU production deployment."
+      failures=1
+    fi
+
+    if ! is_true "${embed_device_required}"; then
+      echo "[ERROR] EMBED_DEVICE_REQUIRED must be true for GPU production deployment."
+      failures=1
+    fi
+  else
+    if [ "${app_env:-prod}" = "prod" ]; then
+      if [[ ! "${PYTHON_REAL_IMAGE_EFFECTIVE}" =~ ^ghcr\.io/jaaesung/petnose-python-embed-real:main-[0-9a-f]{7}$ ]]; then
+        echo "[ERROR] PYTHON_EMBED_REAL_IMAGE must be ghcr.io/jaaesung/petnose-python-embed-real:main-<sha7>."
+        failures=1
+      fi
+    elif [[ ! "${PYTHON_REAL_IMAGE_EFFECTIVE}" =~ ^ghcr\.io/jaaesung/petnose-python-embed-real:develop-(latest|[0-9a-f]{7})$ ]]; then
+      echo "[ERROR] Non-prod PYTHON_EMBED_REAL_IMAGE must use develop-latest or develop-<sha7>."
+      failures=1
+    fi
   fi
 
   if [ "${failures}" -ne 0 ]; then
@@ -232,7 +284,11 @@ validate_production_runtime_policy() {
     return 1
   fi
 
-  echo "[OK] inference runtime policy: torch; ONNX/YOLO/profile-first/timing disabled"
+  if [ "${INCLUDE_GPU}" = "true" ]; then
+    echo "[OK] inference runtime policy: torch CUDA; ONNX/YOLO/profile-first/timing disabled"
+  else
+    echo "[OK] inference runtime policy: torch; ONNX/YOLO/profile-first/timing disabled"
+  fi
 }
 
 require_file "${ENV_FILE}"
@@ -244,11 +300,20 @@ if is_true "$(read_config_var PETNOSE_INCLUDE_FIREBASE)"; then
   INCLUDE_FIREBASE="true"
 fi
 
+if is_true "$(read_config_var PETNOSE_INCLUDE_GPU)"; then
+  INCLUDE_GPU="true"
+fi
+
 COMPOSE_FILES=(
   -f "${COMPOSE_BASE}"
   -f "${COMPOSE_PROD}"
   -f "${COMPOSE_REAL_PROD}"
 )
+
+if [ "${INCLUDE_GPU}" = "true" ]; then
+  require_file "${COMPOSE_GPU}"
+  COMPOSE_FILES+=(-f "${COMPOSE_GPU}")
+fi
 
 if [ "${INCLUDE_FIREBASE}" = "true" ]; then
   require_file "${COMPOSE_FIREBASE}"
@@ -264,23 +329,38 @@ compose_real_prod() {
 
 SPRING_IMAGE_EFFECTIVE="$(read_config_var SPRING_API_IMAGE)"
 PYTHON_REAL_IMAGE_EFFECTIVE="$(read_config_var PYTHON_EMBED_REAL_IMAGE)"
+PYTHON_GPU_IMAGE_EFFECTIVE="$(read_config_var PYTHON_EMBED_GPU_REAL_IMAGE)"
 PYTHON_LEGACY_IMAGE_EFFECTIVE="$(read_config_var PYTHON_EMBED_IMAGE)"
 DOG_NOSE_MODEL_DIR_HOST_EFFECTIVE="$(read_config_var DOG_NOSE_MODEL_DIR_HOST)"
 EMBED_DEVICE_EFFECTIVE="$(read_config_var EMBED_DEVICE)"
+EMBED_DEVICE_REQUIRED_EFFECTIVE="$(read_config_var EMBED_DEVICE_REQUIRED)"
 GHCR_USER="$(read_config_var GHCR_USERNAME)"
 GHCR_TOKEN_VALUE="$(read_config_var GHCR_TOKEN)"
 
 SPRING_IMAGE_EFFECTIVE="${SPRING_IMAGE_EFFECTIVE:-${SPRING_IMAGE_DEFAULT}}"
 PYTHON_REAL_IMAGE_EFFECTIVE="${PYTHON_REAL_IMAGE_EFFECTIVE:-${PYTHON_LEGACY_IMAGE_EFFECTIVE}}"
 PYTHON_REAL_IMAGE_EFFECTIVE="${PYTHON_REAL_IMAGE_EFFECTIVE:-${PYTHON_REAL_IMAGE_DEFAULT}}"
+PYTHON_GPU_IMAGE_EFFECTIVE="${PYTHON_GPU_IMAGE_EFFECTIVE:-${PYTHON_GPU_IMAGE_DEFAULT}}"
 
 export SPRING_API_IMAGE="${SPRING_IMAGE_EFFECTIVE}"
 export PYTHON_EMBED_REAL_IMAGE="${PYTHON_REAL_IMAGE_EFFECTIVE}"
+export PYTHON_EMBED_GPU_REAL_IMAGE="${PYTHON_GPU_IMAGE_EFFECTIVE}"
+if [ "${INCLUDE_GPU}" = "true" ]; then
+  export EMBED_DEVICE="cuda:0"
+  export EMBED_DEVICE_REQUIRED="true"
+  EMBED_DEVICE_EFFECTIVE="cuda:0"
+  EMBED_DEVICE_REQUIRED_EFFECTIVE="true"
+fi
 
 echo "[INFO] Deploy image targets"
 echo "  SPRING_API_IMAGE=${SPRING_IMAGE_EFFECTIVE}"
-echo "  PYTHON_EMBED_REAL_IMAGE=${PYTHON_REAL_IMAGE_EFFECTIVE}"
+if [ "${INCLUDE_GPU}" = "true" ]; then
+  echo "  PYTHON_EMBED_GPU_REAL_IMAGE=${PYTHON_GPU_IMAGE_EFFECTIVE}"
+else
+  echo "  PYTHON_EMBED_REAL_IMAGE=${PYTHON_REAL_IMAGE_EFFECTIVE}"
+fi
 echo "[INFO] Firebase compose included: ${INCLUDE_FIREBASE}"
+echo "[INFO] GPU compose included: ${INCLUDE_GPU}"
 
 validate_production_runtime_policy
 
@@ -295,6 +375,21 @@ require_cmd curl
 if ! docker compose version > /dev/null 2>&1; then
   echo "[ERROR] docker compose plugin is not available."
   exit 1
+fi
+
+if [ "${INCLUDE_GPU}" = "true" ]; then
+  require_cmd nvidia-smi
+  echo "[INFO] NVIDIA driver preflight..."
+  if ! nvidia-smi > /dev/null 2>&1; then
+    echo "[ERROR] nvidia-smi failed. Install and verify the NVIDIA driver before GPU deploy."
+    exit 1
+  fi
+
+  echo "[INFO] Docker GPU access preflight..."
+  if ! docker run --rm --gpus all nvidia/cuda:12.1.1-base-ubuntu22.04 nvidia-smi > /dev/null 2>&1; then
+    echo "[ERROR] Docker cannot access NVIDIA GPUs. Install or repair NVIDIA Container Toolkit."
+    exit 1
+  fi
 fi
 
 if [ -z "${DOG_NOSE_MODEL_DIR_HOST_EFFECTIVE}" ]; then
@@ -359,34 +454,45 @@ check_http_with_retry() {
 
 check_python_embed_runtime_health() {
   local expected_device="${EMBED_DEVICE_EFFECTIVE:-cpu}"
+  local expected_device_required="${EMBED_DEVICE_REQUIRED_EFFECTIVE:-false}"
   local output
 
-  if output="$(compose_real_prod exec -T python-embed env EXPECTED_EMBED_DEVICE="${expected_device}" python -c '
+  if output="$(compose_real_prod exec -T python-embed env EXPECTED_EMBED_DEVICE="${expected_device}" EXPECTED_EMBED_DEVICE_REQUIRED="${expected_device_required}" python -c '
 import json
 import os
 import sys
 import urllib.request
 
 expected_device = os.environ.get("EXPECTED_EMBED_DEVICE") or "cpu"
+expected_device_required = (os.environ.get("EXPECTED_EMBED_DEVICE_REQUIRED") or "false").lower() in {"1", "true", "yes"}
 
 try:
-    with urllib.request.urlopen("http://localhost:8000/health", timeout=5) as response:
+    with urllib.request.urlopen("http://localhost:8000/health/ready", timeout=5) as response:
         body = json.load(response)
 except Exception:
-    print("[FAIL] Python Embed runtime health: request failed")
+    print("[FAIL] Python Embed readiness: request failed")
     sys.exit(1)
 
 errors = []
-if body.get("status") != "ok":
-    errors.append("status must be ok")
+if body.get("status") not in {"ok", "ready"}:
+    errors.append("status must be ready")
 if body.get("model_loaded") is not True:
     errors.append("model_loaded must be true")
 backend = body.get("backend")
 if backend != "torch+timm":
     errors.append("backend must be torch+timm")
 device = body.get("device")
-if device != expected_device:
+if expected_device.startswith("cuda"):
+    if not str(device).startswith("cuda"):
+        errors.append("device must be cuda for GPU deploy")
+elif device != expected_device:
     errors.append("device must match EMBED_DEVICE")
+if bool(body.get("device_required")) != expected_device_required:
+    errors.append("device_required must match EMBED_DEVICE_REQUIRED")
+if body.get("device_required_satisfied") is not True:
+    errors.append("device_required_satisfied must be true")
+if body.get("model_path_exists") is not True:
+    errors.append("model_path_exists must be true")
 try:
     vector_dim = int(body.get("vector_dim"))
 except Exception:
@@ -398,10 +504,46 @@ if not model.startswith("dog-nose-identification2"):
     errors.append("model must start with dog-nose-identification2")
 
 if errors:
-    print("[FAIL] Python Embed runtime health: " + "; ".join(errors))
+    print("[FAIL] Python Embed readiness: " + "; ".join(errors))
     sys.exit(1)
 
-print(f"[OK] Python Embed backend={backend} vector_dim={vector_dim} model_loaded=true")
+print(f"[OK] Python Embed readiness backend={backend} device={device} vector_dim={vector_dim} model_loaded=true")
+' 2>&1)"; then
+    printf '%s\n' "${output}"
+    return 0
+  fi
+
+  printf '%s\n' "${output}"
+  return 1
+}
+
+check_python_embed_cuda_runtime() {
+  local output
+
+  if [ "${INCLUDE_GPU}" != "true" ]; then
+    return 0
+  fi
+
+  if output="$(compose_real_prod exec -T python-embed python -c '
+import sys
+import torch
+
+errors = []
+if torch.version.cuda is None:
+    errors.append("torch.version.cuda must not be None")
+if not torch.cuda.is_available():
+    errors.append("torch.cuda.is_available() must be true")
+device_name = None
+if not errors:
+    device_name = torch.cuda.get_device_name(0)
+    if not device_name:
+        errors.append("torch.cuda.get_device_name(0) must be non-empty")
+
+if errors:
+    print("[FAIL] Python Embed CUDA runtime: " + "; ".join(errors))
+    sys.exit(1)
+
+print(f"[OK] Python Embed CUDA runtime cuda={torch.version.cuda} device={device_name}")
 ' 2>&1)"; then
     printf '%s\n' "${output}"
     return 0
@@ -435,6 +577,14 @@ echo "[INFO] Python Embed runtime healthcheck..."
 if ! check_python_embed_runtime_health; then
   print_failure_context
   exit 1
+fi
+
+if [ "${INCLUDE_GPU}" = "true" ]; then
+  echo "[INFO] Python Embed CUDA runtime check..."
+  if ! check_python_embed_cuda_runtime; then
+    print_failure_context
+    exit 1
+  fi
 fi
 
 echo "[INFO] Deploy success."
