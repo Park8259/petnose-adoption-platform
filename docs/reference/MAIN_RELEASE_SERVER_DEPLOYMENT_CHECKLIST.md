@@ -39,8 +39,34 @@ Inference runtime 배포 정책의 상세 기준은 [INFERENCE_RUNTIME_DEPLOYMEN
 | CI/CD dog nose v2 release path | `.github/workflows/publish-images.yaml`, `.github/workflows/cd-prod.yaml`, `infra/scripts/deploy-real-model.sh` |
 | async password reset email | `docs/reference/OPS_NOTES.md`, `infra/docker/.env.example`, `infra/docker/compose.yaml` |
 | manual full feature smoke script | `scripts/manual-full-feature-smoke.ps1`, `docs/reference/MANUAL_FULL_FEATURE_SMOKE.md` |
+| model pipeline final release regression | `scripts/run-model-pipeline-final-regression.ps1`, `docs/reference/MODEL_PIPELINE_FINAL_REGRESSION.md` |
 | API transcript mode | `docs/reference/MANUAL_FULL_FEATURE_SMOKE.md` |
 | Firebase enabled chat smoke | `docs/ops-evidence/firebase-chat-release-readiness.md`, `docs/ops-evidence/firebase-chat-smoke-log.md` |
+
+---
+
+## Develop To Main Regression Gate
+
+`develop`를 `main`으로 승격하기 전에는 [MODEL_PIPELINE_FINAL_REGRESSION.md](MODEL_PIPELINE_FINAL_REGRESSION.md)를 먼저 실행한다.
+
+필수 확인:
+
+- `PlanOnly` PASS
+- `Static` PASS
+- backend/Python/optional ONNX/Docker/compose CI PASS
+- production runtime policy PASS
+- profile-first, YOLO, ONNX production runtime default-off
+- tracked model/secret/raw artifact 없음
+- core dog registration, duplicate detection, handover verification, file serving PASS
+
+환경 의존 manual gate:
+
+- real-model E2E
+- Firebase enabled chat
+- password reset email confirm
+- Qdrant/MySQL reconciliation dry-run
+
+mandatory FAIL, 이유 없는 mandatory SKIP/NOT_RUN, mutable image tag, runtime backend/vector dimension mismatch, DB/Qdrant drift가 있으면 `main` release PR을 승인하지 않는다.
 
 ---
 

@@ -291,6 +291,13 @@ jobs:
           pwsh -NoProfile -File ./scripts/verify-submission-real-model-e2e.ps1 -Help
           pwsh -NoProfile -Command "& { [scriptblock]::Create((Get-Content -Raw './scripts/verify-submission-real-model-e2e.ps1')) | Out-Null }"
 
+      - name: Check final regression runner
+        run: |
+          set -euo pipefail
+          pwsh -NoProfile -File ./scripts/run-model-pipeline-final-regression.ps1 -Help
+          pwsh -NoProfile -File ./scripts/run-model-pipeline-final-regression.ps1 -Mode PlanOnly
+          pwsh -NoProfile -File ./scripts/tests/test-model-pipeline-final-regression.ps1
+
       - name: Secret scan-lite for committed evidence
         run: |
           set -euo pipefail

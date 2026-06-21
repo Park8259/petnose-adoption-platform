@@ -30,6 +30,7 @@
 | Vector/Storage 참고 | `reference/STORAGE_AND_VECTOR_BOUNDARY.md` | Qdrant/Python Embed/file storage 경계 판단 |
 | Qdrant 정합성 복구 | `reference/QDRANT_RECONCILIATION_RUNBOOK.md` | `dog_nose_references`와 Qdrant active points drift 점검/복구 |
 | 수동 전체 smoke | `reference/MANUAL_FULL_FEATURE_SMOKE.md` | 회원가입부터 입양 완료까지 local/dev 전체 기능 수동 검증 |
+| 모델 파이프라인 최종 release regression | `reference/MODEL_PIPELINE_FINAL_REGRESSION.md` | develop를 main으로 승격하기 전 모델 파이프라인/guardrail/API flow 최종 gate |
 | main 서버 배포 준비 | `reference/MAIN_RELEASE_SERVER_DEPLOYMENT_CHECKLIST.md` | `/opt/petnose` 기준 production 배포 파일, env, compose, readiness check |
 | Firebase chat 배포 | `reference/FIREBASE_CHAT_DEPLOYMENT.md` | production Firebase service account, compose.firebase, Firestore rules 배포 |
 | 앱팀 production handoff | `reference/APP_TEAM_PRODUCTION_HANDOFF.md` | API base URL, google-services.json, custom token/FCM/Firestore listener 전달 범위 |
