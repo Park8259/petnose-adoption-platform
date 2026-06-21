@@ -118,6 +118,7 @@ GitHub에서 서버로 배치해야 하는 non-secret 운영 파일:
 - `infra/docker/compose.yaml`
 - `infra/docker/compose.prod.yaml`
 - `infra/docker/compose.prod-real-model.yaml`
+- `infra/docker/compose.prod-gpu.yaml` (g4dn GPU 배포 시에만)
 - `infra/docker/compose.firebase.yaml`
 - `infra/nginx/**`
 - `infra/scripts/deploy-real-model.sh`
@@ -155,6 +156,8 @@ SPRING_PROFILES_ACTIVE=prod
 
 SPRING_API_IMAGE=ghcr.io/jaaesung/petnose-spring-api:main-<sha7>
 PYTHON_EMBED_REAL_IMAGE=ghcr.io/jaaesung/petnose-python-embed-real:main-<sha7>
+# g4dn GPU 배포 시에만:
+# PYTHON_EMBED_GPU_REAL_IMAGE=ghcr.io/jaaesung/petnose-python-embed-gpu-real:main-<sha7>
 
 MYSQL_DATABASE=petnose
 MYSQL_USER=petnose
@@ -174,6 +177,8 @@ PETNOSE_REGISTRATION_TIMING_LOG_ENABLED=false
 EMBED_MODEL=dog-nose-identification2
 EMBED_VECTOR_DIM=2048
 PYTHON_EMBED_INSTALL_REAL_DEPS=1
+EMBED_DEVICE=cpu
+EMBED_DEVICE_REQUIRED=false
 DOG_NOSE_MODEL_DIR_HOST=/opt/petnose/models/dog_nose_identification2
 
 QDRANT_COLLECTION=dog_nose_embeddings_real_v2
@@ -208,6 +213,8 @@ MAX_UPLOAD_SIZE_MB=20
 Production guardrails:
 
 - `SPRING_API_IMAGE`와 `PYTHON_EMBED_REAL_IMAGE`는 `main-<sha7>` immutable tag로 고정한다.
+- g4dn GPU 배포에서는 `PYTHON_EMBED_GPU_REAL_IMAGE=ghcr.io/jaaesung/petnose-python-embed-gpu-real:main-<sha7>`,
+  `EMBED_DEVICE=cuda:0`, `EMBED_DEVICE_REQUIRED=true`, `PETNOSE_INCLUDE_GPU=true`를 사용한다.
 - `DOG_NOSE_RUNTIME=torch`와 ONNX/YOLO/profile-first/timing flags disabled 상태를 유지한다.
 - `AUTH_PASSWORD_RESET_EXPOSE_TOKEN_IN_RESPONSE=false`를 유지한다.
 - `MYSQL_PASSWORD`와 `SPRING_DATASOURCE_PASSWORD`는 같은 값이어야 한다.

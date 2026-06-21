@@ -3,6 +3,10 @@
 This runbook deploys the latest stable `main` PetNose runtime to a single AWS
 EC2 instance with the real dog-nose embedding model.
 
+For the NVIDIA T4 GPU path on a g4dn.xlarge single host, use
+[g4dn-single-host-gpu.md](g4dn-single-host-gpu.md). The GPU path is explicit
+opt-in and uses `compose.prod-gpu.yaml` after the CPU real-model compose files.
+
 ## Target Architecture
 
 - Single EC2 first, operated with Docker Compose.
@@ -16,7 +20,7 @@ EC2 instance with the real dog-nose embedding model.
 
 | Item | Recommendation |
 |---|---|
-| Instance | Minimum `t3.medium`; recommended `t3.large` for real-model deployment |
+| Instance | Minimum `t3.medium`; recommended `t3.large` for CPU real-model deployment |
 | OS | Ubuntu 22.04 LTS |
 | Disk | EBS gp3 50GB+ recommended |
 | IP | Elastic IP recommended |
@@ -132,11 +136,11 @@ EMBED_MODEL=dog-nose-identification2
 EMBED_VECTOR_DIM=2048
 PYTHON_EMBED_INSTALL_REAL_DEPS=1
 
-QDRANT_COLLECTION=dog_nose_embeddings_real_v1
+QDRANT_COLLECTION=dog_nose_embeddings_real_v2
 QDRANT_VECTOR_DIM=2048
 
 SPRING_API_IMAGE=ghcr.io/jaaesung/petnose-spring-api:main-<sha7>
-PYTHON_EMBED_IMAGE=ghcr.io/jaaesung/petnose-python-embed-real:main-<sha7>
+PYTHON_EMBED_REAL_IMAGE=ghcr.io/jaaesung/petnose-python-embed-real:main-<sha7>
 ```
 
 Use immutable `main-<sha7>` tags for production instead of `main-latest` when
@@ -150,7 +154,7 @@ The real-model path uses:
 
 - `infra/docker/compose.yaml`
 - `infra/docker/compose.prod.yaml`
-- `infra/docker/compose.real-model.yaml`
+- `infra/docker/compose.prod-real-model.yaml`
 
 Run:
 

@@ -8,6 +8,7 @@ name: Publish Images to GHCR
 #   ghcr.io/<owner>/petnose-spring-api
 #   ghcr.io/<owner>/petnose-python-embed
 #   ghcr.io/<owner>/petnose-python-embed-real
+#   ghcr.io/<owner>/petnose-python-embed-gpu-real
 #
 # 태그 전략:
 #   develop-latest      develop 브랜치 최신 커밋
@@ -17,6 +18,8 @@ name: Publish Images to GHCR
 #
 # real image policy:
 #   - petnose-python-embed-real은 real-model Python dependencies만 포함합니다.
+#   - petnose-python-embed-gpu-real은 CUDA runtime 기반 PyTorch image이며,
+#     GPU 없는 GitHub-hosted runner에서도 build/push만 수행합니다.
 #   - dog-nose-identification2 checkpoint는 이미지에 포함하지 않습니다.
 #   - checkpoint, Firebase credential, JWT secret, DOG_NOSE_MODEL_DIR_HOST 등
 #     runtime/server-only 값은 build args로 전달하지 않습니다.
@@ -61,6 +64,12 @@ jobs:
             image_suffix: petnose-python-embed-real
             build_args: |
               INSTALL_REAL_MODEL_DEPS=1
+
+          - name: python-embed-gpu-real
+            context: ./python-embed
+            dockerfile: ./python-embed/Dockerfile.gpu
+            image_suffix: petnose-python-embed-gpu-real
+            build_args: ""
 
     steps:
       - name: Checkout

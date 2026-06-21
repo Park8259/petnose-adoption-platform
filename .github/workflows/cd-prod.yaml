@@ -22,6 +22,14 @@ on:
         options:
           - "true"
           - "false"
+      gpu:
+        description: "Deploy g4dn GPU real-model override (requires real_model=true)"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
       run_healthcheck:
         description: "Run an additional post-deploy actuator healthcheck"
         required: true
@@ -45,6 +53,7 @@ jobs:
       SPRING_IMAGE_REPO: ghcr.io/${{ github.repository_owner }}/petnose-spring-api
       PYTHON_IMAGE_REPO: ghcr.io/${{ github.repository_owner }}/petnose-python-embed
       PYTHON_REAL_IMAGE_REPO: ghcr.io/${{ github.repository_owner }}/petnose-python-embed-real
+      PYTHON_GPU_REAL_IMAGE_REPO: ghcr.io/${{ github.repository_owner }}/petnose-python-embed-gpu-real
 
     steps:
       - name: Validate production inputs
@@ -57,8 +66,13 @@ jobs:
             echo "[ERROR] Production deploy requires immutable main-<sha7> tag. Received: ${TAG}"
             exit 1
           fi
+          if [ "${{ inputs.gpu }}" = "true" ] && [ "${{ inputs.real_model }}" != "true" ]; then
+            echo "[ERROR] gpu=true requires real_model=true."
+            exit 1
+          fi
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "real_model=${{ inputs.real_model }}" >> "$GITHUB_OUTPUT"
+          echo "gpu=${{ inputs.gpu }}" >> "$GITHUB_OUTPUT"
           echo "run_healthcheck=${{ inputs.run_healthcheck }}" >> "$GITHUB_OUTPUT"
 
       - name: Prepare SSH
@@ -75,6 +89,7 @@ jobs:
         env:
           TAG: ${{ steps.validate.outputs.tag }}
           REAL_MODEL: ${{ steps.validate.outputs.real_model }}
+          GPU: ${{ steps.validate.outputs.gpu }}
           RUN_HEALTHCHECK: ${{ steps.validate.outputs.run_healthcheck }}
         run: |
           set -euo pipefail
@@ -82,11 +97,12 @@ jobs:
           SPRING_IMAGE="${SPRING_IMAGE_REPO}:${TAG}"
           PYTHON_IMAGE="${PYTHON_IMAGE_REPO}:${TAG}"
           PYTHON_REAL_IMAGE="${PYTHON_REAL_IMAGE_REPO}:${TAG}"
+          PYTHON_GPU_REAL_IMAGE="${PYTHON_GPU_REAL_IMAGE_REPO}:${TAG}"
 
           ssh -o StrictHostKeyChecking=yes \
             -i ~/.ssh/id_ed25519 \
             "${{ secrets.PROD_USER }}@${{ secrets.PROD_HOST }}" \
-            "TAG='${TAG}' REAL_MODEL='${REAL_MODEL}' RUN_HEALTHCHECK='${RUN_HEALTHCHECK}' SPRING_IMAGE='${SPRING_IMAGE}' PYTHON_IMAGE='${PYTHON_IMAGE}' PYTHON_REAL_IMAGE='${PYTHON_REAL_IMAGE}' bash -s" <<'EOF'
+            "TAG='${TAG}' REAL_MODEL='${REAL_MODEL}' GPU='${GPU}' RUN_HEALTHCHECK='${RUN_HEALTHCHECK}' SPRING_IMAGE='${SPRING_IMAGE}' PYTHON_IMAGE='${PYTHON_IMAGE}' PYTHON_REAL_IMAGE='${PYTHON_REAL_IMAGE}' PYTHON_GPU_REAL_IMAGE='${PYTHON_GPU_REAL_IMAGE}' bash -s" <<'EOF'
           set -euo pipefail
 
           DEPLOY_ROOT=/opt/petnose
@@ -133,18 +149,30 @@ jobs:
             test -d "${MODEL_DIR}"
             test -f "${MODEL_DIR%/}/logs/s101_224/model_final.pth"
 
-            SPRING_API_IMAGE="${SPRING_IMAGE}" \
-            PYTHON_EMBED_REAL_IMAGE="${PYTHON_REAL_IMAGE}" \
-            docker compose \
-              --env-file infra/docker/.env \
-              -f infra/docker/compose.yaml \
-              -f infra/docker/compose.prod.yaml \
-              -f infra/docker/compose.prod-real-model.yaml \
-              config > /dev/null
+            COMPOSE_FILES=(-f infra/docker/compose.yaml -f infra/docker/compose.prod.yaml -f infra/docker/compose.prod-real-model.yaml)
+            if [ "${GPU}" = "true" ]; then
+              require_file infra/docker/compose.prod-gpu.yaml
+              nvidia-smi > /dev/null
+              docker run --rm --gpus all nvidia/cuda:12.1.1-base-ubuntu22.04 nvidia-smi > /dev/null
+              COMPOSE_FILES+=(-f infra/docker/compose.prod-gpu.yaml)
+            fi
 
             SPRING_API_IMAGE="${SPRING_IMAGE}" \
             PYTHON_EMBED_REAL_IMAGE="${PYTHON_REAL_IMAGE}" \
-            bash infra/scripts/deploy-real-model.sh
+            PYTHON_EMBED_GPU_REAL_IMAGE="${PYTHON_GPU_REAL_IMAGE}" \
+            docker compose \
+              --env-file infra/docker/.env \
+              "${COMPOSE_FILES[@]}" \
+              config > /dev/null
+
+            ARGS=()
+            if [ "${GPU}" = "true" ]; then
+              ARGS+=(--gpu)
+            fi
+            SPRING_API_IMAGE="${SPRING_IMAGE}" \
+            PYTHON_EMBED_REAL_IMAGE="${PYTHON_REAL_IMAGE}" \
+            PYTHON_EMBED_GPU_REAL_IMAGE="${PYTHON_GPU_REAL_IMAGE}" \
+            bash infra/scripts/deploy-real-model.sh "${ARGS[@]}"
           else
             SPRING_API_IMAGE="${SPRING_IMAGE}" \
             PYTHON_EMBED_IMAGE="${PYTHON_IMAGE}" \
@@ -162,6 +190,9 @@ jobs:
           COMPOSE_FILES=(-f infra/docker/compose.yaml -f infra/docker/compose.prod.yaml)
           if [ "${REAL_MODEL}" = "true" ]; then
             COMPOSE_FILES+=(-f infra/docker/compose.prod-real-model.yaml)
+          fi
+          if [ "${GPU}" = "true" ]; then
+            COMPOSE_FILES+=(-f infra/docker/compose.prod-gpu.yaml)
           fi
 
           docker compose --env-file infra/docker/.env "${COMPOSE_FILES[@]}" ps

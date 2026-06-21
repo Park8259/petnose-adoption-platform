@@ -15,6 +15,14 @@ on:
         options:
           - "true"
           - "false"
+      gpu:
+        description: "Deploy g4dn GPU real-model override (requires real_model=true)"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
       run_reconciliation:
         description: "Run Qdrant/MySQL reconciliation after real-model deploy"
         required: true
@@ -52,6 +60,7 @@ jobs:
       SPRING_IMAGE_REPO: ghcr.io/${{ github.repository_owner }}/petnose-spring-api
       PYTHON_IMAGE_REPO: ghcr.io/${{ github.repository_owner }}/petnose-python-embed
       PYTHON_REAL_IMAGE_REPO: ghcr.io/${{ github.repository_owner }}/petnose-python-embed-real
+      PYTHON_GPU_REAL_IMAGE_REPO: ghcr.io/${{ github.repository_owner }}/petnose-python-embed-gpu-real
 
     steps:
       - name: Resolve deploy inputs
@@ -62,12 +71,14 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             TAG="${{ inputs.image_tag }}"
             REAL_MODEL="${{ inputs.real_model }}"
+            GPU="${{ inputs.gpu }}"
             RUN_RECONCILIATION="${{ inputs.run_reconciliation }}"
             RUN_HEALTHCHECK="${{ inputs.run_healthcheck }}"
           else
             SHA="${{ github.event.workflow_run.head_sha }}"
             TAG="develop-${SHA:0:7}"
             REAL_MODEL="true"
+            GPU="false"
             RUN_RECONCILIATION="true"
             RUN_HEALTHCHECK="true"
           fi
@@ -76,18 +87,25 @@ jobs:
             echo "[ERROR] Invalid dev image tag: ${TAG}. Use develop-latest or develop-<sha7>."
             exit 1
           fi
+          if [ "${GPU}" = "true" ] && [ "${REAL_MODEL}" != "true" ]; then
+            echo "[ERROR] gpu=true requires real_model=true."
+            exit 1
+          fi
 
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "real_model=${REAL_MODEL}" >> "$GITHUB_OUTPUT"
+          echo "gpu=${GPU}" >> "$GITHUB_OUTPUT"
           echo "run_reconciliation=${RUN_RECONCILIATION}" >> "$GITHUB_OUTPUT"
           echo "run_healthcheck=${RUN_HEALTHCHECK}" >> "$GITHUB_OUTPUT"
-          echo "Resolved dev deploy: tag=${TAG}, real_model=${REAL_MODEL}"
+          echo "Resolved dev deploy: tag=${TAG}, real_model=${REAL_MODEL}, gpu=${GPU}"
 
       - name: Preflight on dev server
         shell: bash
         env:
           REAL_MODEL: ${{ steps.resolve.outputs.real_model }}
+          GPU: ${{ steps.resolve.outputs.gpu }}
           RUN_RECONCILIATION: ${{ steps.resolve.outputs.run_reconciliation }}
+          TAG: ${{ steps.resolve.outputs.tag }}
         run: |
           set -euo pipefail
 
@@ -152,6 +170,23 @@ jobs:
               config > /dev/null
           fi
 
+          if [ "${GPU}" = "true" ]; then
+            require_file infra/docker/compose.prod-gpu.yaml
+            nvidia-smi > /dev/null
+            docker run --rm --gpus all nvidia/cuda:12.1.1-base-ubuntu22.04 nvidia-smi > /dev/null
+
+            SPRING_API_IMAGE="${SPRING_IMAGE_REPO}:${TAG}" \
+            PYTHON_EMBED_REAL_IMAGE="${PYTHON_REAL_IMAGE_REPO}:${TAG}" \
+            PYTHON_EMBED_GPU_REAL_IMAGE="${PYTHON_GPU_REAL_IMAGE_REPO}:${TAG}" \
+            docker compose \
+              --env-file infra/docker/.env \
+              -f infra/docker/compose.yaml \
+              -f infra/docker/compose.prod.yaml \
+              -f infra/docker/compose.prod-real-model.yaml \
+              -f infra/docker/compose.prod-gpu.yaml \
+              config > /dev/null
+          fi
+
           if [ "${RUN_RECONCILIATION}" = "true" ]; then
             if ! command -v pwsh > /dev/null 2>&1; then
               echo "::warning::pwsh is not installed; optional reconciliation will be skipped."
@@ -163,6 +198,7 @@ jobs:
         env:
           TAG: ${{ steps.resolve.outputs.tag }}
           REAL_MODEL: ${{ steps.resolve.outputs.real_model }}
+          GPU: ${{ steps.resolve.outputs.gpu }}
         run: |
           set -euo pipefail
           cd "${DEPLOY_ROOT}"
@@ -178,7 +214,9 @@ jobs:
           }
 
           set_env_var SPRING_API_IMAGE "${SPRING_IMAGE_REPO}:${TAG}"
-          if [ "${REAL_MODEL}" = "true" ]; then
+          if [ "${GPU}" = "true" ]; then
+            set_env_var PYTHON_EMBED_GPU_REAL_IMAGE "${PYTHON_GPU_REAL_IMAGE_REPO}:${TAG}"
+          elif [ "${REAL_MODEL}" = "true" ]; then
             set_env_var PYTHON_EMBED_REAL_IMAGE "${PYTHON_REAL_IMAGE_REPO}:${TAG}"
           else
             set_env_var PYTHON_EMBED_IMAGE "${PYTHON_IMAGE_REPO}:${TAG}"
@@ -188,11 +226,16 @@ jobs:
         shell: bash
         env:
           REAL_MODEL: ${{ steps.resolve.outputs.real_model }}
+          GPU: ${{ steps.resolve.outputs.gpu }}
         run: |
           set -euo pipefail
           cd "${DEPLOY_ROOT}"
           if [ "${REAL_MODEL}" = "true" ]; then
-            bash infra/scripts/deploy-real-model.sh
+            ARGS=()
+            if [ "${GPU}" = "true" ]; then
+              ARGS+=(--gpu)
+            fi
+            bash infra/scripts/deploy-real-model.sh "${ARGS[@]}"
           else
             bash infra/scripts/deploy.sh
           fi
@@ -220,6 +263,7 @@ jobs:
         shell: bash
         env:
           REAL_MODEL: ${{ steps.resolve.outputs.real_model }}
+          GPU: ${{ steps.resolve.outputs.gpu }}
           RUN_HEALTHCHECK: ${{ steps.resolve.outputs.run_healthcheck }}
         run: |
           set -euo pipefail
@@ -228,6 +272,9 @@ jobs:
           COMPOSE_FILES=(-f infra/docker/compose.yaml -f infra/docker/compose.prod.yaml)
           if [ "${REAL_MODEL}" = "true" ]; then
             COMPOSE_FILES+=(-f infra/docker/compose.prod-real-model.yaml)
+          fi
+          if [ "${GPU}" = "true" ]; then
+            COMPOSE_FILES+=(-f infra/docker/compose.prod-gpu.yaml)
           fi
 
           docker compose --env-file infra/docker/.env "${COMPOSE_FILES[@]}" ps || true

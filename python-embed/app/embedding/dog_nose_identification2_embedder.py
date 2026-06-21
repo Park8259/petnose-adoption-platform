@@ -24,12 +24,15 @@ class DogNoseIdentification2Embedder(BaseEmbedder):
         model_dir: str,
         model_path: str | None,
         embed_device: str = "cpu",
+        embed_device_required: bool = False,
         default_image_size: int = 224,
     ) -> None:
         super().__init__(requested_model_name="dog-nose-identification2")
         self.model_name = "dog-nose-identification2"
         self.backend = "torch+timm"
         self.device = embed_device
+        self.requested_device = embed_device
+        self.embed_device_required = embed_device_required
 
         self._model_dir = Path(model_dir)
         self._configured_model_path = Path(model_path) if model_path else None
@@ -149,6 +152,8 @@ class DogNoseIdentification2Embedder(BaseEmbedder):
                 "model_path": str(self._resolved_model_path) if self._resolved_model_path else None,
                 "model_path_exists": self._model_path_exists,
                 "image_size": self._image_size,
+                "requested_device": self.requested_device,
+                "embed_device_required": self.embed_device_required,
             }
         )
         return data
@@ -201,6 +206,8 @@ class DogNoseIdentification2Embedder(BaseEmbedder):
         req = (requested or "cpu").lower()
         if req.startswith("cuda") and self._torch.cuda.is_available():
             return self._torch.device(req)
+        if req.startswith("cuda") and self.embed_device_required:
+            raise EmbedderError("EMBED_DEVICE_REQUIRED=true requires CUDA, but CUDA is not available.")
         return self._torch.device("cpu")
 
     def _torch_load_checkpoint(self, path: Path):

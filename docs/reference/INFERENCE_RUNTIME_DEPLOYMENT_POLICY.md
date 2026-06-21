@@ -36,6 +36,16 @@ SPRING_API_IMAGE=ghcr.io/jaaesung/petnose-spring-api:main-<sha7>
 PYTHON_EMBED_REAL_IMAGE=ghcr.io/jaaesung/petnose-python-embed-real:main-<sha7>
 ```
 
+g4dn.xlarge GPU 배포는 같은 PyTorch runtime을 NVIDIA T4 CUDA device에서
+실행하는 명시적 opt-in 경로다. 이 경로도 ONNX/YOLO/profile-first를 켜지 않는다.
+
+```dotenv
+PYTHON_EMBED_GPU_REAL_IMAGE=ghcr.io/jaaesung/petnose-python-embed-gpu-real:main-<sha7>
+EMBED_DEVICE=cuda:0
+EMBED_DEVICE_REQUIRED=true
+PETNOSE_INCLUDE_GPU=true
+```
+
 현재 production release에서는 아래 값을 허용하지 않는다.
 
 - `DOG_NOSE_RUNTIME=onnxruntime`
@@ -48,6 +58,10 @@ PYTHON_EMBED_REAL_IMAGE=ghcr.io/jaaesung/petnose-python-embed-real:main-<sha7>
 - local image tag
 - generated ONNX artifact
 - YOLO weight
+
+Production GPU 배포에서도 `PYTHON_EMBED_GPU_REAL_IMAGE`는 immutable
+`main-<sha7>`만 허용한다. `main-latest`와 `develop-*` GPU image tag는
+production에서 금지한다.
 
 ---
 
