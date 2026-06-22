@@ -671,10 +671,18 @@ check_python_embed_profile_first_yolo_runtime() {
   fi
 
   if output="$(compose_real_prod exec -T python-embed python -c '
+import importlib.util
 from app.nose_extraction import DogNoseExtractor
 
 extractor = DogNoseExtractor.from_env()
 errors = []
+missing_dependencies = [
+    module_name
+    for module_name in ("cv2", "pandas", "scipy", "matplotlib", "seaborn", "yaml", "requests", "tqdm", "psutil")
+    if importlib.util.find_spec(module_name) is None
+]
+if missing_dependencies:
+    errors.append("missing YOLO runtime dependencies: " + ", ".join(missing_dependencies))
 if not extractor.config.enabled:
     errors.append("DOG_NOSE_EXTRACT_ENABLED must be true")
 if extractor.config.detector_backend != "yolov5_legacy":

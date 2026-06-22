@@ -501,12 +501,29 @@ jobs:
         run: docker build -t petnose-spring-api:ci ./backend
 
       - name: Build python embed mock image
-        run: docker build --build-arg INSTALL_REAL_MODEL_DEPS=0 --build-arg INSTALL_ONNX_RUNTIME_DEPS=0 -t petnose-python-embed:ci ./python-embed
+        run: docker build --build-arg INSTALL_REAL_MODEL_DEPS=0 --build-arg INSTALL_ONNX_RUNTIME_DEPS=0 --build-arg INSTALL_YOLO_RUNTIME_DEPS=0 -t petnose-python-embed:ci ./python-embed
 
       - name: Build python embed GPU real-model image
-        run: docker build -f ./python-embed/Dockerfile.gpu -t petnose-python-embed-gpu-real:ci ./python-embed
+        run: docker build -f ./python-embed/Dockerfile.gpu --build-arg INSTALL_REAL_MODEL_DEPS=1 --build-arg INSTALL_YOLO_RUNTIME_DEPS=1 -t petnose-python-embed-gpu-real:ci ./python-embed
 
       - name: Check GPU image uses CUDA-enabled torch build
         run: |
           docker run --rm petnose-python-embed-gpu-real:ci \
             python -c "import torch; assert torch.version.cuda is not None, torch.version.cuda; print(torch.version.cuda)"
+
+      - name: Check GPU image includes YOLO runtime imports
+        run: |
+          docker run --rm petnose-python-embed-gpu-real:ci \
+            python - <<'PY'
+          import cv2
+          import pandas
+          import scipy
+          import matplotlib
+          import seaborn
+          import yaml
+          import requests
+          import tqdm
+          import psutil
+
+          print("YOLO_RUNTIME_IMPORTS_OK")
+          PY
