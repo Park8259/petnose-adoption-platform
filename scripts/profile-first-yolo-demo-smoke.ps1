@@ -21,6 +21,11 @@ or a unique fixture set and the pass path must prove Qdrant upsert through a
 REGISTERED result. Without that switch, an already-populated demo runtime may
 return DUPLICATE_SUSPECTED while still proving the profile-match and duplicate
 contracts.
+
+Do not delete/reset existing Qdrant collections or Docker volumes to create
+clean evidence. For g4dn/develop validation, set QDRANT_COLLECTION to a
+temporary collection such as dog_nose_embeddings_profile_first_demo_<utcstamp>
+and redeploy the profile-first YOLO demo runtime before running this script.
 #>
 
 [CmdletBinding()]
@@ -80,6 +85,9 @@ Recommended g4dn demo:
 
 Notes:
   - Use a clean Qdrant collection or unique fixture set with -RequireNormalRegistration.
+  - Do not delete/reset existing Qdrant collections or Docker volumes for clean evidence.
+  - For clean g4dn evidence, set QDRANT_COLLECTION to a temporary collection
+    such as dog_nose_embeddings_profile_first_demo_20260622104732 and redeploy.
   - Raw image bytes, JWTs, passwords, vectors, and crop_base64 are never written.
 "@
 }

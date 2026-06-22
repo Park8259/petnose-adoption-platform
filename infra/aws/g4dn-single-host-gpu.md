@@ -170,11 +170,27 @@ EMBED_DEVICE=cuda:0
 EMBED_DEVICE_REQUIRED=true
 DOG_NOSE_DETECTOR_WEIGHTS_HOST=/opt/petnose-lab/artifacts/yolo/best.pt
 DOG_NOSE_YOLOV5_REPO_HOST=/opt/petnose-lab/vendor/yolov05
+
+QDRANT_COLLECTION=dog_nose_embeddings_real_v2
+QDRANT_VECTOR_DIM=2048
+QDRANT_DISTANCE=Cosine
 ```
 
 The deploy script maps these host paths to `/models/yolo/best.pt` and
 `/models/yolov05`, sets `DOG_NOSE_DETECTOR_DEVICE=cuda:0`, and keeps
 `DOG_NOSE_RUNTIME=torch`. ONNX Runtime is not enabled in this demo path.
+
+For clean `-RequireNormalRegistration` demo evidence, do not delete or reset an
+existing Qdrant collection. Point this demo runtime at a temporary collection
+instead, for example:
+
+```bash
+QDRANT_COLLECTION="dog_nose_embeddings_profile_first_demo_$(date -u +%Y%m%d%H%M%S)"
+```
+
+Keep `QDRANT_VECTOR_DIM=2048` and `QDRANT_DISTANCE=Cosine`. This lets the clean
+profile-first registration and duplicate-block path be verified without
+resetting MySQL, Qdrant volumes, or the active real-model collection.
 
 ## Deploy
 
@@ -222,7 +238,9 @@ bash infra/scripts/deploy-real-model.sh --profile-first-yolo
 
 This implies the GPU override, requires non-prod `APP_ENV`, verifies the
 external YOLO host paths before deploy, and performs a Python container check
-that the legacy YOLOv5 detector is loaded on CUDA.
+that the legacy YOLOv5 detector is loaded on CUDA. It also requires
+`QDRANT_COLLECTION` to be set so the profile-first demo can intentionally use
+either the normal real-model collection or a temporary clean collection.
 
 ## Readiness Checks
 
@@ -322,6 +340,14 @@ Use `-RequireNormalRegistration` only with a clean Qdrant collection or unique
 fixture set. If the same nose images already exist, the correct result is
 `DUPLICATE_SUSPECTED`; rerun with a fresh collection/fixtures to prove the
 normal Qdrant upsert path.
+
+Never delete an existing Qdrant collection, run `docker compose down -v`, or
+reset MySQL/Qdrant volumes just to get clean smoke evidence. Use a temporary
+collection name such as
+`dog_nose_embeddings_profile_first_demo_20260622104732`, redeploy with
+`bash infra/scripts/deploy-real-model.sh --profile-first-yolo`, then run the
+same smoke command. The temporary collection proves the clean registration path
+while leaving existing runtime data intact.
 
 ## Stop/Start Durability Check
 

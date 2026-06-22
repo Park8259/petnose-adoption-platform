@@ -45,6 +45,7 @@ expect_yolo_runtime_build_config() {
   local requirements="${REPO_ROOT}/python-embed/requirements-yolo.txt"
   local publish_workflow="${REPO_ROOT}/.github/workflows/publish-images.yaml"
   local ci_workflow="${REPO_ROOT}/.github/workflows/ci.yaml"
+  local profile_first_compose="${REPO_ROOT}/infra/docker/compose.prod-profile-first-yolo.yaml"
 
   [ -f "${requirements}" ] || fail "Missing python-embed/requirements-yolo.txt"
 
@@ -67,6 +68,9 @@ expect_yolo_runtime_build_config() {
 
   assert_file_contains "${publish_workflow}" "INSTALL_YOLO_RUNTIME_DEPS=1"
   assert_file_contains "${ci_workflow}" "YOLO_RUNTIME_IMPORTS_OK"
+  assert_file_contains "${profile_first_compose}" 'QDRANT_COLLECTION: ${QDRANT_COLLECTION}'
+  assert_file_contains "${profile_first_compose}" 'QDRANT_VECTOR_DIM: ${QDRANT_VECTOR_DIM:-2048}'
+  assert_file_contains "${profile_first_compose}" 'QDRANT_DISTANCE: ${QDRANT_DISTANCE:-Cosine}'
 
   echo "[PASS] yolo runtime build config"
 }
@@ -259,6 +263,9 @@ write_profile_first_yolo_demo_env() {
   set_env_value "${path}" "EMBED_DEVICE_REQUIRED" "true"
   set_env_value "${path}" "DOG_NOSE_DETECTOR_WEIGHTS_HOST" "/opt/petnose-lab/artifacts/yolo/best.pt"
   set_env_value "${path}" "DOG_NOSE_YOLOV5_REPO_HOST" "/opt/petnose-lab/vendor/yolov05"
+  set_env_value "${path}" "QDRANT_COLLECTION" "dog_nose_embeddings_profile_first_demo_test"
+  set_env_value "${path}" "QDRANT_VECTOR_DIM" "2048"
+  set_env_value "${path}" "QDRANT_DISTANCE" "Cosine"
 }
 
 expect_profile_first_yolo_pass() {
@@ -318,6 +325,7 @@ expect_profile_first_yolo_pass "profile-first-yolo-env-safe-env" "true"
 expect_profile_first_yolo_fail "profile-first-yolo-prod-env-fails" "APP_ENV" "prod" "Profile-first YOLO demo runtime requires APP_ENV to be non-prod"
 expect_profile_first_yolo_fail "profile-first-yolo-onnx-path-fails" "DOG_NOSE_ONNX_PATH" "/models/generated.onnx" "DOG_NOSE_ONNX_PATH must be empty"
 expect_profile_first_yolo_fail "profile-first-yolo-mutable-spring-fails" "SPRING_API_IMAGE" "ghcr.io/jaaesung/petnose-spring-api:main-latest" "Non-prod SPRING_API_IMAGE must use develop-latest or develop-<sha7>"
+expect_profile_first_yolo_fail "profile-first-yolo-empty-qdrant-collection-fails" "QDRANT_COLLECTION" "" "QDRANT_COLLECTION must be set for profile-first YOLO demo runtime"
 expect_validation_failure_before_pull_up
 expect_yolo_runtime_build_config
 

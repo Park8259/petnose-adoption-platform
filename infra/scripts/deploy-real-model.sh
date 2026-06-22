@@ -197,6 +197,11 @@ validate_production_runtime_policy() {
   local dog_nose_detector_backend
   local dog_nose_detector_device
   local dog_nose_yolov5_repo
+  local qdrant_collection
+  local qdrant_vector_dim
+  local qdrant_distance
+  local qdrant_vector_dim_effective
+  local qdrant_distance_effective
 
   app_env="$(read_config_var APP_ENV)"
   dog_nose_runtime="$(read_config_var DOG_NOSE_RUNTIME)"
@@ -213,6 +218,11 @@ validate_production_runtime_policy() {
   dog_nose_detector_backend="$(read_config_var DOG_NOSE_DETECTOR_BACKEND)"
   dog_nose_detector_device="$(read_config_var DOG_NOSE_DETECTOR_DEVICE)"
   dog_nose_yolov5_repo="$(read_config_var DOG_NOSE_YOLOV5_REPO)"
+  qdrant_collection="$(read_config_var QDRANT_COLLECTION)"
+  qdrant_vector_dim="$(read_config_var QDRANT_VECTOR_DIM)"
+  qdrant_distance="$(read_config_var QDRANT_DISTANCE)"
+  qdrant_vector_dim_effective="${qdrant_vector_dim:-2048}"
+  qdrant_distance_effective="${qdrant_distance:-Cosine}"
 
   echo "[INFO] Production inference runtime policy validation..."
 
@@ -254,6 +264,21 @@ validate_production_runtime_policy() {
 
     if [ "${dog_nose_detector_device}" != "cuda:0" ]; then
       echo "[ERROR] DOG_NOSE_DETECTOR_DEVICE must be cuda:0 for profile-first YOLO demo runtime."
+      failures=1
+    fi
+
+    if [ -z "${qdrant_collection}" ]; then
+      echo "[ERROR] QDRANT_COLLECTION must be set for profile-first YOLO demo runtime."
+      failures=1
+    fi
+
+    if [ "${qdrant_vector_dim_effective}" != "2048" ]; then
+      echo "[ERROR] QDRANT_VECTOR_DIM must be 2048 for profile-first YOLO demo runtime."
+      failures=1
+    fi
+
+    if [ "${qdrant_distance_effective}" != "Cosine" ]; then
+      echo "[ERROR] QDRANT_DISTANCE must be Cosine for profile-first YOLO demo runtime."
       failures=1
     fi
   else
