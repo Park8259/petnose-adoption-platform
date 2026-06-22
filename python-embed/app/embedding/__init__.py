@@ -30,11 +30,13 @@ def create_embedder_from_env() -> BaseEmbedder:
             model_path = os.getenv("DOG_NOSE_MODEL_PATH", "").strip() or None
             embed_device = os.getenv("EMBED_DEVICE", "cpu")
             embed_device_required = _env_bool("EMBED_DEVICE_REQUIRED")
+            cuda_allow_tf32 = _env_bool("DOG_NOSE_CUDA_ALLOW_TF32")
             return DogNoseIdentification2Embedder(
                 model_dir=model_dir,
                 model_path=model_path,
                 embed_device=embed_device,
                 embed_device_required=embed_device_required,
+                cuda_allow_tf32=cuda_allow_tf32,
             )
 
         if runtime in {"onnx", "onnxruntime", "ort"}:

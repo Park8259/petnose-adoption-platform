@@ -26,10 +26,12 @@
 - `DOG_NOSE_RUNTIME` (`torch` | `onnxruntime`, 기본 `torch`)
 - `DOG_NOSE_ONNX_PATH` (선택, `DOG_NOSE_RUNTIME=onnxruntime`일 때 exported `.onnx` 직접 지정)
 - `DOG_NOSE_ORT_INTRA_OP_THREADS`, `DOG_NOSE_ORT_INTER_OP_THREADS` (선택, ONNX Runtime CPU thread 설정)
+- `DOG_NOSE_CUDA_ALLOW_TF32` (`true` | `false`, 기본 `false`; CUDA PyTorch/ONNX parity 보존용)
 - `DOG_NOSE_EXTRACT_ENABLED` (`true` | `false`, 기본 `false`)
 - `DOG_NOSE_DETECTOR_WEIGHTS` (custom dog-nose YOLO weight 경로)
 - `DOG_NOSE_DETECTOR_BACKEND` (`ultralytics` | `yolov5_legacy`, 기본 `ultralytics`)
 - `DOG_NOSE_YOLOV5_REPO` (`DOG_NOSE_DETECTOR_BACKEND=yolov5_legacy`일 때 local YOLOv5 repo 경로, `hubconf.py` 필요)
+- `DOG_NOSE_DETECTOR_DEVICE` (`cpu` | `cuda` | `cuda:0` | `auto`, 기본 `cpu`)
 - `DOG_NOSE_DETECT_CONF_THRESHOLD` (기본 `0.35`)
 - `DOG_NOSE_CROP_SIZE` (기본 `224`)
 - `DOG_NOSE_BBOX_EXPAND` (기본 `1.40`)
@@ -41,6 +43,8 @@
 - `MAX_BATCH_TOTAL_BYTES` (`/embed-batch` 요청 전체 이미지 크기 합계 제한, 기본 80MB)
 
 `DOG_NOSE_DETECTOR_BACKEND=yolov5_legacy`는 local POC 전용입니다. local YOLOv5 repo code와 PyTorch `.pt` checkpoint를 실행/역직렬화하므로, public checkpoint는 격리된 컨테이너에서만 검증하고 production 반영 전 라이선스/보안 검토가 필요합니다.
+`DOG_NOSE_DETECTOR_DEVICE`는 local/dev detector 실행 장치만 제어합니다. 기본값은 기존 동작과 같은 `cpu`이며, `cuda` 또는 `cuda:0`을 명시했는데 CUDA를 사용할 수 없으면 CPU로 조용히 fallback하지 않고 detector load가 실패합니다. `auto`는 CUDA가 있으면 `cuda:0`, 없으면 `cpu`를 선택합니다.
+CUDA PyTorch embedding은 ONNX Runtime CPU와의 strict parity를 위해 TF32를 기본적으로 끕니다. 성능 탐색용으로만 `DOG_NOSE_CUDA_ALLOW_TF32=true`를 사용할 수 있으며, 이 경우 ONNX parity gate를 별도로 재확인해야 합니다.
 
 ## Health 응답
 기존 키(`status`, `model_loaded`, `model`, `vector_dim`)는 유지하며 디버깅 필드를 추가합니다.

@@ -1,6 +1,6 @@
 # Model Pipeline Analysis And Performance Evidence
 
-This directory records sanitized model-pipeline evidence for release documentation. It does not enable ONNX or YOLO in production, does not change backend or Python runtime logic, and does not include raw images, raw vectors, model artifacts, checkpoints, secrets, or raw server logs.
+This directory records sanitized model-pipeline evidence for release documentation. It does not enable ONNX or YOLO in production, and it does not include raw images, raw vectors, model artifacts, checkpoints, secrets, or raw server logs.
 
 ## Source Inventory
 
@@ -22,6 +22,8 @@ This directory records sanitized model-pipeline evidence for release documentati
 | `<evidence-dir>/petnose-local-embed-runtime-tuning/petnose-local-embed-runtime-tuning-20260610T121917Z.md` | A | yes | no | Local tuning result source; summarized as a negative-result document. |
 | `<evidence-dir>/petnose-local-embed-runtime-tuning/petnose-local-embed-runtime-tuning-20260610T121917Z.json` | A | yes | no | Structured source for local tuning; not copied because detailed raw iteration data is unnecessary. |
 | `<evidence-dir>/petnose-local-embed-runtime-tuning/.venv/**` | B | no | no | Virtualenv contents, dependency binaries, and generated files. |
+| `<evidence-dir>/local-yolo-weight-onnx-resource-preflight.md` | A | yes | yes | Sanitized summary of local YOLO weight discovery, ONNX parity, endpoint checks, resource usage, and g4dn recommendation. |
+| `<evidence-dir>/local-yolo-weight-onnx-resource-summary.csv` | A | yes | yes | Sanitized metric/value table; no raw vectors, paths, images, crops, or artifacts. |
 | `<evidence-dir>/petnose-embed-warmup-channels-last/final-comparison.md` | B | no | no | Useful tuning decision source but contains an AWS target address; summarized without host details. |
 | `<evidence-dir>/petnose-final-uat/summary.json` | B | no | no | Raw UAT summary includes server URL, generated IDs, and file URLs; excluded. |
 | `<evidence-dir>/petnose-final-uat/api-transcript.*` | B | no | no | Raw API transcript with server URL and generated resource IDs; excluded. |

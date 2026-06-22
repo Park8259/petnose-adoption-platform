@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import os
+import tempfile
+import types
 import unittest
 from io import BytesIO
 from pathlib import Path
@@ -22,6 +24,7 @@ from app.nose_extraction import (
     NO_NOSE_DETECTED,
     DogNoseExtractionConfig,
     DogNoseExtractor,
+    LegacyYolov5DogNoseDetector,
     NoseDetection,
 )
 
@@ -92,6 +95,7 @@ def make_extractor(detections: list[NoseDetection] | None) -> DogNoseExtractor:
         weights_path=None,
         detector_backend="ultralytics",
         yolov5_repo_path=None,
+        detector_device="cpu",
         conf_threshold=0.35,
         crop_size=224,
         bbox_expand=1.40,
@@ -103,9 +107,41 @@ def make_extractor(detections: list[NoseDetection] | None) -> DogNoseExtractor:
 
 
 class DogNoseExtractorTest(unittest.TestCase):
+    class FakeCuda:
+        def __init__(self, available: bool) -> None:
+            self.available = available
+
+        def is_available(self) -> bool:
+            return self.available
+
+    class FakeHub:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def load(self, *args, **kwargs):
+            self.calls.append({"args": args, **kwargs})
+            return object()
+
+    @staticmethod
+    def fake_torch(cuda_available: bool, hub: "DogNoseExtractorTest.FakeHub"):
+        return types.SimpleNamespace(cuda=DogNoseExtractorTest.FakeCuda(cuda_available), hub=hub)
+
     def test_profile_match_threshold_env_parse_falls_back_on_invalid_value(self) -> None:
         with patch.dict(os.environ, {"PROFILE_NOSE_MATCH_THRESHOLD": "not-a-number"}):
             self.assertEqual(main._parse_float_env("PROFILE_NOSE_MATCH_THRESHOLD", 0.65), 0.65)
+
+    def test_detector_device_env_defaults_to_cpu_and_accepts_cuda_auto(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(DogNoseExtractionConfig.from_env().detector_device, "cpu")
+
+        with patch.dict(os.environ, {"DOG_NOSE_DETECTOR_DEVICE": "cuda:0"}):
+            self.assertEqual(DogNoseExtractionConfig.from_env().detector_device, "cuda:0")
+
+        with patch.dict(os.environ, {"DOG_NOSE_DETECTOR_DEVICE": "auto"}):
+            self.assertEqual(DogNoseExtractionConfig.from_env().detector_device, "auto")
+
+        with patch.dict(os.environ, {"DOG_NOSE_DETECTOR_DEVICE": "gpu"}):
+            self.assertEqual(DogNoseExtractionConfig.from_env().detector_device, "cpu")
 
     def test_legacy_yolov5_backend_env_is_optional_and_requires_local_repo(self) -> None:
         with patch.dict(
@@ -121,6 +157,57 @@ class DogNoseExtractorTest(unittest.TestCase):
 
         self.assertEqual(extractor.config.detector_backend, LEGACY_YOLOV5_BACKEND)
         self.assertFalse(extractor.is_available())
+
+    def test_legacy_yolov5_load_passes_configured_device_to_torch_hub(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "yolov05"
+            repo.mkdir()
+            (repo / "hubconf.py").write_text("# fake hubconf\n", encoding="utf-8")
+            weights = root / "best.pt"
+            weights.write_bytes(b"fake")
+            hub = self.FakeHub()
+            detector = LegacyYolov5DogNoseDetector(str(weights), str(repo), device="cuda:0")
+
+            with patch.dict(sys.modules, {"torch": self.fake_torch(True, hub)}):
+                self.assertTrue(detector.load(), detector.load_error)
+
+        self.assertEqual(detector.device, "cuda:0")
+        self.assertEqual(hub.calls[0]["device"], "cuda:0")
+
+    def test_legacy_yolov5_explicit_cuda_does_not_silent_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "yolov05"
+            repo.mkdir()
+            (repo / "hubconf.py").write_text("# fake hubconf\n", encoding="utf-8")
+            weights = root / "best.pt"
+            weights.write_bytes(b"fake")
+            hub = self.FakeHub()
+            detector = LegacyYolov5DogNoseDetector(str(weights), str(repo), device="cuda:0")
+
+            with patch.dict(sys.modules, {"torch": self.fake_torch(False, hub)}):
+                self.assertFalse(detector.load())
+
+        self.assertIn("CUDA is not available", detector.load_error or "")
+        self.assertEqual(hub.calls, [])
+
+    def test_legacy_yolov5_auto_device_uses_cpu_when_cuda_is_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "yolov05"
+            repo.mkdir()
+            (repo / "hubconf.py").write_text("# fake hubconf\n", encoding="utf-8")
+            weights = root / "best.pt"
+            weights.write_bytes(b"fake")
+            hub = self.FakeHub()
+            detector = LegacyYolov5DogNoseDetector(str(weights), str(repo), device="auto")
+
+            with patch.dict(sys.modules, {"torch": self.fake_torch(False, hub)}):
+                self.assertTrue(detector.load(), detector.load_error)
+
+        self.assertEqual(detector.device, "cpu")
+        self.assertEqual(hub.calls[0]["device"], "cpu")
 
     def test_extracts_224_square_crop_with_expansion_and_padding(self) -> None:
         extractor = make_extractor(
@@ -211,6 +298,7 @@ class NoseExtractionEndpointTest(unittest.TestCase):
         self.assertEqual(body["crop_width"], 224)
         self.assertEqual(body["crop_height"], 224)
         self.assertEqual(body["detector"], "fake")
+        self.assertEqual(body["detector_device"], "cpu")
         self.assertIsNotNone(body["crop_base64"])
 
         crop = Image.open(BytesIO(base64.b64decode(body["crop_base64"])))

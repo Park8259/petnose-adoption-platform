@@ -119,6 +119,22 @@ def main() -> int:
 def add_model_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--model-dir", default="/models/dog_nose_identification2")
     parser.add_argument("--model-path", default="")
+    parser.add_argument("--embed-device", default="cpu", help="PyTorch embedder device, e.g. cpu or cuda:0.")
+    parser.add_argument(
+        "--embed-device-required",
+        action="store_true",
+        help="Fail if the requested PyTorch embedder device cannot be used.",
+    )
+    parser.add_argument(
+        "--disable-tf32",
+        action="store_true",
+        help="Deprecated no-op; PyTorch TF32 math is disabled by default for strict CUDA/ONNX parity.",
+    )
+    parser.add_argument(
+        "--allow-tf32",
+        action="store_true",
+        help="Allow PyTorch TF32 math for exploratory CUDA performance checks.",
+    )
 
 
 def add_onnx_args(parser: argparse.ArgumentParser) -> None:
@@ -139,7 +155,13 @@ def add_fixture_args(parser: argparse.ArgumentParser) -> None:
 
 
 def export_onnx(args: argparse.Namespace) -> dict[str, Any]:
-    embedder = load_torch_embedder(args.model_dir, args.model_path)
+    embedder = load_torch_embedder(
+        args.model_dir,
+        args.model_path,
+        torch_device_arg(args),
+        torch_device_required_arg(args),
+        torch_disable_tf32_arg(args),
+    )
     torch = embedder._torch
 
     class NormalizedEmbedding(torch.nn.Module):
@@ -207,7 +229,13 @@ def export_onnx(args: argparse.Namespace) -> dict[str, Any]:
 
 def compare_vectors(args: argparse.Namespace) -> dict[str, Any]:
     fixtures = collect_fixtures(args.fixtures, args.limit, args.label_mode)
-    torch_embedder = load_torch_embedder(args.model_dir, args.model_path)
+    torch_embedder = load_torch_embedder(
+        args.model_dir,
+        args.model_path,
+        torch_device_arg(args),
+        torch_device_required_arg(args),
+        torch_disable_tf32_arg(args),
+    )
     onnx_embedder = load_onnx_embedder(args)
     np = onnx_embedder._np
 
@@ -218,6 +246,7 @@ def compare_vectors(args: argparse.Namespace) -> dict[str, Any]:
         torch_vector = np.asarray(torch_result.vector, dtype=np.float32)
         onnx_vector = np.asarray(onnx_result.vector, dtype=np.float32)
         diff = np.abs(torch_vector - onnx_vector)
+        l2_diff = float(np.linalg.norm(torch_vector - onnx_vector))
         torch_norm = float(np.linalg.norm(torch_vector))
         onnx_norm = float(np.linalg.norm(onnx_vector))
         cosine = float(np.dot(torch_vector, onnx_vector) / max(torch_norm * onnx_norm, 1e-12))
@@ -228,6 +257,7 @@ def compare_vectors(args: argparse.Namespace) -> dict[str, Any]:
                     "label": fixture.label,
                     "dimension": int(torch_vector.shape[0]),
                     "max_abs_diff": float(diff.max()),
+                    "l2_diff": l2_diff,
                     "mean_abs_diff": float(diff.mean()),
                     "cosine": cosine,
                     "torch_norm": torch_norm,
@@ -244,9 +274,11 @@ def compare_vectors(args: argparse.Namespace) -> dict[str, Any]:
             "fixtures": len(fixtures),
             "torch_model": torch_embedder.model_name,
             "torch_backend": torch_embedder.backend,
+            "torch_device": torch_embedder.device,
             "onnx_model": onnx_embedder.model_name,
             "onnx_backend": onnx_embedder.backend,
             "max_abs_diff": max(row["max_abs_diff"] for row in rows),
+            "max_l2_diff": max(row["l2_diff"] for row in rows),
             "mean_abs_diff": statistics.fmean(row["mean_abs_diff"] for row in rows),
             "min_cosine": min(row["cosine"] for row in rows),
             "mean_cosine": statistics.fmean(row["cosine"] for row in rows),
@@ -260,7 +292,13 @@ def compare_vectors(args: argparse.Namespace) -> dict[str, Any]:
 def benchmark_runtimes(args: argparse.Namespace) -> dict[str, Any]:
     fixtures = collect_fixtures(args.fixtures, args.limit, args.label_mode)
     batch_sizes = parse_batch_sizes(args.batch_sizes)
-    torch_embedder = load_torch_embedder(args.model_dir, args.model_path)
+    torch_embedder = load_torch_embedder(
+        args.model_dir,
+        args.model_path,
+        torch_device_arg(args),
+        torch_device_required_arg(args),
+        torch_disable_tf32_arg(args),
+    )
     onnx_embedder = load_onnx_embedder(args)
 
     rows = []
@@ -273,8 +311,10 @@ def benchmark_runtimes(args: argparse.Namespace) -> dict[str, Any]:
             total_ms = []
             for batch in batches[args.warmup :]:
                 inputs = [EmbedInput(item.image_bytes, item.content_type) for item in batch]
+                synchronize_if_cuda(embedder)
                 started = time.perf_counter()
                 results = embedder.embed_batch(inputs)
+                synchronize_if_cuda(embedder)
                 elapsed_ms = (time.perf_counter() - started) * 1000.0
                 if len(results) != batch_size:
                     raise RuntimeError(f"Unexpected result count: expected={batch_size}, actual={len(results)}")
@@ -300,6 +340,7 @@ def benchmark_runtimes(args: argparse.Namespace) -> dict[str, Any]:
             "runs": args.runs,
             "batch_sizes": batch_sizes,
             "torch_model": torch_embedder.model_name,
+            "torch_device": torch_embedder.device,
             "onnx_model": onnx_embedder.model_name,
             "rows": rows,
         },
@@ -314,7 +355,13 @@ def batch_compare(args: argparse.Namespace) -> dict[str, Any]:
         raise RuntimeError(f"At least {args.batch_size} fixture images are required.")
 
     selected = fixtures[: args.batch_size]
-    embedder = load_torch_embedder(args.model_dir, args.model_path)
+    embedder = load_torch_embedder(
+        args.model_dir,
+        args.model_path,
+        torch_device_arg(args),
+        torch_device_required_arg(args),
+        torch_disable_tf32_arg(args),
+    )
 
     for _ in range(args.warmup):
         run_sequential_embed(embedder, selected)
@@ -324,12 +371,16 @@ def batch_compare(args: argparse.Namespace) -> dict[str, Any]:
     batch_ms: list[float] = []
     dimension = int(getattr(embedder, "vector_dim", 0) or 0)
     for _ in range(args.runs):
+        synchronize_if_cuda(embedder)
         started = time.perf_counter()
         sequential_results = run_sequential_embed(embedder, selected)
+        synchronize_if_cuda(embedder)
         sequential_ms.append((time.perf_counter() - started) * 1000.0)
 
+        synchronize_if_cuda(embedder)
         started = time.perf_counter()
         batch_results = run_batch_embed(embedder, selected)
+        synchronize_if_cuda(embedder)
         batch_ms.append((time.perf_counter() - started) * 1000.0)
 
         result = (batch_results or sequential_results)[0]
@@ -349,15 +400,47 @@ def batch_compare(args: argparse.Namespace) -> dict[str, Any]:
     return summary
 
 
-def load_torch_embedder(model_dir: str, model_path: str) -> DogNoseIdentification2Embedder:
+def load_torch_embedder(
+    model_dir: str,
+    model_path: str,
+    embed_device: str = "cpu",
+    embed_device_required: bool = False,
+    disable_tf32: bool = False,
+) -> DogNoseIdentification2Embedder:
     embedder = DogNoseIdentification2Embedder(
         model_dir=model_dir,
         model_path=model_path.strip() or None,
-        embed_device="cpu",
+        embed_device=embed_device,
+        embed_device_required=embed_device_required,
+        cuda_allow_tf32=not disable_tf32,
     )
     if not embedder.load():
         raise RuntimeError(f"PyTorch embedder load failed: {embedder.load_error}")
+    if disable_tf32:
+        disable_torch_tf32(embedder)
     return embedder
+
+
+def torch_device_arg(args: argparse.Namespace) -> str:
+    return str(getattr(args, "embed_device", "cpu") or "cpu")
+
+
+def torch_device_required_arg(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "embed_device_required", False))
+
+
+def torch_disable_tf32_arg(args: argparse.Namespace) -> bool:
+    return not bool(getattr(args, "allow_tf32", False))
+
+
+def disable_torch_tf32(embedder: Any) -> None:
+    torch = getattr(embedder, "_torch", None)
+    if torch is None:
+        return
+    if hasattr(torch.backends, "cuda"):
+        torch.backends.cuda.matmul.allow_tf32 = False
+    if hasattr(torch.backends, "cudnn"):
+        torch.backends.cudnn.allow_tf32 = False
 
 
 def load_onnx_embedder(args: argparse.Namespace) -> DogNoseIdentification2OnnxEmbedder:
@@ -370,6 +453,13 @@ def load_onnx_embedder(args: argparse.Namespace) -> DogNoseIdentification2OnnxEm
     if not embedder.load():
         raise RuntimeError(f"ONNX Runtime embedder load failed: {embedder.load_error}")
     return embedder
+
+
+def synchronize_if_cuda(embedder: Any) -> None:
+    device = str(getattr(embedder, "device", "") or "").lower()
+    torch = getattr(embedder, "_torch", None)
+    if torch is not None and device.startswith("cuda") and torch.cuda.is_available():
+        torch.cuda.synchronize()
 
 
 def run_sequential_embed(embedder: Any, fixtures: list[FixtureImage]) -> list[Any]:

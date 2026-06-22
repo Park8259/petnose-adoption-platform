@@ -57,6 +57,7 @@ DOG_NOSE_EXTRACT_ENABLED=true
 DOG_NOSE_DETECTOR_BACKEND=yolov5_legacy
 DOG_NOSE_DETECTOR_WEIGHTS=/absolute/local/path/to/best.pt
 DOG_NOSE_YOLOV5_REPO=/absolute/local/path/to/yolov5
+DOG_NOSE_DETECTOR_DEVICE=cpu
 PROFILE_NOSE_MATCH_THRESHOLD=0.65
 PROFILE_NOSE_MATCH_MIN_PASS_COUNT=4
 PROFILE_NOSE_MATCH_AGGREGATE=median
@@ -65,6 +66,7 @@ PROFILE_NOSE_MATCH_AGGREGATE=median
 If `DOG_NOSE_DETECTOR_WEIGHTS` or the detector runtime is unavailable, the expected response is `extracted=false` with `failure_reason=DETECTOR_UNAVAILABLE`.
 
 Do not use generic COCO YOLO dog/person weights as dog-nose detector weights.
+For local detector benchmarks, `DOG_NOSE_DETECTOR_DEVICE` may be set to `cuda`, `cuda:0`, or `auto`; explicit CUDA values must not silently fall back to CPU.
 
 ## Local-only DI-LEE checkpoint
 
