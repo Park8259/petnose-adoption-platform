@@ -40,12 +40,22 @@ class InferenceResourcePreflightTest(unittest.TestCase):
             }
         )
 
-    def test_safe_repo_id_keeps_only_tail_segments(self) -> None:
-        safe_id = preflight.safe_repo_id(
-            r"C:\Dev\_petnose_fix\.codex_local\reference_repos\dognose_recognition_management_service\backend\dogback\yolov05"
-        )
+    def test_safe_repo_id_keeps_only_tail_segments_for_windows_and_posix_paths(self) -> None:
+        paths = [
+            r"C:\Dev\_petnose_fix\.codex_local\reference_repos\dognose_recognition_management_service\backend\dogback\yolov05",
+            "/home/runner/work/petnose-adoption-platform/petnose-adoption-platform/.codex_local/"
+            "reference_repos/dognose_recognition_management_service/backend/dogback/yolov05",
+        ]
 
-        self.assertEqual(safe_id, "backend/dogback/yolov05")
+        for raw_path in paths:
+            with self.subTest(raw_path=raw_path):
+                safe_id = preflight.safe_repo_id(raw_path)
+
+                self.assertEqual(safe_id, "backend/dogback/yolov05")
+                self.assertNotIn("\\", safe_id or "")
+                self.assertNotIn("C:", safe_id or "")
+                self.assertNotIn("/home/runner", safe_id or "")
+                preflight.assert_sanitized_payload({"yolo_repo_safe_id": safe_id})
 
 
 if __name__ == "__main__":

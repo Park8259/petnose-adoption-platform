@@ -621,8 +621,26 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
 def safe_repo_id(path: str) -> str | None:
     if not path:
         return None
-    parts = [part for part in Path(path).parts if part not in {Path(path).anchor, "\\", "/"}]
+    parts = best_path_parts(path)
     return "/".join(parts[-3:]) if parts else safe_path_name(path)
+
+
+def best_path_parts(path: str) -> list[str]:
+    text = str(path).strip()
+    candidates = [
+        parsed_path_parts(PureWindowsPath(text)),
+        parsed_path_parts(PurePosixPath(text)),
+    ]
+    return max(candidates, key=path_parts_score, default=[])
+
+
+def parsed_path_parts(path: PureWindowsPath | PurePosixPath) -> list[str]:
+    return [part for part in path.parts if part and part not in {path.anchor, "\\", "/"}]
+
+
+def path_parts_score(parts: list[str]) -> tuple[int, int]:
+    clean_segments = sum(1 for part in parts if "\\" not in part and "/" not in part)
+    return clean_segments, len(parts)
 
 
 def safe_path_name(value: Any) -> str | None:
