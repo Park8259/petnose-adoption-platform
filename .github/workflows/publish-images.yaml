@@ -69,7 +69,9 @@ jobs:
             context: ./python-embed
             dockerfile: ./python-embed/Dockerfile.gpu
             image_suffix: petnose-python-embed-gpu-real
-            build_args: ""
+            build_args: |
+              INSTALL_REAL_MODEL_DEPS=1
+              INSTALL_YOLO_RUNTIME_DEPS=1
 
     steps:
       - name: Checkout

@@ -31,6 +31,46 @@ assert_not_contains() {
   fi
 }
 
+assert_file_contains() {
+  local path="$1"
+  local expected="$2"
+  if ! grep -Fq "${expected}" "${path}"; then
+    fail "Expected ${path} to contain: ${expected}"
+  fi
+}
+
+expect_yolo_runtime_build_config() {
+  local dockerfile="${REPO_ROOT}/python-embed/Dockerfile"
+  local gpu_dockerfile="${REPO_ROOT}/python-embed/Dockerfile.gpu"
+  local requirements="${REPO_ROOT}/python-embed/requirements-yolo.txt"
+  local publish_workflow="${REPO_ROOT}/.github/workflows/publish-images.yaml"
+  local ci_workflow="${REPO_ROOT}/.github/workflows/ci.yaml"
+
+  [ -f "${requirements}" ] || fail "Missing python-embed/requirements-yolo.txt"
+
+  assert_file_contains "${dockerfile}" "ARG INSTALL_YOLO_RUNTIME_DEPS=0"
+  assert_file_contains "${dockerfile}" "COPY requirements-yolo.txt ."
+  assert_file_contains "${dockerfile}" "pip install --no-cache-dir -r requirements-yolo.txt"
+  assert_file_contains "${gpu_dockerfile}" "ARG INSTALL_YOLO_RUNTIME_DEPS=0"
+  assert_file_contains "${gpu_dockerfile}" "COPY requirements-yolo.txt ."
+  assert_file_contains "${gpu_dockerfile}" "pip install --no-cache-dir -r requirements-yolo.txt"
+
+  assert_file_contains "${requirements}" "opencv-python-headless=="
+  assert_file_contains "${requirements}" "pandas=="
+  assert_file_contains "${requirements}" "scipy=="
+  assert_file_contains "${requirements}" "matplotlib=="
+  assert_file_contains "${requirements}" "seaborn=="
+  assert_file_contains "${requirements}" "PyYAML=="
+  assert_file_contains "${requirements}" "requests=="
+  assert_file_contains "${requirements}" "tqdm=="
+  assert_file_contains "${requirements}" "psutil=="
+
+  assert_file_contains "${publish_workflow}" "INSTALL_YOLO_RUNTIME_DEPS=1"
+  assert_file_contains "${ci_workflow}" "YOLO_RUNTIME_IMPORTS_OK"
+
+  echo "[PASS] yolo runtime build config"
+}
+
 write_safe_env() {
   local path="$1"
   cat > "${path}" <<EOF
@@ -279,5 +319,6 @@ expect_profile_first_yolo_fail "profile-first-yolo-prod-env-fails" "APP_ENV" "pr
 expect_profile_first_yolo_fail "profile-first-yolo-onnx-path-fails" "DOG_NOSE_ONNX_PATH" "/models/generated.onnx" "DOG_NOSE_ONNX_PATH must be empty"
 expect_profile_first_yolo_fail "profile-first-yolo-mutable-spring-fails" "SPRING_API_IMAGE" "ghcr.io/jaaesung/petnose-spring-api:main-latest" "Non-prod SPRING_API_IMAGE must use develop-latest or develop-<sha7>"
 expect_validation_failure_before_pull_up
+expect_yolo_runtime_build_config
 
 echo "[OK] test-production-runtime-policy completed"
