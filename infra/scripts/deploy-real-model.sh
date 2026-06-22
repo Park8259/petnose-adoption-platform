@@ -3,6 +3,7 @@
 # - no source build on server
 # - uses base + prod + prod-real-model compose files
 # - optionally includes the g4dn GPU override only when explicitly requested
+# - optionally includes the demo profile-first YOLO override only when explicitly requested
 # - optionally includes Firebase only when explicitly requested
 # - fail-fast on the Nginx-routed Spring actuator healthcheck
 set -euo pipefail
@@ -14,6 +15,7 @@ COMPOSE_BASE="${DOCKER_DIR}/compose.yaml"
 COMPOSE_PROD="${DOCKER_DIR}/compose.prod.yaml"
 COMPOSE_REAL_PROD="${DOCKER_DIR}/compose.prod-real-model.yaml"
 COMPOSE_GPU="${DOCKER_DIR}/compose.prod-gpu.yaml"
+COMPOSE_PROFILE_FIRST_YOLO="${DOCKER_DIR}/compose.prod-profile-first-yolo.yaml"
 COMPOSE_FIREBASE="${DOCKER_DIR}/compose.firebase.yaml"
 MODEL_CHECKPOINT_RELATIVE="logs/s101_224/model_final.pth"
 
@@ -23,11 +25,12 @@ PYTHON_GPU_IMAGE_DEFAULT="ghcr.io/jaaesung/petnose-python-embed-gpu-real:main-la
 
 INCLUDE_FIREBASE="false"
 INCLUDE_GPU="false"
+INCLUDE_PROFILE_FIRST_YOLO="false"
 VALIDATE_ONLY="${PETNOSE_DEPLOY_VALIDATE_ONLY:-false}"
 
 usage() {
   cat <<'EOF'
-Usage: bash infra/scripts/deploy-real-model.sh [--firebase] [--gpu] [--validate-only]
+Usage: bash infra/scripts/deploy-real-model.sh [--firebase] [--gpu] [--profile-first-yolo] [--validate-only]
 
 Deploy the AWS EC2 production stack with the real dog-nose model override.
 
@@ -46,6 +49,15 @@ only by passing --firebase or setting:
 GPU is disabled by default. Include infra/docker/compose.prod-gpu.yaml only by
 passing --gpu or setting:
   PETNOSE_INCLUDE_GPU=true
+
+Profile-first YOLO demo runtime is disabled by default. Include
+infra/docker/compose.prod-profile-first-yolo.yaml only by passing
+--profile-first-yolo or setting:
+  PETNOSE_INCLUDE_PROFILE_FIRST_YOLO=true
+
+This demo override implies the g4dn GPU override, requires APP_ENV to be
+non-prod, mounts external YOLO assets read-only, keeps DOG_NOSE_RUNTIME=torch,
+and keeps ONNX disabled.
 
 Validation-only mode checks production env/image/runtime policy and exits before
 Docker, NVIDIA, model checkpoint, GHCR login, compose pull/up, or health checks.
@@ -66,7 +78,9 @@ Examples:
   bash infra/scripts/deploy-real-model.sh
   bash infra/scripts/deploy-real-model.sh --validate-only
   bash infra/scripts/deploy-real-model.sh --gpu
+  bash infra/scripts/deploy-real-model.sh --profile-first-yolo
   PETNOSE_INCLUDE_GPU=true bash infra/scripts/deploy-real-model.sh
+  PETNOSE_INCLUDE_PROFILE_FIRST_YOLO=true bash infra/scripts/deploy-real-model.sh
   PETNOSE_INCLUDE_FIREBASE=true bash infra/scripts/deploy-real-model.sh
   bash infra/scripts/deploy-real-model.sh --firebase
 EOF
@@ -78,6 +92,10 @@ while [ "$#" -gt 0 ]; do
       INCLUDE_FIREBASE="true"
       ;;
     --gpu)
+      INCLUDE_GPU="true"
+      ;;
+    --profile-first-yolo)
+      INCLUDE_PROFILE_FIRST_YOLO="true"
       INCLUDE_GPU="true"
       ;;
     --validate-only)
@@ -176,6 +194,9 @@ validate_production_runtime_policy() {
   local install_real_deps
   local dog_nose_onnx_path
   local dog_nose_detector_weights
+  local dog_nose_detector_backend
+  local dog_nose_detector_device
+  local dog_nose_yolov5_repo
 
   app_env="$(read_config_var APP_ENV)"
   dog_nose_runtime="$(read_config_var DOG_NOSE_RUNTIME)"
@@ -189,6 +210,9 @@ validate_production_runtime_policy() {
   install_real_deps="$(read_config_var PYTHON_EMBED_INSTALL_REAL_DEPS)"
   dog_nose_onnx_path="$(read_config_var DOG_NOSE_ONNX_PATH)"
   dog_nose_detector_weights="$(read_config_var DOG_NOSE_DETECTOR_WEIGHTS)"
+  dog_nose_detector_backend="$(read_config_var DOG_NOSE_DETECTOR_BACKEND)"
+  dog_nose_detector_device="$(read_config_var DOG_NOSE_DETECTOR_DEVICE)"
+  dog_nose_yolov5_repo="$(read_config_var DOG_NOSE_YOLOV5_REPO)"
 
   echo "[INFO] Production inference runtime policy validation..."
 
@@ -197,14 +221,51 @@ validate_production_runtime_policy() {
     failures=1
   fi
 
-  if ! is_false "${dog_nose_extract_enabled}"; then
-    echo "[ERROR] DOG_NOSE_EXTRACT_ENABLED must be false for current production release."
-    failures=1
-  fi
+  if [ "${INCLUDE_PROFILE_FIRST_YOLO}" = "true" ]; then
+    if [ "${app_env:-prod}" = "prod" ]; then
+      echo "[ERROR] Profile-first YOLO demo runtime requires APP_ENV to be non-prod."
+      failures=1
+    fi
 
-  if ! is_false "${profile_first_enabled}"; then
-    echo "[ERROR] PETNOSE_PROFILE_FIRST_ENABLED must be false for current production release."
-    failures=1
+    if ! is_true "${dog_nose_extract_enabled}"; then
+      echo "[ERROR] DOG_NOSE_EXTRACT_ENABLED must be true for profile-first YOLO demo runtime."
+      failures=1
+    fi
+
+    if ! is_true "${profile_first_enabled}"; then
+      echo "[ERROR] PETNOSE_PROFILE_FIRST_ENABLED must be true for profile-first YOLO demo runtime."
+      failures=1
+    fi
+
+    if [ "${dog_nose_detector_backend}" != "yolov5_legacy" ]; then
+      echo "[ERROR] DOG_NOSE_DETECTOR_BACKEND must be yolov5_legacy for profile-first YOLO demo runtime."
+      failures=1
+    fi
+
+    if [ "${dog_nose_detector_weights}" != "/models/yolo/best.pt" ]; then
+      echo "[ERROR] DOG_NOSE_DETECTOR_WEIGHTS must be /models/yolo/best.pt for profile-first YOLO demo runtime."
+      failures=1
+    fi
+
+    if [ "${dog_nose_yolov5_repo}" != "/models/yolov05" ]; then
+      echo "[ERROR] DOG_NOSE_YOLOV5_REPO must be /models/yolov05 for profile-first YOLO demo runtime."
+      failures=1
+    fi
+
+    if [ "${dog_nose_detector_device}" != "cuda:0" ]; then
+      echo "[ERROR] DOG_NOSE_DETECTOR_DEVICE must be cuda:0 for profile-first YOLO demo runtime."
+      failures=1
+    fi
+  else
+    if ! is_false "${dog_nose_extract_enabled}"; then
+      echo "[ERROR] DOG_NOSE_EXTRACT_ENABLED must be false for current production release."
+      failures=1
+    fi
+
+    if ! is_false "${profile_first_enabled}"; then
+      echo "[ERROR] PETNOSE_PROFILE_FIRST_ENABLED must be false for current production release."
+      failures=1
+    fi
   fi
 
   if ! is_false "${timing_log_enabled}"; then
@@ -232,7 +293,7 @@ validate_production_runtime_policy() {
     failures=1
   fi
 
-  if [ -n "${dog_nose_detector_weights}" ]; then
+  if [ "${INCLUDE_PROFILE_FIRST_YOLO}" != "true" ] && [ -n "${dog_nose_detector_weights}" ]; then
     echo "[ERROR] DOG_NOSE_DETECTOR_WEIGHTS must be empty for current production release."
     failures=1
   fi
@@ -284,7 +345,9 @@ validate_production_runtime_policy() {
     return 1
   fi
 
-  if [ "${INCLUDE_GPU}" = "true" ]; then
+  if [ "${INCLUDE_PROFILE_FIRST_YOLO}" = "true" ]; then
+    echo "[OK] inference runtime policy: demo-only profile-first YOLO; torch CUDA; ONNX disabled"
+  elif [ "${INCLUDE_GPU}" = "true" ]; then
     echo "[OK] inference runtime policy: torch CUDA; ONNX/YOLO/profile-first/timing disabled"
   else
     echo "[OK] inference runtime policy: torch; ONNX/YOLO/profile-first/timing disabled"
@@ -304,6 +367,11 @@ if is_true "$(read_config_var PETNOSE_INCLUDE_GPU)"; then
   INCLUDE_GPU="true"
 fi
 
+if is_true "$(read_config_var PETNOSE_INCLUDE_PROFILE_FIRST_YOLO)"; then
+  INCLUDE_PROFILE_FIRST_YOLO="true"
+  INCLUDE_GPU="true"
+fi
+
 COMPOSE_FILES=(
   -f "${COMPOSE_BASE}"
   -f "${COMPOSE_PROD}"
@@ -313,6 +381,11 @@ COMPOSE_FILES=(
 if [ "${INCLUDE_GPU}" = "true" ]; then
   require_file "${COMPOSE_GPU}"
   COMPOSE_FILES+=(-f "${COMPOSE_GPU}")
+fi
+
+if [ "${INCLUDE_PROFILE_FIRST_YOLO}" = "true" ]; then
+  require_file "${COMPOSE_PROFILE_FIRST_YOLO}"
+  COMPOSE_FILES+=(-f "${COMPOSE_PROFILE_FIRST_YOLO}")
 fi
 
 if [ "${INCLUDE_FIREBASE}" = "true" ]; then
@@ -334,6 +407,8 @@ PYTHON_LEGACY_IMAGE_EFFECTIVE="$(read_config_var PYTHON_EMBED_IMAGE)"
 DOG_NOSE_MODEL_DIR_HOST_EFFECTIVE="$(read_config_var DOG_NOSE_MODEL_DIR_HOST)"
 EMBED_DEVICE_EFFECTIVE="$(read_config_var EMBED_DEVICE)"
 EMBED_DEVICE_REQUIRED_EFFECTIVE="$(read_config_var EMBED_DEVICE_REQUIRED)"
+DOG_NOSE_DETECTOR_WEIGHTS_HOST_EFFECTIVE="$(read_config_var DOG_NOSE_DETECTOR_WEIGHTS_HOST)"
+DOG_NOSE_YOLOV5_REPO_HOST_EFFECTIVE="$(read_config_var DOG_NOSE_YOLOV5_REPO_HOST)"
 GHCR_USER="$(read_config_var GHCR_USERNAME)"
 GHCR_TOKEN_VALUE="$(read_config_var GHCR_TOKEN)"
 
@@ -351,6 +426,14 @@ if [ "${INCLUDE_GPU}" = "true" ]; then
   EMBED_DEVICE_EFFECTIVE="cuda:0"
   EMBED_DEVICE_REQUIRED_EFFECTIVE="true"
 fi
+if [ "${INCLUDE_PROFILE_FIRST_YOLO}" = "true" ]; then
+  export PETNOSE_PROFILE_FIRST_ENABLED="true"
+  export DOG_NOSE_EXTRACT_ENABLED="true"
+  export DOG_NOSE_DETECTOR_BACKEND="yolov5_legacy"
+  export DOG_NOSE_DETECTOR_WEIGHTS="/models/yolo/best.pt"
+  export DOG_NOSE_YOLOV5_REPO="/models/yolov05"
+  export DOG_NOSE_DETECTOR_DEVICE="cuda:0"
+fi
 
 echo "[INFO] Deploy image targets"
 echo "  SPRING_API_IMAGE=${SPRING_IMAGE_EFFECTIVE}"
@@ -361,6 +444,7 @@ else
 fi
 echo "[INFO] Firebase compose included: ${INCLUDE_FIREBASE}"
 echo "[INFO] GPU compose included: ${INCLUDE_GPU}"
+echo "[INFO] Profile-first YOLO demo compose included: ${INCLUDE_PROFILE_FIRST_YOLO}"
 
 validate_production_runtime_policy
 
@@ -411,6 +495,32 @@ if [ ! -f "${MODEL_CHECKPOINT_PATH}" ]; then
   echo "        ${MODEL_CHECKPOINT_PATH}"
   echo "        Upload model files to DOG_NOSE_MODEL_DIR_HOST before deploying."
   exit 1
+fi
+
+if [ "${INCLUDE_PROFILE_FIRST_YOLO}" = "true" ]; then
+  if [ -z "${DOG_NOSE_DETECTOR_WEIGHTS_HOST_EFFECTIVE}" ]; then
+    echo "[ERROR] DOG_NOSE_DETECTOR_WEIGHTS_HOST must be set for profile-first YOLO demo runtime."
+    echo "        Example: DOG_NOSE_DETECTOR_WEIGHTS_HOST=/opt/petnose-lab/artifacts/yolo/best.pt"
+    exit 1
+  fi
+
+  if [ ! -f "${DOG_NOSE_DETECTOR_WEIGHTS_HOST_EFFECTIVE}" ]; then
+    echo "[ERROR] DOG_NOSE_DETECTOR_WEIGHTS_HOST does not exist or is not a file:"
+    echo "        ${DOG_NOSE_DETECTOR_WEIGHTS_HOST_EFFECTIVE}"
+    exit 1
+  fi
+
+  if [ -z "${DOG_NOSE_YOLOV5_REPO_HOST_EFFECTIVE}" ]; then
+    echo "[ERROR] DOG_NOSE_YOLOV5_REPO_HOST must be set for profile-first YOLO demo runtime."
+    echo "        Example: DOG_NOSE_YOLOV5_REPO_HOST=/opt/petnose-lab/vendor/yolov05"
+    exit 1
+  fi
+
+  if [ ! -d "${DOG_NOSE_YOLOV5_REPO_HOST_EFFECTIVE}" ] || [ ! -f "${DOG_NOSE_YOLOV5_REPO_HOST_EFFECTIVE%/}/hubconf.py" ]; then
+    echo "[ERROR] DOG_NOSE_YOLOV5_REPO_HOST must be a YOLOv5 repo directory containing hubconf.py:"
+    echo "        ${DOG_NOSE_YOLOV5_REPO_HOST_EFFECTIVE}"
+    exit 1
+  fi
 fi
 
 if [ -n "${GHCR_USER}" ] && [ -n "${GHCR_TOKEN_VALUE}" ]; then
@@ -553,6 +663,47 @@ print(f"[OK] Python Embed CUDA runtime cuda={torch.version.cuda} device={device_
   return 1
 }
 
+check_python_embed_profile_first_yolo_runtime() {
+  local output
+
+  if [ "${INCLUDE_PROFILE_FIRST_YOLO}" != "true" ]; then
+    return 0
+  fi
+
+  if output="$(compose_real_prod exec -T python-embed python -c '
+from app.nose_extraction import DogNoseExtractor
+
+extractor = DogNoseExtractor.from_env()
+errors = []
+if not extractor.config.enabled:
+    errors.append("DOG_NOSE_EXTRACT_ENABLED must be true")
+if extractor.config.detector_backend != "yolov5_legacy":
+    errors.append("detector backend must be yolov5_legacy")
+if extractor.config.weights_path != "/models/yolo/best.pt":
+    errors.append("detector weights path must be /models/yolo/best.pt")
+if extractor.config.yolov5_repo_path != "/models/yolov05":
+    errors.append("YOLOv5 repo path must be /models/yolov05")
+if extractor.config.detector_device != "cuda:0":
+    errors.append("detector device must be cuda:0")
+if extractor.detector is None:
+    errors.append("YOLO detector must be loaded")
+elif not str(extractor.detector_device).startswith("cuda"):
+    errors.append("YOLO detector must resolve to CUDA")
+
+if errors:
+    print("[FAIL] Python Embed profile-first YOLO runtime: " + "; ".join(errors))
+    raise SystemExit(1)
+
+print(f"[OK] Python Embed profile-first YOLO runtime detector={extractor.detector_name} device={extractor.detector_device}")
+' 2>&1)"; then
+    printf '%s\n' "${output}"
+    return 0
+  fi
+
+  printf '%s\n' "${output}"
+  return 1
+}
+
 print_failure_context() {
   echo "[INFO] docker compose ps"
   compose_real_prod ps || true
@@ -582,6 +733,14 @@ fi
 if [ "${INCLUDE_GPU}" = "true" ]; then
   echo "[INFO] Python Embed CUDA runtime check..."
   if ! check_python_embed_cuda_runtime; then
+    print_failure_context
+    exit 1
+  fi
+fi
+
+if [ "${INCLUDE_PROFILE_FIRST_YOLO}" = "true" ]; then
+  echo "[INFO] Python Embed profile-first YOLO runtime check..."
+  if ! check_python_embed_profile_first_yolo_runtime; then
     print_failure_context
     exit 1
   fi

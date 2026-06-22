@@ -879,9 +879,24 @@ Error codes:
 
 ### Profile-first two-step Dog 등록
 
-This is the active profile-first flow for product demos. It keeps Spring Boot as the orchestration layer. Python Embed only receives image bytes and returns crop/embedding/similarity JSON; it never writes DB rows and never calls Qdrant.
+This is the active profile-first flow for product demos when the server is
+explicitly deployed with the profile-first YOLO demo runtime. It keeps Spring
+Boot as the orchestration layer. Python Embed only receives image bytes and
+returns crop/embedding/similarity JSON; it never writes DB rows and never calls
+Qdrant.
 
 Release gate: production default is `PETNOSE_PROFILE_FIRST_ENABLED=false`. When disabled, both profile-first endpoints return HTTP `404` with `PROFILE_FIRST_DISABLED` before auth resolution, DB inserts, file writes, or Python Embed calls. `404` is used so the default-off flow is not exposed as an active production API surface until explicitly enabled.
+
+Demo runtime gate:
+
+- `PETNOSE_PROFILE_FIRST_ENABLED=true`
+- `DOG_NOSE_EXTRACT_ENABLED=true`
+- `DOG_NOSE_RUNTIME=torch`
+- `EMBED_DEVICE=cuda:0`
+- `EMBED_DEVICE_REQUIRED=true`
+- `DOG_NOSE_DETECTOR_DEVICE=cuda:0`
+- YOLO weight and YOLOv5 repository are mounted read-only from the server.
+- ONNX Runtime is not used in this product demo runtime.
 
 Step 1 creates a draft dog:
 
@@ -911,6 +926,15 @@ Behavior:
 - Does not create `verification_logs`.
 - Does not call Qdrant search or upsert.
 - Optionally calls Python `/internal/nose/extract` for a non-blocking preview. If the detector is unavailable, `profile_nose_preview.failure_reason=DETECTOR_UNAVAILABLE`; draft creation still succeeds.
+
+App handling:
+
+- If `profile_nose_preview.extracted=true`, show the normal next step and ask
+  for five close-up nose images.
+- If `profile_nose_preview.extracted=false`, the draft still exists. The app
+  may ask for a clearer profile image or continue to step 2 depending on demo
+  UX. `DETECTOR_UNAVAILABLE` is a runtime/operator issue, not a user identity
+  decision.
 
 Response `201`:
 
@@ -963,6 +987,19 @@ Pass behavior:
 - Upserts Qdrant `REFERENCE`/`CENTROID` points only when the existing duplicate decision allows registration.
 - Updates `dogs.status` to `REGISTERED` or `DUPLICATE_SUSPECTED` according to the existing duplicate decision.
 
+Pass response handling:
+
+- `profile_match_allowed=true` and `profile_match_status=PASSED` means the
+  profile-vs-nose consistency gate passed.
+- `registration_allowed=true` and `status=REGISTERED` means the dog is ready
+  for adoption post creation.
+- `registration_allowed=false` and `status=DUPLICATE_SUSPECTED` means the
+  profile matched the submitted nose images, but the existing duplicate policy
+  found a likely already-registered dog. The app must not proceed to adoption
+  post creation for that dog.
+- `registration_allowed=false` and `status=REVIEW_REQUIRED` means the app must
+  stop the self-service post flow and surface review/retake guidance.
+
 Profile mismatch behavior:
 
 - Returns HTTP `200` with `registration_allowed=false`.
@@ -971,6 +1008,15 @@ Profile mismatch behavior:
 - Does not create `verification_logs`.
 - Does not call Qdrant search or upsert.
 - Allows the user to upload another set of 5 nose images later.
+
+App handling:
+
+- Keep the draft dog id and allow another `nose-verification` attempt.
+- Do not create an adoption post while `status=PENDING`.
+- The server blocks post creation for a mismatch/pending dog.
+- If the profile-first flow cannot be completed due to demo-runtime detector
+  availability, the app can still use the backward-compatible
+  `POST /api/dogs/register` fallback with five close-up nose images.
 
 Profile mismatch response shape:
 
@@ -1000,7 +1046,11 @@ Profile mismatch response shape:
 }
 ```
 
-The existing `POST /api/dogs/register` remains backward compatible. It still accepts repeated `nose_image` as canonical and `nose_images` as legacy alias, and its duplicate detection/Qdrant behavior is unchanged.
+The existing `POST /api/dogs/register` remains backward compatible. It still
+accepts repeated `nose_image` as canonical and `nose_images` as legacy alias,
+and its duplicate detection/Qdrant behavior is unchanged. This endpoint is the
+fallback path when the profile-first demo flow is off, returns
+`PROFILE_FIRST_DISABLED`, or cannot complete due to detector/runtime issues.
 
 ### Nose Images로 Dog 등록
 

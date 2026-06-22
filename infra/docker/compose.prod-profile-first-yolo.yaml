@@ -1,0 +1,33 @@
+# Demo-only profile-first YOLO override for AWS g4dn real-model validation.
+# Use last, after compose.prod-gpu.yaml:
+#   docker compose --env-file infra/docker/.env \
+#     -f infra/docker/compose.yaml \
+#     -f infra/docker/compose.prod.yaml \
+#     -f infra/docker/compose.prod-real-model.yaml \
+#     -f infra/docker/compose.prod-gpu.yaml \
+#     -f infra/docker/compose.prod-profile-first-yolo.yaml \
+#     up -d --no-build
+
+services:
+  python-embed:
+    environment:
+      DOG_NOSE_EXTRACT_ENABLED: "true"
+      DOG_NOSE_DETECTOR_BACKEND: yolov5_legacy
+      DOG_NOSE_DETECTOR_WEIGHTS: /models/yolo/best.pt
+      DOG_NOSE_YOLOV5_REPO: /models/yolov05
+      DOG_NOSE_DETECTOR_DEVICE: cuda:0
+      DOG_NOSE_DETECT_CONF_THRESHOLD: ${DOG_NOSE_DETECT_CONF_THRESHOLD:-0.35}
+      DOG_NOSE_CROP_SIZE: "224"
+      DOG_NOSE_BBOX_EXPAND: ${DOG_NOSE_BBOX_EXPAND:-1.40}
+      DOG_NOSE_CLASS_ID: ${DOG_NOSE_CLASS_ID:-0}
+      PROFILE_NOSE_MATCH_THRESHOLD: ${PROFILE_NOSE_MATCH_THRESHOLD:-0.65}
+      PROFILE_NOSE_MATCH_MIN_PASS_COUNT: ${PROFILE_NOSE_MATCH_MIN_PASS_COUNT:-4}
+      PROFILE_NOSE_MATCH_AGGREGATE: median
+    volumes:
+      - ${DOG_NOSE_DETECTOR_WEIGHTS_HOST:?Set DOG_NOSE_DETECTOR_WEIGHTS_HOST to the host YOLO best.pt path}:/models/yolo/best.pt:ro
+      - ${DOG_NOSE_YOLOV5_REPO_HOST:?Set DOG_NOSE_YOLOV5_REPO_HOST to the host YOLOv5 repo path}:/models/yolov05:ro
+
+  spring-api:
+    environment:
+      PETNOSE_PROFILE_FIRST_ENABLED: "true"
+      PYTHON_EMBED_RESPONSE_TIMEOUT_MS: "60000"

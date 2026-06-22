@@ -83,6 +83,7 @@ wrapper는 아래 기존 child script를 subprocess로 호출한다.
 | Production runtime policy | `scripts/verify-server-release-readiness.ps1`, `scripts/tests/verify-server-release-policy.ps1` | PyTorch/default-off/immutable tag 검증 | 없음 | Static mode에서 policy test 호출 |
 | Deploy script policy | `infra/scripts/tests/test-production-runtime-policy.sh` | deploy guardrail 검증 | bash 없는 로컬은 CI 필요 | Static/CI에서 실행 |
 | Profile-first default-off | backend tests, final runner live probe | 404 `PROFILE_FIRST_DISABLED` 계약 | 기존 smoke에는 live gate가 없음 | ApiOnly/LocalRealModel에서 최소 multipart disabled probe |
+| Profile-first YOLO demo opt-in | `scripts/profile-first-yolo-demo-smoke.ps1` | draft, mismatch, pass, duplicate, fallback | g4dn/develop demo runtime과 외부 YOLO fixture 필요 | main release gate가 아니며 별도 demo evidence로 실행 |
 | Standard dog registration 5 images | `manual-full-feature-smoke.ps1`, `verify-submission-real-model-e2e.ps1` | 5장 등록, multi-reference | fixture 필요 | child script 재사용 |
 | Duplicate detection | `verify-submission-real-model-e2e.ps1`, manual smoke | duplicate suspected 및 Qdrant unchanged | real model runtime 필요 | LocalRealModel manual gate |
 | Adoption post create/list/detail | `manual-full-feature-smoke.ps1`, `verify-submission-real-model-e2e.ps1` | create, public list/detail privacy | fixture/runtime 필요 | ApiOnly 또는 LocalRealModel |
@@ -144,6 +145,10 @@ secret, password, token, env 값, 실제 fixture path는 출력하지 않는다.
 - Python health는 `status=ok`, `model_loaded=true`, `backend=torch+timm`, `vector_dim=2048`, `model` prefix `dog-nose-identification2`여야 한다.
 
 ONNX Runtime, YOLO detector, profile-first가 production runtime에서 활성화되어 있으면 FAIL이다.
+
+profile-first YOLO demo runtime 검증은 `LocalRealModel` release gate가 아니라
+별도 g4dn/develop opt-in smoke다. 실행 시에는 production 기본값을 바꾸지 않고
+`scripts/profile-first-yolo-demo-smoke.ps1`로 별도 evidence를 작성한다.
 
 ### ApiOnly
 
