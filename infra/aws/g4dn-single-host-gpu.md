@@ -91,6 +91,28 @@ Do not commit the checkpoint to Git and do not bake it into Docker images.
 ONNX files, YOLO weights, Firebase service account JSON, JWT secrets, `.env`,
 raw dog images, and raw vectors also stay out of Git and images.
 
+## Profile-first YOLO Demo Artifacts
+
+The profile-first YOLO runtime is a demo-only opt-in path for g4dn validation.
+It uses the same dog-nose embedding checkpoint plus external YOLO assets mounted
+read-only into the Python Embed container:
+
+```text
+/opt/petnose-lab/artifacts/yolo/best.pt
+/opt/petnose-lab/vendor/yolov05
+```
+
+Container paths are fixed by `compose.prod-profile-first-yolo.yaml`:
+
+```text
+/models/yolo/best.pt
+/models/yolov05
+```
+
+Do not copy YOLO weights or the YOLOv5 repository into Git or Docker images.
+Treat the `.pt` checkpoint and legacy YOLOv5 code as trusted server-local demo
+artifacts only. Production default remains profile-first off and YOLO off.
+
 ## Environment
 
 Create `infra/docker/.env` on the server from `.env.example` and set production
@@ -125,6 +147,35 @@ Production GPU deploys must not use `main-latest`, `develop-latest`, or
 `develop-<sha7>`. Develop validation may use `develop-latest` or
 `develop-<sha7>` on the dev server only.
 
+### Demo-only profile-first YOLO env
+
+For a develop/g4dn demo runtime only, keep `APP_ENV` non-prod and opt in:
+
+```dotenv
+APP_ENV=dev
+SPRING_PROFILES_ACTIVE=prod
+
+SPRING_API_IMAGE=ghcr.io/jaaesung/petnose-spring-api:develop-<sha7>
+PYTHON_EMBED_GPU_REAL_IMAGE=ghcr.io/jaaesung/petnose-python-embed-gpu-real:develop-<sha7>
+
+PETNOSE_INCLUDE_GPU=true
+PETNOSE_INCLUDE_PROFILE_FIRST_YOLO=true
+
+DOG_NOSE_RUNTIME=torch
+DOG_NOSE_EXTRACT_ENABLED=true
+PETNOSE_PROFILE_FIRST_ENABLED=true
+PETNOSE_REGISTRATION_TIMING_LOG_ENABLED=false
+
+EMBED_DEVICE=cuda:0
+EMBED_DEVICE_REQUIRED=true
+DOG_NOSE_DETECTOR_WEIGHTS_HOST=/opt/petnose-lab/artifacts/yolo/best.pt
+DOG_NOSE_YOLOV5_REPO_HOST=/opt/petnose-lab/vendor/yolov05
+```
+
+The deploy script maps these host paths to `/models/yolo/best.pt` and
+`/models/yolov05`, sets `DOG_NOSE_DETECTOR_DEVICE=cuda:0`, and keeps
+`DOG_NOSE_RUNTIME=torch`. ONNX Runtime is not enabled in this demo path.
+
 ## Deploy
 
 The GPU path uses these compose files in order:
@@ -134,6 +185,12 @@ infra/docker/compose.yaml
 infra/docker/compose.prod.yaml
 infra/docker/compose.prod-real-model.yaml
 infra/docker/compose.prod-gpu.yaml
+```
+
+The profile-first YOLO demo path adds one final override:
+
+```text
+infra/docker/compose.prod-profile-first-yolo.yaml
 ```
 
 Validate the compose output:
@@ -156,6 +213,16 @@ bash infra/scripts/deploy-real-model.sh --gpu
 The script fails before success output if NVIDIA preflight, production runtime
 policy, compose config, image pull, container startup, Spring health, Python
 readiness, or CUDA runtime checks fail.
+
+For the demo-only profile-first YOLO runtime:
+
+```bash
+bash infra/scripts/deploy-real-model.sh --profile-first-yolo
+```
+
+This implies the GPU override, requires non-prod `APP_ENV`, verifies the
+external YOLO host paths before deploy, and performs a Python container check
+that the legacy YOLOv5 detector is loaded on CUDA.
 
 ## Readiness Checks
 
@@ -222,6 +289,39 @@ vectors in Git evidence.
 5. Create an adoption post for the registered dog.
 6. Run handover verification with a new `nose_image`.
 7. Check that MySQL, Qdrant, and uploaded files remain internally reachable only.
+
+## Profile-first YOLO Demo Smoke
+
+Run through an SSH tunnel or on an admin machine that can reach Nginx. Use
+fixtures stored outside the repository.
+
+```powershell
+pwsh -NoProfile -File .\scripts\profile-first-yolo-demo-smoke.ps1 `
+  -RootUrl "http://localhost:18080" `
+  -BaseUrl "http://localhost:18080/api" `
+  -ProfileImagePath "<profile-image>" `
+  -NoseImageDir "<matching-five-nose-images>" `
+  -MismatchNoseImageDir "<other-dog-five-nose-images>" `
+  -RequireNormalRegistration `
+  -WriteEvidence `
+  -OutputDir "C:\tmp\petnose-profile-first-yolo-demo-smoke"
+```
+
+The script verifies:
+
+- `POST /api/dogs/profile-draft`
+- `POST /api/dogs/{dog_id}/nose-verification`
+- profile preview extraction through YOLO
+- profile mismatch leaves the dog `PENDING`, stores no public owner
+  `nose_image_url`, and blocks post creation
+- profile match pass can register the PENDING dog and then create a post
+- duplicate suspected dog blocks post creation
+- backward-compatible `POST /api/dogs/register` still works
+
+Use `-RequireNormalRegistration` only with a clean Qdrant collection or unique
+fixture set. If the same nose images already exist, the correct result is
+`DUPLICATE_SUSPECTED`; rerun with a fresh collection/fixtures to prove the
+normal Qdrant upsert path.
 
 ## Stop/Start Durability Check
 

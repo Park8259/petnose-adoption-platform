@@ -65,13 +65,60 @@ production에서 금지한다.
 
 ---
 
+## Profile-first YOLO Demo Runtime
+
+profile-first + YOLO CUDA는 production 기본 경로가 아니라 g4dn/develop
+demo 검증 전용 opt-in runtime이다. 이 경로는 앱팀 제품 flow를 검증하기 위해
+두 profile-first endpoint를 켜지만, `APP_ENV=prod`에서는 deploy script가
+차단한다.
+
+```dotenv
+APP_ENV=dev
+PETNOSE_INCLUDE_PROFILE_FIRST_YOLO=true
+PETNOSE_INCLUDE_GPU=true
+PETNOSE_PROFILE_FIRST_ENABLED=true
+DOG_NOSE_EXTRACT_ENABLED=true
+DOG_NOSE_RUNTIME=torch
+EMBED_DEVICE=cuda:0
+EMBED_DEVICE_REQUIRED=true
+DOG_NOSE_DETECTOR_DEVICE=cuda:0
+```
+
+Demo runtime compose override:
+
+```text
+infra/docker/compose.prod-profile-first-yolo.yaml
+```
+
+Artifact policy:
+
+- `model_final.pth`, `best.pt`, YOLOv5 repo, raw images, vectors, and `.env`
+  stay outside Git and Docker images.
+- YOLO weight is mounted read-only to `/models/yolo/best.pt`.
+- YOLOv5 repo is mounted read-only to `/models/yolov05`.
+
+Runtime choice:
+
+- Selected for g4dn demo: **YOLO CUDA + PyTorch CUDA**.
+- ONNX Runtime was validated as a candidate in model-pipeline evidence, but is
+  **not selected for the g4dn final/demo runtime** because the integrated
+  profile-first demo path is standardized on PyTorch CUDA and production
+  readiness still requires `torch+timm`.
+- `DOG_NOSE_RUNTIME=onnxruntime` and `DOG_NOSE_ONNX_PATH` remain disabled in
+  production and demo deploy scripts.
+
+---
+
 ## Code Inclusion vs Runtime Activation
 
 ONNX source/test가 main에 존재하는 것과 production에서 ONNX runtime을 활성화하는 것은 다르다.
 
 YOLO/profile-first source가 main에 존재하는 것과 production에서 detector/profile-first API를 활성화하는 것도 다르다.
 
-현재 production 서버는 ONNX와 YOLO/profile-first를 default-off로 유지한다. 운영 활성화는 별도 승인된 inference deployment path에서만 다룬다.
+현재 production 서버는 ONNX와 YOLO/profile-first를 default-off로 유지한다.
+profile-first YOLO demo runtime은 develop/g4dn 검증 경로이며 main release
+또는 production 기본값을 변경하지 않는다. 운영 활성화는 별도 승인된 inference
+deployment path에서만 다룬다.
 
 ---
 
@@ -95,7 +142,9 @@ YOLO/profile-first source가 main에 존재하는 것과 production에서 detect
 /opt/petnose/models/dog_nose_identification2/logs/s101_224/model_final.pth
 ```
 
-ONNX artifact와 YOLO weight는 현재 production 서버에 배치하지 않는다.
+ONNX artifact는 현재 production/demo runtime에 배치하지 않는다. YOLO weight와
+YOLOv5 repo는 profile-first YOLO demo runtime에서만 서버-local read-only
+mount로 배치할 수 있다.
 
 ---
 

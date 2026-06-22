@@ -57,6 +57,7 @@ EMBED_DEVICE=cpu
 EMBED_DEVICE_REQUIRED=false
 PETNOSE_INCLUDE_FIREBASE=false
 PETNOSE_INCLUDE_GPU=false
+PETNOSE_INCLUDE_PROFILE_FIRST_YOLO=false
 GHCR_USERNAME=
 GHCR_TOKEN=
 EOF
@@ -207,11 +208,76 @@ expect_gpu_fail() {
   echo "[PASS] ${name}"
 }
 
+write_profile_first_yolo_demo_env() {
+  local path="$1"
+
+  write_safe_env "${path}"
+  set_env_value "${path}" "APP_ENV" "dev"
+  set_env_value "${path}" "SPRING_API_IMAGE" "ghcr.io/jaaesung/petnose-spring-api:develop-8edd2dc"
+  set_env_value "${path}" "PYTHON_EMBED_GPU_REAL_IMAGE" "ghcr.io/jaaesung/petnose-python-embed-gpu-real:develop-8edd2dc"
+  set_env_value "${path}" "EMBED_DEVICE" "cuda:0"
+  set_env_value "${path}" "EMBED_DEVICE_REQUIRED" "true"
+  set_env_value "${path}" "DOG_NOSE_DETECTOR_WEIGHTS_HOST" "/opt/petnose-lab/artifacts/yolo/best.pt"
+  set_env_value "${path}" "DOG_NOSE_YOLOV5_REPO_HOST" "/opt/petnose-lab/vendor/yolov05"
+}
+
+expect_profile_first_yolo_pass() {
+  local name="$1"
+  local use_env_flag="$2"
+  local env_path="${TEMP_DIR}/${name}.env"
+  local output_path="${TEMP_DIR}/${name}.out"
+  local args=(--validate-only)
+
+  write_profile_first_yolo_demo_env "${env_path}"
+  if [ "${use_env_flag}" = "true" ]; then
+    set_env_value "${env_path}" "PETNOSE_INCLUDE_PROFILE_FIRST_YOLO" "true"
+  else
+    args=(--profile-first-yolo --validate-only)
+  fi
+
+  run_deploy_script "${env_path}" "${output_path}" "${args[@]}" || {
+    cat "${output_path}"
+    fail "${name} expected pass"
+  }
+
+  assert_contains "${output_path}" "[OK] inference runtime policy: demo-only profile-first YOLO"
+  assert_contains "${output_path}" "GPU compose included: true"
+  assert_contains "${output_path}" "Profile-first YOLO demo compose included: true"
+  assert_not_contains "${output_path}" "${SECRET_MARKER}"
+  echo "[PASS] ${name}"
+}
+
+expect_profile_first_yolo_fail() {
+  local name="$1"
+  local key="$2"
+  local value="$3"
+  local expected="$4"
+  local env_path="${TEMP_DIR}/${name}.env"
+  local output_path="${TEMP_DIR}/${name}.out"
+
+  write_profile_first_yolo_demo_env "${env_path}"
+  set_env_value "${env_path}" "${key}" "${value}"
+
+  if run_deploy_script "${env_path}" "${output_path}" --profile-first-yolo --validate-only; then
+    cat "${output_path}"
+    fail "${name} expected fail"
+  fi
+
+  assert_contains "${output_path}" "${expected}"
+  assert_not_contains "${output_path}" "${SECRET_MARKER}"
+  echo "[PASS] ${name}"
+}
+
 expect_pass "safe-env"
 expect_fail "unsafe-runtime" "DOG_NOSE_RUNTIME" "onnxruntime" "DOG_NOSE_RUNTIME must be torch"
 expect_fail "mutable-spring-tag" "SPRING_API_IMAGE" "ghcr.io/jaaesung/petnose-spring-api:main-latest" "SPRING_API_IMAGE must be ghcr.io/jaaesung/petnose-spring-api:main-<sha7>"
 expect_gpu_pass
 expect_gpu_fail "gpu-mutable-image-tag" "PYTHON_EMBED_GPU_REAL_IMAGE" "ghcr.io/jaaesung/petnose-python-embed-gpu-real:main-latest" "PYTHON_EMBED_GPU_REAL_IMAGE must be ghcr.io/jaaesung/petnose-python-embed-gpu-real:main-<sha7>"
+expect_profile_first_yolo_pass "profile-first-yolo-flag-safe-env" "false"
+expect_profile_first_yolo_pass "profile-first-yolo-env-safe-env" "true"
+expect_profile_first_yolo_fail "profile-first-yolo-prod-env-fails" "APP_ENV" "prod" "Profile-first YOLO demo runtime requires APP_ENV to be non-prod"
+expect_profile_first_yolo_fail "profile-first-yolo-onnx-path-fails" "DOG_NOSE_ONNX_PATH" "/models/generated.onnx" "DOG_NOSE_ONNX_PATH must be empty"
+expect_profile_first_yolo_fail "profile-first-yolo-mutable-spring-fails" "SPRING_API_IMAGE" "ghcr.io/jaaesung/petnose-spring-api:main-latest" "Non-prod SPRING_API_IMAGE must use develop-latest or develop-<sha7>"
 expect_validation_failure_before_pull_up
 
 echo "[OK] test-production-runtime-policy completed"
