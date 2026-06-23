@@ -9,14 +9,18 @@ Contract notes:
 from __future__ import annotations
 
 import os
+import time
+import logging
+import math
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 
 from .embedding import create_embedder_from_env
 from .embedding.base import BaseEmbedder, EmbedInput, EmbedResult, EmbedderError, EmbedderNotReadyError
 from .nose_extraction import (
     DogNoseExtractor,
+    FACE_CHECK_PURPOSE,
     INTERNAL_ERROR,
     INVALID_IMAGE,
     NoseExtractionResult,
@@ -40,6 +44,13 @@ def _parse_int_env(name: str, default: int) -> int:
         return default
 
 
+def _parse_bool_env(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 MAX_IMAGE_SIZE: int = int(os.getenv("MAX_IMAGE_BYTES", str(20 * 1024 * 1024)))
 MAX_BATCH_IMAGES: int = int(os.getenv("MAX_BATCH_IMAGES", os.getenv("MAX_EMBED_BATCH_IMAGES", "5")))
 MAX_BATCH_TOTAL_BYTES: int = int(os.getenv("MAX_BATCH_TOTAL_BYTES", str(80 * 1024 * 1024)))
@@ -51,9 +62,35 @@ PROFILE_NOSE_MATCH_EXPECTED_COUNT: int = 5
 PROFILE_NOSE_MATCH_EXPECTED_DIMENSION: int = 2048
 NOSE_IMAGES_COUNT_INVALID = "NOSE_IMAGES_COUNT_INVALID"
 EMBEDDING_DIMENSION_MISMATCH = "EMBEDDING_DIMENSION_MISMATCH"
+DEMO_TRACE_ENABLED: bool = _parse_bool_env("DEMO_TRACE_ENABLED", False)
+DEMO_TRACE_LOG_PER_IMAGE: bool = _parse_bool_env(
+    "DEMO_TRACE_LOG_PER_IMAGE",
+    _parse_bool_env("DEMO_TRACE_PROFILE_COMPARE_LOG_PER_IMAGE", True),
+)
+DEMO_TRACE_HEALTH_ACCESS_LOG: bool = _parse_bool_env("DEMO_TRACE_HEALTH_ACCESS_LOG", False)
 
 _embedder: BaseEmbedder | None = None
 _nose_extractor: DogNoseExtractor | None = None
+
+
+def _is_health_access_log(message: str) -> bool:
+    return '"GET /health HTTP/' in message or "GET /health " in message
+
+
+class HealthAccessLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if DEMO_TRACE_HEALTH_ACCESS_LOG:
+            return True
+        return not _is_health_access_log(record.getMessage())
+
+
+def _install_health_access_log_filter() -> None:
+    logger = logging.getLogger("uvicorn.access")
+    if not any(isinstance(item, HealthAccessLogFilter) for item in logger.filters):
+        logger.addFilter(HealthAccessLogFilter())
+
+
+_install_health_access_log_filter()
 
 
 @asynccontextmanager
@@ -99,6 +136,59 @@ def _require_nose_extractor() -> DogNoseExtractor:
     if _nose_extractor is None:
         _nose_extractor = DogNoseExtractor.from_env()
     return _nose_extractor
+
+
+def _request_id(request: Request) -> str:
+    return request.headers.get("x-request-id") or "-"
+
+
+def _elapsed_ms(started: float) -> int:
+    return round((time.perf_counter() - started) * 1000)
+
+
+def _fmt_score(value: float | None) -> str:
+    return "null" if value is None else f"{value:.4f}"
+
+
+def _fmt_percent(value: float | None) -> str:
+    return "null" if value is None else f"{value * 100:.1f}"
+
+
+def _demo_trace(message: str) -> None:
+    if DEMO_TRACE_ENABLED:
+        print(f"[DEMO_TRACE] {message}", flush=True)
+
+
+def _crop_text(result: NoseExtractionResult | None) -> str:
+    if result is None or result.crop_width is None or result.crop_height is None:
+        return "null"
+    return f"{result.crop_width}x{result.crop_height}"
+
+
+def _bbox_text(result: NoseExtractionResult | None) -> str:
+    if result is None or result.bbox_xyxy is None:
+        return "null"
+    return "[" + ",".join(f"{value:.1f}" for value in result.bbox_xyxy) + "]"
+
+
+def _purpose_text(purpose: str | None) -> str:
+    return FACE_CHECK_PURPOSE if (purpose or "").strip().lower() == FACE_CHECK_PURPOSE else "generic"
+
+
+def _quality_response(result: NoseExtractionResult | None) -> dict[str, object] | None:
+    if result is None or result.quality is None:
+        return None
+    return result.quality.to_response()
+
+
+def _quality_passed(result: NoseExtractionResult | None) -> object:
+    return None if result is None or result.quality is None else result.quality.passed
+
+
+def _quality_metric(result: NoseExtractionResult | None, name: str) -> object:
+    if result is None or result.quality is None:
+        return None
+    return getattr(result.quality, name)
 
 
 async def _read_validated_image(image: UploadFile) -> EmbedInput:
@@ -235,8 +325,10 @@ def _profile_match_batch_failure(
     extraction: NoseExtractionResult | None = None,
     model: str | None = None,
     dimension: int | None = None,
+    request_id: str | None = None,
+    started: float | None = None,
 ) -> dict[str, object]:
-    return {
+    body = {
         "matched": False,
         "threshold": threshold,
         "threshold_calibrated": False,
@@ -254,8 +346,55 @@ def _profile_match_batch_failure(
         "model": model,
         "dimension": dimension,
         "scores": [],
+        "profile_vs_centroid_score": None,
+        "profile_vs_centroid_passed": None,
+        "centroid_dimension": None,
         "failure_reason": failure_reason,
     }
+    if request_id is not None:
+        elapsed = _elapsed_ms(started) if started is not None else "null"
+        _demo_trace(
+            "component=python flow=profile_match_batch step=failed "
+            f"request_id={request_id} failure_reason={failure_reason} "
+            f"profile_nose_extracted={body['profile_nose_extracted']} "
+            f"profile_confidence={_fmt_score(body['profile_confidence'])} "
+            f"model={model} dimension={dimension} elapsed_ms={elapsed}"
+        )
+    return body
+
+
+def _extract_embed_failure(
+    *,
+    failure_reason: str,
+    extraction: NoseExtractionResult | None = None,
+    model: str | None = None,
+    dimension: int | None = None,
+    request_id: str | None = None,
+    started: float | None = None,
+) -> dict[str, object]:
+    body = {
+        "extracted": extraction.extracted if extraction else False,
+        "confidence": extraction.confidence if extraction else None,
+        "bbox_xyxy": extraction.bbox_xyxy if extraction else None,
+        "crop_width": extraction.crop_width if extraction else None,
+        "crop_height": extraction.crop_height if extraction else None,
+        "model": model,
+        "dimension": dimension,
+        "embedding": None,
+        "quality": _quality_response(extraction),
+        "failure_reason": failure_reason,
+    }
+    if request_id is not None:
+        elapsed = _elapsed_ms(started) if started is not None else "null"
+        _demo_trace(
+            "component=python flow=extract_embed step=failed "
+            f"request_id={request_id} extracted={body['extracted']} "
+            f"confidence={_fmt_score(body['confidence'])} bbox={_bbox_text(extraction)} "
+            f"crop={_crop_text(extraction)} model={model} dimension={dimension} "
+            f"quality_passed={_quality_passed(extraction)} "
+            f"failure_reason={failure_reason} elapsed_ms={elapsed}"
+        )
+    return body
 
 
 def _profile_match_aggregate() -> str:
@@ -274,6 +413,57 @@ def _median(values: list[float]) -> float:
     if len(ordered) % 2 == 1:
         return ordered[middle]
     return (ordered[middle - 1] + ordered[middle]) / 2.0
+
+
+def _score_summary(values: list[float], threshold: float) -> dict[str, float | int | None]:
+    if not values:
+        return {
+            "min": None,
+            "max": None,
+            "mean": None,
+            "median": None,
+            "pass_count": 0,
+            "fail_count": 0,
+        }
+    pass_count = sum(1 for value in values if value >= threshold)
+    return {
+        "min": min(values),
+        "max": max(values),
+        "mean": round(sum(values) / len(values), 6),
+        "median": round(_median(values), 6),
+        "pass_count": pass_count,
+        "fail_count": len(values) - pass_count,
+    }
+
+
+def _vector_norm(vector: list[float]) -> float:
+    if not vector:
+        raise ValueError("empty vector")
+    return math.sqrt(sum(value * value for value in vector))
+
+
+def _finite_vector(vector: list[float]) -> bool:
+    return bool(vector) and all(math.isfinite(value) for value in vector)
+
+
+def _normalized_centroid(vectors: list[list[float]]) -> list[float]:
+    if not vectors:
+        raise ValueError("empty vectors")
+    dimension = len(vectors[0])
+    if dimension == 0 or any(len(vector) != dimension for vector in vectors):
+        raise ValueError("dimension mismatch")
+    if any(not _finite_vector(vector) for vector in vectors):
+        raise ValueError("non-finite vector")
+
+    sums = [0.0] * dimension
+    for vector in vectors:
+        for index, value in enumerate(vector):
+            sums[index] += value
+    mean = [value / len(vectors) for value in sums]
+    norm = _vector_norm(mean)
+    if norm == 0.0:
+        raise ValueError("zero centroid norm")
+    return [value / norm for value in mean]
 
 
 @app.get("/health")
@@ -308,16 +498,125 @@ async def embed(image: UploadFile = File(...)):
 
 
 @app.post("/internal/nose/extract")
-async def extract_profile_nose(image: UploadFile = File(...)):
+async def extract_profile_nose(
+    request: Request,
+    image: UploadFile = File(...),
+    purpose: str | None = Form(None),
+):
     extractor = _require_nose_extractor()
+    started = time.perf_counter()
+    request_id = _request_id(request)
 
     try:
         image_bytes = await _read_upload_bytes(image)
     except ValueError:
-        return extractor.failure_result(INVALID_IMAGE).to_response()
+        result = extractor.failure_result(INVALID_IMAGE)
+        _demo_trace(
+            "component=python flow=nose_extract step=done "
+            f"request_id={request_id} purpose={_purpose_text(purpose)} backend={extractor.detector_name} "
+            f"enabled={extractor.config.enabled} extracted={result.extracted} "
+            f"confidence={_fmt_score(result.confidence)} bbox={_bbox_text(result)} "
+            f"quality_passed={_quality_passed(result)} "
+            f"crop={_crop_text(result)} failure_reason={result.failure_reason} "
+            f"elapsed_ms={_elapsed_ms(started)}"
+        )
+        return result.to_response()
 
-    result = extractor.extract(image_bytes)
+    result = extractor.extract(image_bytes, purpose=purpose)
+    _demo_trace(
+        "component=python flow=nose_extract step=done "
+        f"request_id={request_id} purpose={_purpose_text(purpose)} backend={extractor.detector_name} "
+        f"enabled={extractor.config.enabled} extracted={result.extracted} "
+        f"confidence={_fmt_score(result.confidence)} bbox={_bbox_text(result)} "
+        f"quality_passed={_quality_passed(result)} "
+        f"crop={_crop_text(result)} failure_reason={result.failure_reason} "
+        f"elapsed_ms={_elapsed_ms(started)}"
+    )
     return result.to_response()
+
+
+@app.post("/internal/nose/extract-embed")
+async def extract_nose_embedding(
+    request: Request,
+    image: UploadFile = File(...),
+    purpose: str | None = Form(None),
+):
+    extractor = _require_nose_extractor()
+    started = time.perf_counter()
+    request_id = _request_id(request)
+
+    try:
+        image_bytes = await _read_upload_bytes(image)
+    except ValueError:
+        return _extract_embed_failure(
+            failure_reason=INVALID_IMAGE,
+            extraction=extractor.failure_result(INVALID_IMAGE),
+            request_id=request_id,
+            started=started,
+        )
+
+    extraction = extractor.extract(image_bytes, purpose=purpose)
+    if not extraction.extracted or extraction.crop_bytes is None:
+        return _extract_embed_failure(
+            failure_reason=extraction.failure_reason or INTERNAL_ERROR,
+            extraction=extraction,
+            request_id=request_id,
+            started=started,
+        )
+
+    embedder = _require_embedder()
+    if not embedder.model_loaded:
+        return _extract_embed_failure(
+            failure_reason="MODEL_NOT_READY",
+            extraction=extraction,
+            model=embedder.model_name,
+            dimension=embedder.vector_dim or None,
+            request_id=request_id,
+            started=started,
+        )
+
+    try:
+        result = embedder.embed(extraction.crop_bytes, "image/png")
+    except Exception:
+        return _extract_embed_failure(
+            failure_reason="EMBED_FAILED",
+            extraction=extraction,
+            model=embedder.model_name,
+            dimension=embedder.vector_dim or None,
+            request_id=request_id,
+            started=started,
+        )
+
+    if not _embedding_dimension_valid(embedder, result):
+        return _extract_embed_failure(
+            failure_reason=EMBEDDING_DIMENSION_MISMATCH,
+            extraction=extraction,
+            model=result.model,
+            dimension=result.dimension,
+            request_id=request_id,
+            started=started,
+        )
+
+    _demo_trace(
+        "component=python flow=extract_embed step=done "
+        f"request_id={request_id} purpose={_purpose_text(purpose)} extracted=true "
+        f"confidence={_fmt_score(extraction.confidence)} bbox={_bbox_text(extraction)} "
+        f"crop={_crop_text(extraction)} model={result.model} dimension={result.dimension} "
+        f"quality_passed={_quality_passed(extraction)} "
+        f"failure_reason=None elapsed_ms={_elapsed_ms(started)}"
+    )
+    return {
+        "extracted": True,
+        "confidence": extraction.confidence,
+        "bbox_xyxy": extraction.bbox_xyxy,
+        "crop_width": extraction.crop_width,
+        "crop_height": extraction.crop_height,
+        "model": result.model,
+        "dimension": result.dimension,
+        "embedding": result.vector,
+        "quality": _quality_response(extraction),
+        "failure_reason": None,
+    }
 
 
 @app.post("/internal/nose/profile-match")
@@ -413,12 +712,20 @@ async def profile_nose_match(
 
 @app.post("/internal/nose/profile-match-batch")
 async def profile_nose_match_batch(
+    request: Request,
     profile_image: UploadFile = File(...),
     nose_image: list[UploadFile] = File(...),
 ):
     extractor = _require_nose_extractor()
     threshold = PROFILE_NOSE_MATCH_THRESHOLD
     required_pass_count = PROFILE_NOSE_MATCH_MIN_PASS_COUNT
+    started = time.perf_counter()
+    request_id = _request_id(request)
+    _demo_trace(
+        "component=python flow=profile_match_batch step=start "
+        f"request_id={request_id} nose_count={len(nose_image)} threshold={threshold:.4f} "
+        f"required_pass={required_pass_count}"
+    )
 
     try:
         profile_bytes = await _read_upload_bytes(profile_image)
@@ -427,6 +734,8 @@ async def profile_nose_match_batch(
             threshold=threshold,
             required_pass_count=required_pass_count,
             failure_reason=INVALID_IMAGE,
+            request_id=request_id,
+            started=started,
         )
 
     extraction = extractor.extract(profile_bytes)
@@ -436,6 +745,8 @@ async def profile_nose_match_batch(
             required_pass_count=required_pass_count,
             failure_reason=extraction.failure_reason or INTERNAL_ERROR,
             extraction=extraction,
+            request_id=request_id,
+            started=started,
         )
 
     if len(nose_image) != PROFILE_NOSE_MATCH_EXPECTED_COUNT:
@@ -444,6 +755,8 @@ async def profile_nose_match_batch(
             required_pass_count=required_pass_count,
             failure_reason=NOSE_IMAGES_COUNT_INVALID,
             extraction=extraction,
+            request_id=request_id,
+            started=started,
         )
 
     try:
@@ -454,6 +767,8 @@ async def profile_nose_match_batch(
             required_pass_count=required_pass_count,
             failure_reason=INVALID_IMAGE,
             extraction=extraction,
+            request_id=request_id,
+            started=started,
         )
 
     embedder = _require_embedder()
@@ -465,6 +780,8 @@ async def profile_nose_match_batch(
             extraction=extraction,
             model=embedder.model_name,
             dimension=embedder.vector_dim or None,
+            request_id=request_id,
+            started=started,
         )
 
     try:
@@ -478,6 +795,8 @@ async def profile_nose_match_batch(
             extraction=extraction,
             model=embedder.model_name,
             dimension=embedder.vector_dim or None,
+            request_id=request_id,
+            started=started,
         )
 
     if len(nose_results) != len(nose_inputs):
@@ -488,6 +807,8 @@ async def profile_nose_match_batch(
             extraction=extraction,
             model=profile_result.model,
             dimension=profile_result.dimension,
+            request_id=request_id,
+            started=started,
         )
 
     if (
@@ -503,6 +824,8 @@ async def profile_nose_match_batch(
             extraction=extraction,
             model=profile_result.model,
             dimension=profile_result.dimension,
+            request_id=request_id,
+            started=started,
         )
 
     scores: list[dict[str, object]] = []
@@ -526,13 +849,39 @@ async def profile_nose_match_batch(
             extraction=extraction,
             model=profile_result.model,
             dimension=profile_result.dimension,
+            request_id=request_id,
+            started=started,
         )
 
-    pass_count = sum(1 for score in similarity_values if score >= threshold)
-    median_score = round(_median(similarity_values), 6)
+    score_summary = _score_summary(similarity_values, threshold)
+    pass_count = int(score_summary["pass_count"] or 0)
+    median_score = float(score_summary["median"] or 0.0)
     matched = pass_count >= required_pass_count and median_score >= threshold
+    profile_vs_centroid_score: float | None = None
+    profile_vs_centroid_passed: bool | None = None
+    centroid_dimension: int | None = None
+    centroid_norm: float | None = None
 
-    return {
+    try:
+        centroid_vector = _normalized_centroid([result.vector for result in nose_results])
+        centroid_dimension = len(centroid_vector)
+        centroid_norm = _vector_norm(centroid_vector)
+        profile_vs_centroid_score = round(cosine_similarity(profile_result.vector, centroid_vector), 6)
+        profile_vs_centroid_passed = profile_vs_centroid_score >= threshold
+        _demo_trace(
+            "component=python flow=profile_match_batch step=centroid_compare "
+            f"request_id={request_id} profile_vs_centroid={_fmt_score(profile_vs_centroid_score)} "
+            f"profile_vs_centroid_percent={_fmt_percent(profile_vs_centroid_score)} "
+            f"threshold={threshold:.4f} passed={profile_vs_centroid_passed} "
+            f"centroid_dimension={centroid_dimension} centroid_norm={_fmt_score(centroid_norm)}"
+        )
+    except ValueError as exc:
+        _demo_trace(
+            "component=python flow=profile_match_batch step=centroid_compare_failed "
+            f"request_id={request_id} failure_reason={type(exc).__name__}"
+        )
+
+    body = {
         "matched": matched,
         "threshold": threshold,
         "threshold_calibrated": False,
@@ -540,9 +889,9 @@ async def profile_nose_match_batch(
         "required_pass_count": required_pass_count,
         "aggregate": _profile_match_aggregate(),
         "median_score": median_score,
-        "mean_score": round(sum(similarity_values) / len(similarity_values), 6),
-        "min_score": min(similarity_values),
-        "max_score": max(similarity_values),
+        "mean_score": score_summary["mean"],
+        "min_score": score_summary["min"],
+        "max_score": score_summary["max"],
         "profile_nose_extracted": True,
         "profile_confidence": extraction.confidence,
         "profile_crop_width": extraction.crop_width,
@@ -550,13 +899,38 @@ async def profile_nose_match_batch(
         "model": profile_result.model,
         "dimension": profile_result.dimension,
         "scores": scores,
+        "profile_vs_centroid_score": profile_vs_centroid_score,
+        "profile_vs_centroid_passed": profile_vs_centroid_passed,
+        "centroid_dimension": centroid_dimension,
         "failure_reason": None,
     }
+    _demo_trace(
+        "component=python flow=profile_match_batch step=summary "
+        f"request_id={request_id} extracted=true "
+        f"profile_confidence={_fmt_score(extraction.confidence)} nose_count={len(nose_results)} "
+        f"model={profile_result.model} dimension={profile_result.dimension} "
+        f"threshold={threshold:.4f} pass={pass_count} required_pass={required_pass_count} "
+        f"min={_fmt_score(body['min_score'])} max={_fmt_score(body['max_score'])} "
+        f"mean={_fmt_score(body['mean_score'])} median={_fmt_score(body['median_score'])} "
+        f"matched={matched} elapsed_ms={_elapsed_ms(started)}"
+    )
+    if DEMO_TRACE_ENABLED and DEMO_TRACE_LOG_PER_IMAGE:
+        for item in scores:
+            score = item.get("similarity_score")
+            _demo_trace(
+                "component=python flow=profile_match_batch step=per_image "
+                f"request_id={request_id} index={item.get('index')} "
+                f"score={_fmt_score(score)} percent={_fmt_percent(score)} "
+                f"passed={item.get('passed')}"
+            )
+    return body
 
 
 @app.post("/embed-batch")
 async def embed_batch(request: Request):
     embedder = _require_embedder()
+    started = time.perf_counter()
+    request_id = _request_id(request)
 
     form = await request.form()
     raw_images = form.getlist("images")
@@ -604,6 +978,10 @@ async def embed_batch(request: Request):
         )
 
     _ensure_model_loaded(embedder)
+    _demo_trace(
+        "component=python flow=embed_batch step=start "
+        f"request_id={request_id} image_count={len(embed_inputs)} model_loaded={embedder.model_loaded}"
+    )
 
     try:
         results = embedder.embed_batch(embed_inputs)
@@ -628,12 +1006,18 @@ async def embed_batch(request: Request):
         model = results[0].model
         dimension = results[0].dimension
 
-        return {
+        body = {
             "status": "ok",
             "model": model,
             "dimension": dimension,
             "count": len(items),
             "items": items,
         }
+        _demo_trace(
+            "component=python flow=embed_batch step=done "
+            f"request_id={request_id} image_count={len(items)} model={model} "
+            f"dimension={dimension} elapsed_ms={_elapsed_ms(started)}"
+        )
+        return body
     except Exception as exc:
         raise _embed_exception_to_http(exc) from exc

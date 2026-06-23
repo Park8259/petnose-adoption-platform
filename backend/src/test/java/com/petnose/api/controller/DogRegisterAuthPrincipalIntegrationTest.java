@@ -268,24 +268,23 @@ class DogRegisterAuthPrincipalIntegrationTest {
     @Test
     void dogRegisterRejectsMissingAuthorizationBeforePipelineStarts() throws Exception {
         mockMvc.perform(validDogMultipart(null))
-                .andExpect(status().isUnauthorized())
-                .andExpect(jsonPath("$.error_code").value("UNAUTHORIZED"));
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error_code").value("USER_ID_REQUIRED"));
 
         assertPipelineRowsAbsent();
         verifyPipelineNotStarted();
     }
 
     @Test
-    void dogRegisterRejectsLegacyUserIdOnlyFallbackBeforePipelineStarts() throws Exception {
+    void dogRegisterUsesFormUserIdWhenAuthorizationIsAbsent() throws Exception {
         registerUser("dog-user-id-only@example.com");
         User fallbackUser = userRepository.findByEmail("dog-user-id-only@example.com").orElseThrow();
 
         mockMvc.perform(validDogMultipart(fallbackUser.getId()))
-                .andExpect(status().isUnauthorized())
-                .andExpect(jsonPath("$.error_code").value("UNAUTHORIZED"));
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.registration_allowed").value(true));
 
-        assertPipelineRowsAbsent();
-        verifyPipelineNotStarted();
+        assertThat(onlyDog().getOwnerUserId()).isEqualTo(fallbackUser.getId());
     }
 
     @Test

@@ -9,11 +9,13 @@ import com.petnose.api.dto.registration.DogProfileDraftRequest;
 import com.petnose.api.dto.registration.DogProfileDraftResponse;
 import com.petnose.api.dto.registration.DuplicateCandidateResponse;
 import com.petnose.api.dto.registration.ProfileMatchScoreResponse;
+import com.petnose.api.dto.registration.ProfileNosePreviewApiResponse;
 import com.petnose.api.dto.registration.ProfileNosePreviewResponse;
 import com.petnose.api.dto.registration.ScoreBreakdownResponse;
 import com.petnose.api.exception.ApiException;
 import com.petnose.api.service.AuthService;
 import com.petnose.api.service.DogRegistrationService;
+import com.petnose.api.service.ProfileNosePreviewService;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.ArgumentMatchers;
@@ -25,6 +27,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -33,6 +36,7 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.nullValue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -54,6 +58,46 @@ class DogRegistrationControllerTest {
 
     @MockBean
     private AuthService authService;
+
+    @MockBean
+    private ProfileNosePreviewService profileNosePreviewService;
+
+    @Test
+    void profileNosePreviewUsesProductDemoSafeEndpointWithoutAuth() throws Exception {
+        when(profileNosePreviewService.preview(ArgumentMatchers.any(), ArgumentMatchers.eq("req-preview")))
+                .thenReturn(new ProfileNosePreviewApiResponse(
+                        true,
+                        0.95484,
+                        224,
+                        224,
+                        null,
+                        "정면 사진에서 비문 영역을 확인했습니다.",
+                        null
+                ));
+
+        mockMvc.perform(multipart("/api/dogs/profile-nose-preview")
+                        .file(new MockMultipartFile("profile_image", "profile.jpg", "image/jpeg", new byte[]{1, 2, 3}))
+                        .header("X-Request-Id", "req-preview"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.extracted").value(true))
+                .andExpect(jsonPath("$.confidence").value(0.95484))
+                .andExpect(jsonPath("$.crop_width").value(224))
+                .andExpect(jsonPath("$.crop_height").value(224))
+                .andExpect(jsonPath("$.failure_reason", nullValue()))
+                .andExpect(jsonPath("$.error_code", nullValue()));
+
+        verify(profileNosePreviewService).preview(ArgumentMatchers.any(), ArgumentMatchers.eq("req-preview"));
+    }
+
+    @Test
+    void profileNosePreviewMissingProfileImageReturnsValidationFailed() throws Exception {
+        when(profileNosePreviewService.preview(ArgumentMatchers.isNull(), ArgumentMatchers.isNull()))
+                .thenThrow(new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_FAILED", "profile_image는 필수입니다."));
+
+        mockMvc.perform(multipart("/api/dogs/profile-nose-preview"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error_code").value("VALIDATION_FAILED"));
+    }
 
     @Test
     void profileDraftAcceptsUserIdFallbackAndReturnsCreated() throws Exception {
@@ -147,6 +191,7 @@ class DogRegistrationControllerTest {
                         "dog-nose-identification2:s101_224",
                         2048,
                         0.12345,
+                        null,
                         "/files/dogs/dog-1/nose/sample.png",
                         null,
                         null,
@@ -212,6 +257,7 @@ class DogRegistrationControllerTest {
                         "model",
                         "dimension",
                         "max_similarity_score",
+                        "profile_nose_match_score",
                         "nose_image_url",
                         "profile_image_url",
                         "top_match",
@@ -266,6 +312,32 @@ class DogRegistrationControllerTest {
     }
 
     @Test
+    void registerDogPassesProfileAndFaceCheckImagesToService() throws Exception {
+        when(authService.currentActiveUserId("Bearer test-token")).thenReturn(42L);
+        when(dogRegistrationService.register(ArgumentMatchers.any(), ArgumentMatchers.any(), ArgumentMatchers.any(), anyString()))
+                .thenReturn(registrationAllowedResponse());
+
+        MockMultipartFile profileImage = new MockMultipartFile("profile_image", "profile.png", "image/png", new byte[]{1, 2, 3});
+        MockMultipartFile faceCheckImage = new MockMultipartFile("face_check_image", "face.png", "image/png", new byte[]{4, 5, 6});
+
+        mockMvc.perform(canonicalNoseImageMultipartRequest()
+                        .file(profileImage)
+                        .file(faceCheckImage)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer test-token"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.registration_allowed").value(true));
+
+        ArgumentCaptor<DogRegisterRequest> requestCaptor = ArgumentCaptor.forClass(DogRegisterRequest.class);
+        ArgumentCaptor<MultipartFile> profileCaptor = ArgumentCaptor.forClass(MultipartFile.class);
+        ArgumentCaptor<MultipartFile> faceCaptor = ArgumentCaptor.forClass(MultipartFile.class);
+        verify(dogRegistrationService).register(requestCaptor.capture(), profileCaptor.capture(), faceCaptor.capture(), anyString());
+
+        assertThat(requestCaptor.getValue().noseImages()).hasSize(5);
+        assertThat(profileCaptor.getValue().getName()).isEqualTo("profile_image");
+        assertThat(faceCaptor.getValue().getName()).isEqualTo("face_check_image");
+    }
+
+    @Test
     void registerDogReturnsOkWhenDuplicateSuspected() throws Exception {
         when(authService.currentActiveUserId("Bearer test-token")).thenReturn(42L);
         when(dogRegistrationService.register(ArgumentMatchers.any()))
@@ -279,6 +351,7 @@ class DogRegistrationControllerTest {
                         "dog-nose-identification2:s101_224",
                         2048,
                         0.98765,
+                        null,
                         "/files/dogs/dog-2/nose/sample.png",
                         null,
                         new DuplicateCandidateResponse("existing-dog-1", 0.98765, "Jindo"),
@@ -379,6 +452,7 @@ class DogRegistrationControllerTest {
                         "dog-nose-identification2:s101_224",
                         2048,
                         0.12345,
+                        null,
                         "/files/dogs/dog-1/nose/sample.png",
                         null,
                         null,
@@ -405,13 +479,24 @@ class DogRegistrationControllerTest {
     }
 
     @Test
-    void registerDogRejectsMissingAuthorizationBeforeService() throws Exception {
-        when(authService.currentActiveUserId(null))
-                .thenThrow(new ApiException(HttpStatus.UNAUTHORIZED, "UNAUTHORIZED", "Authorization Bearer token이 필요합니다."));
+    void registerDogAcceptsMultipartUserIdWhenBearerTokenIsAbsent() throws Exception {
+        when(dogRegistrationService.register(ArgumentMatchers.any()))
+                .thenReturn(registrationAllowedResponse());
 
+        mockMvc.perform(validMultipartRequestWithoutAuthorization().param("user_id", "42"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.registration_allowed").value(true));
+
+        ArgumentCaptor<DogRegisterRequest> requestCaptor = ArgumentCaptor.forClass(DogRegisterRequest.class);
+        verify(dogRegistrationService).register(requestCaptor.capture());
+        assertThat(requestCaptor.getValue().userId()).isEqualTo(42L);
+    }
+
+    @Test
+    void registerDogRejectsMissingAuthorizationAndUserIdBeforeService() throws Exception {
         mockMvc.perform(validMultipartRequestWithoutAuthorization())
-                .andExpect(status().isUnauthorized())
-                .andExpect(jsonPath("$.error_code").value("UNAUTHORIZED"));
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error_code").value("USER_ID_REQUIRED"));
 
         verify(dogRegistrationService, never()).register(any());
     }
@@ -511,6 +596,7 @@ class DogRegistrationControllerTest {
                 "dog-nose-identification2:s101_224",
                 2048,
                 0.12345,
+                null,
                 "/files/dogs/dog-1/nose/sample.png",
                 null,
                 null,

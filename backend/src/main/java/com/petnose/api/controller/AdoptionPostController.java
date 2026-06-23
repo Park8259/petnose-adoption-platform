@@ -89,6 +89,7 @@ public class AdoptionPostController {
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<AdoptionPostCreateResponse> create(
             @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorizationHeader,
+            @RequestParam(value = "user_id", required = false) Long userId,
             @RequestParam(value = "dog_id", required = false) String dogId,
             @RequestParam(value = "title", required = false) String title,
             @RequestParam(value = "content", required = false) String content,
@@ -96,7 +97,7 @@ public class AdoptionPostController {
             @RequestParam(value = "status", required = false) String status,
             @RequestParam(value = "profile_image", required = false) MultipartFile profileImage
     ) {
-        Long currentUserId = authService.currentActiveUserId(authorizationHeader);
+        Long currentUserId = resolveRequiredCurrentUserId(authorizationHeader, userId);
         AdoptionPostCreateRequest request = new AdoptionPostCreateRequest(
                 dogId,
                 title,
@@ -117,6 +118,16 @@ public class AdoptionPostController {
     ) {
         Long currentUserId = authService.currentActiveUserId(authorizationHeader);
         return adoptionPostService.updateStatus(currentUserId, postId, request);
+    }
+
+    private Long resolveRequiredCurrentUserId(String authorizationHeader, Long userId) {
+        if (authorizationHeader != null && !authorizationHeader.isBlank()) {
+            return authService.currentActiveUserId(authorizationHeader);
+        }
+        if (userId == null) {
+            return authService.currentActiveUserId(authorizationHeader);
+        }
+        return userId;
     }
 
     private Long resolveOptionalCurrentUserId(String authorizationHeader) {

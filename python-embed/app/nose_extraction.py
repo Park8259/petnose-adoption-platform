@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import math
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Protocol
@@ -15,10 +15,15 @@ NO_NOSE_DETECTED = "NO_NOSE_DETECTED"
 MULTIPLE_NOSES_DETECTED = "MULTIPLE_NOSES_DETECTED"
 LOW_CONFIDENCE = "LOW_CONFIDENCE"
 INTERNAL_ERROR = "INTERNAL_ERROR"
+NOSE_TOO_LARGE_FOR_FACE_CHECK = "NOSE_TOO_LARGE_FOR_FACE_CHECK"
+NOSE_TOO_SMALL_FOR_FACE_CHECK = "NOSE_TOO_SMALL_FOR_FACE_CHECK"
+NOSE_TOUCHES_IMAGE_EDGE = "NOSE_TOUCHES_IMAGE_EDGE"
+NOSE_OFF_CENTER = "NOSE_OFF_CENTER"
 
 DEFAULT_CLASS_NAMES = ("nose", "dog_nose", "pet_nose")
 DEFAULT_DETECTOR_BACKEND = "ultralytics"
 LEGACY_YOLOV5_BACKEND = "yolov5_legacy"
+FACE_CHECK_PURPOSE = "face_check"
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +42,35 @@ class DogNoseDetector(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class FaceCheckQualityConfig:
+    enabled: bool
+    nose_min_area_ratio: float
+    nose_max_area_ratio: float
+    nose_max_width_ratio: float
+    nose_max_height_ratio: float
+    edge_margin_ratio: float
+    center_x_min: float
+    center_x_max: float
+    center_y_min: float
+    center_y_max: float
+
+    @classmethod
+    def from_env(cls) -> "FaceCheckQualityConfig":
+        return cls(
+            enabled=_parse_bool(os.getenv("FACE_CHECK_QUALITY_ENABLED"), default=True),
+            nose_min_area_ratio=max(0.0, _parse_float(os.getenv("FACE_CHECK_NOSE_MIN_AREA_RATIO"), 0.003)),
+            nose_max_area_ratio=max(0.0, _parse_float(os.getenv("FACE_CHECK_NOSE_MAX_AREA_RATIO"), 0.25)),
+            nose_max_width_ratio=max(0.0, _parse_float(os.getenv("FACE_CHECK_NOSE_MAX_WIDTH_RATIO"), 0.60)),
+            nose_max_height_ratio=max(0.0, _parse_float(os.getenv("FACE_CHECK_NOSE_MAX_HEIGHT_RATIO"), 0.60)),
+            edge_margin_ratio=max(0.0, _parse_float(os.getenv("FACE_CHECK_EDGE_MARGIN_RATIO"), 0.02)),
+            center_x_min=_parse_float(os.getenv("FACE_CHECK_CENTER_X_MIN"), 0.20),
+            center_x_max=_parse_float(os.getenv("FACE_CHECK_CENTER_X_MAX"), 0.80),
+            center_y_min=_parse_float(os.getenv("FACE_CHECK_CENTER_Y_MIN"), 0.25),
+            center_y_max=_parse_float(os.getenv("FACE_CHECK_CENTER_Y_MAX"), 0.85),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class DogNoseExtractionConfig:
     enabled: bool
     weights_path: str | None
@@ -47,6 +81,7 @@ class DogNoseExtractionConfig:
     bbox_expand: float
     class_id: int | None
     class_names: frozenset[str]
+    face_check_quality: FaceCheckQualityConfig = field(default_factory=FaceCheckQualityConfig.from_env)
 
     @classmethod
     def from_env(cls) -> "DogNoseExtractionConfig":
@@ -60,7 +95,34 @@ class DogNoseExtractionConfig:
             bbox_expand=max(1.0, _parse_float(os.getenv("DOG_NOSE_BBOX_EXPAND"), 1.40)),
             class_id=_parse_optional_int(os.getenv("DOG_NOSE_CLASS_ID"), 0),
             class_names=frozenset(_parse_class_names(os.getenv("DOG_NOSE_CLASS_NAMES"))),
+            face_check_quality=FaceCheckQualityConfig.from_env(),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class FaceCheckQualityResult:
+    purpose: str
+    passed: bool
+    nose_area_ratio: float | None
+    nose_width_ratio: float | None
+    nose_height_ratio: float | None
+    edge_margin_ratio: float | None
+    center_x: float | None
+    center_y: float | None
+    failure_reason: str | None
+
+    def to_response(self) -> dict[str, object]:
+        return {
+            "purpose": self.purpose,
+            "passed": self.passed,
+            "nose_area_ratio": self.nose_area_ratio,
+            "nose_width_ratio": self.nose_width_ratio,
+            "nose_height_ratio": self.nose_height_ratio,
+            "edge_margin_ratio": self.edge_margin_ratio,
+            "center_x": self.center_x,
+            "center_y": self.center_y,
+            "failure_reason": self.failure_reason,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,13 +136,14 @@ class NoseExtractionResult:
     detector: str
     crop_bytes: bytes | None
     failure_reason: str | None
+    quality: FaceCheckQualityResult | None = None
 
     def to_response(self) -> dict[str, object]:
         crop_base64 = None
         if self.crop_bytes is not None:
             crop_base64 = base64.b64encode(self.crop_bytes).decode("ascii")
 
-        return {
+        response = {
             "extracted": self.extracted,
             "crop_width": self.crop_width,
             "crop_height": self.crop_height,
@@ -91,6 +154,9 @@ class NoseExtractionResult:
             "crop_base64": crop_base64,
             "failure_reason": self.failure_reason,
         }
+        if self.quality is not None:
+            response["quality"] = self.quality.to_response()
+        return response
 
 
 class UltralyticsDogNoseDetector:
@@ -262,20 +328,28 @@ class DogNoseExtractor:
     def is_available(self) -> bool:
         return self.config.enabled and self.detector is not None
 
-    def failure_result(self, failure_reason: str) -> NoseExtractionResult:
+    def failure_result(
+        self,
+        failure_reason: str,
+        *,
+        confidence: float | None = None,
+        bbox_xyxy: list[float] | None = None,
+        quality: FaceCheckQualityResult | None = None,
+    ) -> NoseExtractionResult:
         return NoseExtractionResult(
             extracted=False,
             crop_width=None,
             crop_height=None,
-            confidence=None,
-            bbox_xyxy=None,
+            confidence=confidence,
+            bbox_xyxy=bbox_xyxy,
             bbox_expand=self.config.bbox_expand,
             detector=self.detector_name,
             crop_bytes=None,
             failure_reason=failure_reason,
+            quality=quality,
         )
 
-    def extract(self, image_bytes: bytes) -> NoseExtractionResult:
+    def extract(self, image_bytes: bytes, purpose: str | None = None) -> NoseExtractionResult:
         if not self.is_available():
             return self.failure_result(DETECTOR_UNAVAILABLE)
 
@@ -285,13 +359,18 @@ class DogNoseExtractor:
         try:
             image = _load_rgb_image(image_bytes)
             detections = self.detector.detect(image)
-            return self._extract_from_detections(image, detections)
+            return self._extract_from_detections(image, detections, purpose)
         except InvalidImageError:
             return self.failure_result(INVALID_IMAGE)
         except Exception:
             return self.failure_result(INTERNAL_ERROR)
 
-    def _extract_from_detections(self, image: Any, detections: list[NoseDetection]) -> NoseExtractionResult:
+    def _extract_from_detections(
+        self,
+        image: Any,
+        detections: list[NoseDetection],
+        purpose: str | None = None,
+    ) -> NoseExtractionResult:
         class_matches = [detection for detection in detections if self._matches_expected_class(detection)]
         if not class_matches:
             return self.failure_result(NO_NOSE_DETECTED)
@@ -309,6 +388,15 @@ class DogNoseExtractor:
             return self.failure_result(MULTIPLE_NOSES_DETECTED)
 
         detection = high_confidence[0]
+        quality = self._face_check_quality(image, detection, purpose)
+        if quality is not None and not quality.passed:
+            return self.failure_result(
+                quality.failure_reason or INTERNAL_ERROR,
+                confidence=round(float(detection.confidence), 6),
+                bbox_xyxy=[round(float(value), 3) for value in detection.bbox_xyxy],
+                quality=quality,
+            )
+
         crop = _crop_padded_square(image, detection.bbox_xyxy, self.config.bbox_expand)
         crop = _resize_image(crop, self.config.crop_size)
 
@@ -326,6 +414,68 @@ class DogNoseExtractor:
             detector=self.detector_name,
             crop_bytes=crop_bytes,
             failure_reason=None,
+            quality=quality,
+        )
+
+    def _face_check_quality(
+        self,
+        image: Any,
+        detection: NoseDetection,
+        purpose: str | None,
+    ) -> FaceCheckQualityResult | None:
+        if _normalize_purpose(purpose) != FACE_CHECK_PURPOSE:
+            return None
+
+        x1, y1, x2, y2 = detection.bbox_xyxy
+        image_width = max(1.0, float(image.width))
+        image_height = max(1.0, float(image.height))
+        bbox_width = max(0.0, float(x2 - x1))
+        bbox_height = max(0.0, float(y2 - y1))
+        nose_area_ratio = _rounded_ratio((bbox_width * bbox_height) / (image_width * image_height))
+        nose_width_ratio = _rounded_ratio(bbox_width / image_width)
+        nose_height_ratio = _rounded_ratio(bbox_height / image_height)
+        edge_margin_ratio = _rounded_ratio(
+            min(
+                max(0.0, x1) / image_width,
+                max(0.0, y1) / image_height,
+                max(0.0, image_width - x2) / image_width,
+                max(0.0, image_height - y2) / image_height,
+            )
+        )
+        center_x = _rounded_ratio(((x1 + x2) / 2.0) / image_width)
+        center_y = _rounded_ratio(((y1 + y2) / 2.0) / image_height)
+
+        failure_reason = None
+        config = self.config.face_check_quality
+        if config.enabled:
+            if nose_area_ratio < config.nose_min_area_ratio:
+                failure_reason = NOSE_TOO_SMALL_FOR_FACE_CHECK
+            elif (
+                nose_area_ratio > config.nose_max_area_ratio
+                or nose_width_ratio > config.nose_max_width_ratio
+                or nose_height_ratio > config.nose_max_height_ratio
+            ):
+                failure_reason = NOSE_TOO_LARGE_FOR_FACE_CHECK
+            elif edge_margin_ratio < config.edge_margin_ratio:
+                failure_reason = NOSE_TOUCHES_IMAGE_EDGE
+            elif (
+                center_x < config.center_x_min
+                or center_x > config.center_x_max
+                or center_y < config.center_y_min
+                or center_y > config.center_y_max
+            ):
+                failure_reason = NOSE_OFF_CENTER
+
+        return FaceCheckQualityResult(
+            purpose=FACE_CHECK_PURPOSE,
+            passed=failure_reason is None,
+            nose_area_ratio=nose_area_ratio,
+            nose_width_ratio=nose_width_ratio,
+            nose_height_ratio=nose_height_ratio,
+            edge_margin_ratio=edge_margin_ratio,
+            center_x=center_x,
+            center_y=center_y,
+            failure_reason=failure_reason,
         )
 
     def _matches_expected_class(self, detection: NoseDetection) -> bool:
@@ -400,6 +550,14 @@ def _resize_image(image: Any, size: int) -> Any:
 def _is_valid_bbox(bbox_xyxy: tuple[float, float, float, float]) -> bool:
     x1, y1, x2, y2 = bbox_xyxy
     return all(math.isfinite(value) for value in bbox_xyxy) and x2 > x1 and y2 > y1
+
+
+def _normalize_purpose(purpose: str | None) -> str:
+    return (purpose or "").strip().lower()
+
+
+def _rounded_ratio(value: float) -> float:
+    return round(float(value), 6)
 
 
 def _parse_bool(value: str | None, *, default: bool) -> bool:

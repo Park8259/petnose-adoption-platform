@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import base64
+import logging
 import os
 import unittest
-from io import BytesIO
+from contextlib import redirect_stdout
+from io import BytesIO, StringIO
 from pathlib import Path
 import sys
 from unittest.mock import patch
@@ -20,6 +22,10 @@ from app.nose_extraction import (
     LEGACY_YOLOV5_BACKEND,
     MULTIPLE_NOSES_DETECTED,
     NO_NOSE_DETECTED,
+    NOSE_OFF_CENTER,
+    NOSE_TOO_LARGE_FOR_FACE_CHECK,
+    NOSE_TOO_SMALL_FOR_FACE_CHECK,
+    NOSE_TOUCHES_IMAGE_EDGE,
     DogNoseExtractionConfig,
     DogNoseExtractor,
     NoseDetection,
@@ -103,9 +109,54 @@ def make_extractor(detections: list[NoseDetection] | None) -> DogNoseExtractor:
 
 
 class DogNoseExtractorTest(unittest.TestCase):
+    def test_demo_trace_default_is_disabled(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(main._parse_bool_env("DEMO_TRACE_ENABLED", False))
+
     def test_profile_match_threshold_env_parse_falls_back_on_invalid_value(self) -> None:
         with patch.dict(os.environ, {"PROFILE_NOSE_MATCH_THRESHOLD": "not-a-number"}):
             self.assertEqual(main._parse_float_env("PROFILE_NOSE_MATCH_THRESHOLD", 0.65), 0.65)
+
+    def test_score_summary_calculates_percent_flow_inputs(self) -> None:
+        summary = main._score_summary([0.70, 0.71, 0.72, 0.73, 0.60], 0.65)
+
+        self.assertEqual(summary["min"], 0.60)
+        self.assertEqual(summary["max"], 0.73)
+        self.assertEqual(summary["mean"], 0.692)
+        self.assertEqual(summary["median"], 0.71)
+        self.assertEqual(summary["pass_count"], 4)
+        self.assertEqual(summary["fail_count"], 1)
+
+    def test_health_access_filter_suppresses_only_health_when_disabled(self) -> None:
+        original = main.DEMO_TRACE_HEALTH_ACCESS_LOG
+        filter_ = main.HealthAccessLogFilter()
+        health_record = logging.LogRecord(
+            "uvicorn.access",
+            logging.INFO,
+            "",
+            1,
+            '127.0.0.1:12345 - "GET /health HTTP/1.1" 200 OK',
+            (),
+            None,
+        )
+        register_record = logging.LogRecord(
+            "uvicorn.access",
+            logging.INFO,
+            "",
+            1,
+            '127.0.0.1:12345 - "POST /internal/nose/profile-match-batch HTTP/1.1" 200 OK',
+            (),
+            None,
+        )
+        try:
+            main.DEMO_TRACE_HEALTH_ACCESS_LOG = False
+            self.assertFalse(filter_.filter(health_record))
+            self.assertTrue(filter_.filter(register_record))
+
+            main.DEMO_TRACE_HEALTH_ACCESS_LOG = True
+            self.assertTrue(filter_.filter(health_record))
+        finally:
+            main.DEMO_TRACE_HEALTH_ACCESS_LOG = original
 
     def test_legacy_yolov5_backend_env_is_optional_and_requires_local_repo(self) -> None:
         with patch.dict(
@@ -178,6 +229,88 @@ class DogNoseExtractorTest(unittest.TestCase):
         self.assertFalse(result.extracted)
         self.assertEqual(result.failure_reason, NO_NOSE_DETECTED)
 
+    def test_face_check_quality_normal_bbox_passes(self) -> None:
+        extractor = make_extractor(
+            [
+                NoseDetection((100.0, 80.0, 180.0, 160.0), 0.92, class_id=0, class_name="nose"),
+            ]
+        )
+
+        result = extractor.extract(make_png(), purpose="face_check")
+
+        self.assertTrue(result.extracted)
+        self.assertIsNotNone(result.quality)
+        self.assertTrue(result.quality.passed)
+        self.assertEqual(result.quality.purpose, "face_check")
+        self.assertEqual(result.quality.nose_area_ratio, 0.083333)
+        self.assertIsNone(result.quality.failure_reason)
+
+    def test_face_check_quality_rejects_nose_only_closeup(self) -> None:
+        extractor = make_extractor(
+            [
+                NoseDetection((20.0, 20.0, 300.0, 220.0), 0.92, class_id=0, class_name="nose"),
+            ]
+        )
+
+        result = extractor.extract(make_png(), purpose="face_check")
+
+        self.assertFalse(result.extracted)
+        self.assertEqual(result.failure_reason, NOSE_TOO_LARGE_FOR_FACE_CHECK)
+        self.assertIsNotNone(result.quality)
+        self.assertFalse(result.quality.passed)
+        self.assertGreater(result.quality.nose_area_ratio or 0.0, 0.25)
+
+    def test_face_check_quality_rejects_too_small_nose(self) -> None:
+        extractor = make_extractor(
+            [
+                NoseDetection((10.0, 10.0, 18.0, 18.0), 0.92, class_id=0, class_name="nose"),
+            ]
+        )
+
+        result = extractor.extract(make_png(), purpose="face_check")
+
+        self.assertFalse(result.extracted)
+        self.assertEqual(result.failure_reason, NOSE_TOO_SMALL_FOR_FACE_CHECK)
+        self.assertLess(result.quality.nose_area_ratio or 1.0, 0.003)
+
+    def test_face_check_quality_rejects_edge_cropped_nose(self) -> None:
+        extractor = make_extractor(
+            [
+                NoseDetection((0.0, 80.0, 80.0, 160.0), 0.92, class_id=0, class_name="nose"),
+            ]
+        )
+
+        result = extractor.extract(make_png(), purpose="face_check")
+
+        self.assertFalse(result.extracted)
+        self.assertEqual(result.failure_reason, NOSE_TOUCHES_IMAGE_EDGE)
+        self.assertEqual(result.quality.edge_margin_ratio, 0.0)
+
+    def test_face_check_quality_rejects_off_center_nose(self) -> None:
+        extractor = make_extractor(
+            [
+                NoseDetection((10.0, 80.0, 90.0, 160.0), 0.92, class_id=0, class_name="nose"),
+            ]
+        )
+
+        result = extractor.extract(make_png(), purpose="face_check")
+
+        self.assertFalse(result.extracted)
+        self.assertEqual(result.failure_reason, NOSE_OFF_CENTER)
+        self.assertLess(result.quality.center_x or 1.0, 0.20)
+
+    def test_face_check_quality_is_not_applied_to_generic_purpose(self) -> None:
+        extractor = make_extractor(
+            [
+                NoseDetection((20.0, 20.0, 300.0, 220.0), 0.92, class_id=0, class_name="nose"),
+            ]
+        )
+
+        result = extractor.extract(make_png(), purpose="nose_image")
+
+        self.assertTrue(result.extracted)
+        self.assertIsNone(result.quality)
+
 
 class NoseExtractionEndpointTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -215,6 +348,107 @@ class NoseExtractionEndpointTest(unittest.TestCase):
 
         crop = Image.open(BytesIO(base64.b64decode(body["crop_base64"])))
         self.assertEqual(crop.size, (224, 224))
+
+    def test_extract_endpoint_applies_face_check_quality_when_requested(self) -> None:
+        main._nose_extractor = make_extractor(
+            [
+                NoseDetection((20.0, 20.0, 300.0, 220.0), 0.92, class_id=0, class_name="nose"),
+            ]
+        )
+
+        response = self.client.post(
+            "/internal/nose/extract",
+            files={"image": ("profile.png", make_png(), "image/png")},
+            data={"purpose": "face_check"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertFalse(body["extracted"])
+        self.assertEqual(body["failure_reason"], NOSE_TOO_LARGE_FOR_FACE_CHECK)
+        self.assertFalse(body["quality"]["passed"])
+        self.assertEqual(body["quality"]["purpose"], "face_check")
+
+    def test_extract_embed_endpoint_returns_embedding_without_crop_base64(self) -> None:
+        main._embedder = FakeEmbedder()
+
+        response = self.client.post(
+            "/internal/nose/extract-embed",
+            files={"image": ("profile.png", make_png(), "image/png")},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["extracted"])
+        self.assertEqual(body["crop_width"], 224)
+        self.assertEqual(body["crop_height"], 224)
+        self.assertEqual(body["confidence"], 0.92)
+        self.assertEqual(body["model"], "fake-v1:test")
+        self.assertEqual(body["dimension"], 4)
+        self.assertEqual(body["embedding"], [1.0, 0.0, 0.0, 0.0])
+        self.assertIsNone(body["failure_reason"])
+        self.assertNotIn("crop_base64", body)
+
+    def test_extract_embed_endpoint_applies_face_check_quality_when_requested(self) -> None:
+        main._nose_extractor = make_extractor(
+            [
+                NoseDetection((20.0, 20.0, 300.0, 220.0), 0.92, class_id=0, class_name="nose"),
+            ]
+        )
+        main._embedder = FakeEmbedder()
+
+        response = self.client.post(
+            "/internal/nose/extract-embed",
+            files={"image": ("profile.png", make_png(), "image/png")},
+            data={"purpose": "face_check"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertFalse(body["extracted"])
+        self.assertIsNone(body["embedding"])
+        self.assertEqual(body["failure_reason"], NOSE_TOO_LARGE_FOR_FACE_CHECK)
+        self.assertFalse(body["quality"]["passed"])
+
+    def test_extract_embed_detector_unavailable_returns_failure_without_embedding(self) -> None:
+        main._nose_extractor = make_extractor(None)
+        main._embedder = FakeEmbedder()
+
+        response = self.client.post(
+            "/internal/nose/extract-embed",
+            files={"image": ("profile.png", make_png(), "image/png")},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertFalse(body["extracted"])
+        self.assertIsNone(body["embedding"])
+        self.assertEqual(body["failure_reason"], DETECTOR_UNAVAILABLE)
+        self.assertNotIn("crop_base64", body)
+
+    def test_extract_embed_demo_trace_excludes_crop_base64_and_vectors(self) -> None:
+        main._embedder = FakeEmbedder()
+        original_enabled = main.DEMO_TRACE_ENABLED
+        main.DEMO_TRACE_ENABLED = True
+        output = StringIO()
+        try:
+            with redirect_stdout(output):
+                response = self.client.post(
+                    "/internal/nose/extract-embed",
+                    headers={"X-Request-Id": "extract-embed-test"},
+                    files={"image": ("profile.png", make_png(), "image/png")},
+                )
+        finally:
+            main.DEMO_TRACE_ENABLED = original_enabled
+
+        self.assertEqual(response.status_code, 200)
+        logs = output.getvalue()
+        self.assertIn("[DEMO_TRACE]", logs)
+        self.assertIn("request_id=extract-embed-test", logs)
+        self.assertIn("flow=extract_embed", logs)
+        self.assertNotIn("crop_base64", logs)
+        self.assertNotIn("embedding", logs)
+        self.assertNotIn("vector", logs)
 
     def test_profile_match_endpoint_uses_extracted_crop_and_existing_embedder(self) -> None:
         main._embedder = FakeEmbedder()
@@ -263,7 +497,41 @@ class NoseExtractionEndpointTest(unittest.TestCase):
         self.assertEqual(len(body["scores"]), 5)
         self.assertEqual(body["scores"][0]["index"], 1)
         self.assertEqual(body["dimension"], 2048)
+        self.assertIsNotNone(body["profile_vs_centroid_score"])
+        self.assertTrue(body["profile_vs_centroid_passed"])
+        self.assertEqual(body["centroid_dimension"], 2048)
         self.assertIsNone(body["failure_reason"])
+
+    def test_profile_match_batch_demo_trace_excludes_crop_base64_and_vectors(self) -> None:
+        main._embedder = FakeSequence2048Embedder([0.70, 0.71, 0.72, 0.73, 0.60])
+        original_enabled = main.DEMO_TRACE_ENABLED
+        main.DEMO_TRACE_ENABLED = True
+        output = StringIO()
+        try:
+            with redirect_stdout(output):
+                response = self.client.post(
+                    "/internal/nose/profile-match-batch",
+                    headers={"X-Request-Id": "trace-test"},
+                    files=[
+                        ("profile_image", ("profile.png", make_png(), "image/png")),
+                        ("nose_image", ("nose-1.png", make_png(), "image/png")),
+                        ("nose_image", ("nose-2.png", make_png(), "image/png")),
+                        ("nose_image", ("nose-3.png", make_png(), "image/png")),
+                        ("nose_image", ("nose-4.png", make_png(), "image/png")),
+                        ("nose_image", ("nose-5.png", make_png(), "image/png")),
+                    ],
+                )
+        finally:
+            main.DEMO_TRACE_ENABLED = original_enabled
+
+        self.assertEqual(response.status_code, 200)
+        logs = output.getvalue()
+        self.assertIn("[DEMO_TRACE]", logs)
+        self.assertIn("request_id=trace-test", logs)
+        self.assertIn("flow=profile_match_batch", logs)
+        self.assertIn("step=centroid_compare", logs)
+        self.assertNotIn("crop_base64", logs)
+        self.assertNotIn("vector", logs)
 
     def test_profile_match_batch_detector_unavailable_returns_failure(self) -> None:
         main._nose_extractor = make_extractor(None)

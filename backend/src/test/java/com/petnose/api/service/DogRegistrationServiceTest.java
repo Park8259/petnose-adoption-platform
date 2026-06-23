@@ -25,6 +25,10 @@ import com.petnose.api.repository.DogNoseReferenceRepository;
 import com.petnose.api.repository.DogRepository;
 import com.petnose.api.repository.UserRepository;
 import com.petnose.api.repository.VerificationLogRepository;
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -41,6 +45,7 @@ import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.support.TransactionCallback;
 import org.springframework.transaction.support.SimpleTransactionStatus;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.slf4j.LoggerFactory;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -243,6 +248,291 @@ class DogRegistrationServiceTest {
                         DogNoseEmbeddingKind.CENTROID
                 );
         verify(fileStorageService, never()).deleteStoredFilesQuietly(anyCollection());
+    }
+
+    @Test
+    void registerWithProfileImageStoresProfileSeparatelyFromFaceCheckAndNoseImages() {
+        when(embedClient.embedBatch(anyList())).thenReturn(batchResponse(consistentVectors()));
+
+        DogRegisterResponse response = service.register(request(noseImages(5)), profileImage(), null, null);
+
+        assertThat(response.registrationAllowed()).isTrue();
+        assertThat(response.status()).isEqualTo("REGISTERED");
+        assertThat(response.profileImageUrl()).startsWith("/files/dogs/");
+        assertThat(dogImages.values())
+                .filteredOn(image -> image.getImageType() == DogImageType.PROFILE)
+                .hasSize(1);
+        assertThat(dogImages.values())
+                .filteredOn(image -> image.getImageType() == DogImageType.NOSE)
+                .hasSize(5);
+        verify(fileStorageService).storeProfileImage(anyString(), any());
+        verify(embedClient, never()).extractNoseEmbeddingFromFaceImage(any(), anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void registerDemoTraceFaceCheckImageCallsProfileMatchBatchWithoutChangingDecision() {
+        ReflectionTestUtils.setField(service, "demoTraceEnabled", true);
+        ReflectionTestUtils.setField(service, "demoTraceProfileCompareEnabled", true);
+        ReflectionTestUtils.setField(service, "demoTraceProfileCompareThreshold", 0.65);
+        ReflectionTestUtils.setField(service, "demoTraceProfileCompareMinPassCount", 4);
+        when(embedClient.profileNoseMatchBatch(any(), anyString(), anyString(), anyList(), anyString()))
+                .thenReturn(profileBatchResponse(List.of(0.51, 0.52, 0.49, 0.72, 0.50), null));
+        when(embedClient.embedBatch(anyList(), anyString())).thenReturn(batchResponse(consistentVectors()));
+
+        DogRegisterResponse response = service.register(request(noseImages(5)), profileImage(), "demo-req-1");
+
+        assertThat(response.registrationAllowed()).isTrue();
+        assertThat(response.status()).isEqualTo("REGISTERED");
+        assertThat(onlyVerificationLog().getResult()).isEqualTo(VerificationResult.PASSED);
+        verify(embedClient).profileNoseMatchBatch(any(), anyString(), anyString(), anyList(), anyString());
+    }
+
+    @Test
+    void registerDemoTraceProfileMatchFailureIsFailOpen() {
+        ReflectionTestUtils.setField(service, "demoTraceEnabled", true);
+        ReflectionTestUtils.setField(service, "demoTraceProfileCompareEnabled", true);
+        when(embedClient.profileNoseMatchBatch(any(), anyString(), anyString(), anyList(), anyString()))
+                .thenThrow(new EmbedClient.EmbedClientException("profile match down", 503, "{}", null));
+        when(embedClient.embedBatch(anyList(), anyString())).thenReturn(batchResponse(consistentVectors()));
+
+        DogRegisterResponse response = service.register(request(noseImages(5)), profileImage(), "demo-req-2");
+
+        assertThat(response.registrationAllowed()).isTrue();
+        assertThat(response.status()).isEqualTo("REGISTERED");
+        assertThat(onlyVerificationLog().getResult()).isEqualTo(VerificationResult.PASSED);
+    }
+
+    @Test
+    void registerDemoTraceWithoutFaceCheckImageSkipsProfileMatchBatch() {
+        ReflectionTestUtils.setField(service, "demoTraceEnabled", true);
+        ReflectionTestUtils.setField(service, "demoTraceProfileCompareEnabled", true);
+        when(embedClient.embedBatch(anyList(), anyString())).thenReturn(batchResponse(consistentVectors()));
+
+        DogRegisterResponse response = service.register(request(noseImages(5)), null, "demo-req-3");
+
+        assertThat(response.registrationAllowed()).isTrue();
+        verify(embedClient, never()).profileNoseMatchBatch(any(), anyString(), anyString(), anyList(), anyString());
+    }
+
+    @Test
+    void registerDoesNotEmitDemoSummaryWhenDisabled() {
+        ListAppender<ILoggingEvent> appender = attachServiceLogAppender();
+        try {
+            when(embedClient.embedBatch(anyList())).thenReturn(batchResponse(consistentVectors()));
+
+            service.register(request(noseImages(5)));
+
+            assertThat(summaryMessages(appender)).isEmpty();
+        } finally {
+            detachServiceLogAppender(appender);
+        }
+    }
+
+    @Test
+    void registerEmitsReadableDemoSummaryForRegisteredPath() {
+        ReflectionTestUtils.setField(service, "demoSummaryEnabled", true);
+        ReflectionTestUtils.setField(service, "profileCentroidGateEnabled", true);
+        ReflectionTestUtils.setField(service, "profileCentroidGateThreshold", 0.65);
+        ListAppender<ILoggingEvent> appender = attachServiceLogAppender();
+        try {
+            when(embedClient.embedBatch(anyList(), anyString())).thenReturn(batchResponse(consistentVectors()));
+            when(embedClient.extractNoseEmbeddingFromFaceImage(any(), anyString(), anyString(), anyString()))
+                    .thenReturn(faceEmbeddingResponse(List.of(1.0, 0.0, 0.0), null));
+
+            DogRegisterResponse response = service.register(request(noseImages(5)), profileImage(), "summary-registered");
+
+            List<String> summaries = summaryMessages(appender);
+            assertThat(response.status()).isEqualTo("REGISTERED");
+            assertThat(summaries).anySatisfy(message -> assertThat(message)
+                    .contains("[1] face-check", "PASS", "confidence=95.5%", "crop=224x224"));
+            assertThat(summaries).anySatisfy(message -> assertThat(message)
+                    .contains("[2] face-vs-centroid", "PASS", "similarity=", "threshold=65.0%"));
+            assertThat(summaries).anySatisfy(message -> assertThat(message)
+                    .contains("[3] nose-reference", "PASS", "median=", "min=", "pass=5/5"));
+            assertThat(summaries).anySatisfy(message -> assertThat(message)
+                    .contains("[4] qdrant-duplicate", "PASS", "top_match=none"));
+            assertThat(summaries).anySatisfy(message -> assertThat(message)
+                    .contains("[5] final", "REGISTERED", "qdrant_upsert=done"));
+            assertThat(summaries).noneMatch(message ->
+                    message.contains("access_token")
+                            || message.contains("base64")
+                            || message.contains("raw_vector"));
+        } finally {
+            detachServiceLogAppender(appender);
+        }
+    }
+
+    @Test
+    void registerEmitsReadableDemoSummaryForDuplicatePath() {
+        ReflectionTestUtils.setField(service, "demoSummaryEnabled", true);
+        Dog candidate = candidateDog("candidate-dog", "Maltese");
+        dogs.put(candidate.getId(), candidate);
+        ListAppender<ILoggingEvent> appender = attachServiceLogAppender();
+        try {
+            when(embedClient.embedBatch(anyList(), anyString())).thenReturn(batchResponse(consistentVectors()));
+            when(qdrantDogVectorClient.searchReferencePoints(anyList(), anyInt(), anyDouble()))
+                    .thenReturn(List.of(vectorResult("candidate-dog", 1.0)));
+
+            DogRegisterResponse response = service.register(request(noseImages(5)));
+
+            List<String> summaries = summaryMessages(appender);
+            assertThat(response.status()).isEqualTo("DUPLICATE_SUSPECTED");
+            assertThat(summaries).anySatisfy(message -> assertThat(message)
+                    .contains("[4] qdrant-duplicate", "DUPLICATE", "top_similarity=100.0%", "threshold=65.0%"));
+            assertThat(summaries).anySatisfy(message -> assertThat(message)
+                    .contains("[5] final", "DUPLICATE_SUSPECTED", "qdrant_upsert=skipped", "registration_allowed=false"));
+        } finally {
+            detachServiceLogAppender(appender);
+        }
+    }
+
+    @Test
+    void registerProfileCentroidGatePassContinuesExistingRegistrationFlow() {
+        ReflectionTestUtils.setField(service, "profileCentroidGateEnabled", true);
+        ReflectionTestUtils.setField(service, "profileCentroidGateThreshold", 0.65);
+        when(embedClient.embedBatch(anyList(), anyString())).thenReturn(batchResponse(consistentVectors()));
+        when(embedClient.extractNoseEmbeddingFromFaceImage(any(), anyString(), anyString(), anyString()))
+                .thenReturn(faceEmbeddingResponse(List.of(1.0, 0.0, 0.0), null));
+
+        DogRegisterResponse response = service.register(request(noseImages(5)), profileImage(), "gate-pass");
+
+        assertThat(response.registrationAllowed()).isTrue();
+        assertThat(response.status()).isEqualTo("REGISTERED");
+        assertThat(response.profileNoseMatchScore()).isGreaterThan(0.99);
+        assertThat(dogs.get(response.dogId()).getStatus()).isEqualTo(DogStatus.REGISTERED);
+        verify(embedClient).extractNoseEmbeddingFromFaceImage(any(), anyString(), anyString(), anyString());
+        verify(qdrantDogVectorClient).searchCentroidPoints(anyList(), anyInt(), anyDouble());
+        verify(qdrantDogVectorClient).upsertAll(anyList());
+    }
+
+    @Test
+    void registerProfileCentroidGateMismatchRejectsBeforeQdrantFileAndDbRows() {
+        ReflectionTestUtils.setField(service, "profileCentroidGateEnabled", true);
+        ReflectionTestUtils.setField(service, "profileCentroidGateThreshold", 0.65);
+        when(embedClient.embedBatch(anyList(), anyString())).thenReturn(batchResponse(consistentVectors()));
+        when(embedClient.extractNoseEmbeddingFromFaceImage(any(), anyString(), anyString(), anyString()))
+                .thenReturn(faceEmbeddingResponse(List.of(0.0, 1.0, 0.0), null));
+
+        assertThatThrownBy(() -> service.register(request(noseImages(5)), profileImage(), "gate-fail"))
+                .isInstanceOfSatisfying(ApiException.class, e -> {
+                    assertThat(e.getStatus()).isEqualTo(org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY);
+                    assertThat(e.getErrorCode()).isEqualTo("PROFILE_CENTROID_MISMATCH");
+                    assertThat(e.getDetails()).containsEntry("failure_reason", "PROFILE_CENTROID_MISMATCH");
+                    assertThat(e.getDetails()).containsEntry("threshold", 0.65);
+                    assertThat((Double) e.getDetails().get("similarity_score")).isLessThan(0.65);
+                });
+
+        assertNoPipelineRows();
+        verify(qdrantDogVectorClient, never()).searchReferencePoints(anyList(), anyInt(), anyDouble());
+        verify(qdrantDogVectorClient, never()).searchCentroidPoints(anyList(), anyInt(), anyDouble());
+        verify(fileStorageService, never()).storeNoseImage(anyString(), any());
+        verify(qdrantDogVectorClient, never()).upsertAll(anyList());
+    }
+
+    @Test
+    void registerProfileCentroidGateExtractionFailureRejectsBeforeQdrantFileAndDbRows() {
+        ReflectionTestUtils.setField(service, "profileCentroidGateEnabled", true);
+        when(embedClient.embedBatch(anyList(), anyString())).thenReturn(batchResponse(consistentVectors()));
+        when(embedClient.extractNoseEmbeddingFromFaceImage(any(), anyString(), anyString(), anyString()))
+                .thenReturn(faceEmbeddingResponse(null, "DETECTOR_UNAVAILABLE"));
+
+        assertThatThrownBy(() -> service.register(request(noseImages(5)), profileImage(), "gate-extract-fail"))
+                .isInstanceOfSatisfying(ApiException.class, e -> {
+                    assertThat(e.getStatus()).isEqualTo(org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY);
+                    assertThat(e.getErrorCode()).isEqualTo("PROFILE_FACE_EMBED_FAILED");
+                    assertThat(e.getDetails()).containsEntry("failure_reason", "DETECTOR_UNAVAILABLE");
+                });
+
+        assertNoPipelineRows();
+        verify(qdrantDogVectorClient, never()).searchReferencePoints(anyList(), anyInt(), anyDouble());
+        verify(qdrantDogVectorClient, never()).searchCentroidPoints(anyList(), anyInt(), anyDouble());
+        verify(fileStorageService, never()).storeNoseImage(anyString(), any());
+        verify(qdrantDogVectorClient, never()).upsertAll(anyList());
+    }
+
+    @Test
+    void registerProfileCentroidGateFaceQualityFailureRejectsBeforeQdrantFileAndDbRows() {
+        ReflectionTestUtils.setField(service, "profileCentroidGateEnabled", true);
+        when(embedClient.embedBatch(anyList(), anyString())).thenReturn(batchResponse(consistentVectors()));
+        when(embedClient.extractNoseEmbeddingFromFaceImage(any(), anyString(), anyString(), anyString()))
+                .thenReturn(faceEmbeddingResponse(null, "NOSE_TOO_LARGE_FOR_FACE_CHECK"));
+
+        assertThatThrownBy(() -> service.register(request(noseImages(5)), profileImage(), "gate-quality-fail"))
+                .isInstanceOfSatisfying(ApiException.class, e -> {
+                    assertThat(e.getStatus()).isEqualTo(org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY);
+                    assertThat(e.getErrorCode()).isEqualTo("PROFILE_FACE_EMBED_FAILED");
+                    assertThat(e.getMessage()).contains("코만 너무 크게");
+                    assertThat(e.getDetails()).containsEntry("failure_reason", "NOSE_TOO_LARGE_FOR_FACE_CHECK");
+                    Map<?, ?> quality = (Map<?, ?>) e.getDetails().get("quality");
+                    assertThat(quality.get("passed")).isEqualTo(false);
+                    assertThat(quality.get("failure_reason")).isEqualTo("NOSE_TOO_LARGE_FOR_FACE_CHECK");
+                });
+
+        assertNoPipelineRows();
+        verify(qdrantDogVectorClient, never()).searchReferencePoints(anyList(), anyInt(), anyDouble());
+        verify(qdrantDogVectorClient, never()).searchCentroidPoints(anyList(), anyInt(), anyDouble());
+        verify(fileStorageService, never()).storeNoseImage(anyString(), any());
+        verify(qdrantDogVectorClient, never()).upsertAll(anyList());
+    }
+
+    @Test
+    void registerProfileCentroidGateDimensionMismatchRejectsBeforeQdrantFileAndDbRows() {
+        ReflectionTestUtils.setField(service, "profileCentroidGateEnabled", true);
+        when(embedClient.embedBatch(anyList(), anyString())).thenReturn(batchResponse(consistentVectors()));
+        when(embedClient.extractNoseEmbeddingFromFaceImage(any(), anyString(), anyString(), anyString()))
+                .thenReturn(faceEmbeddingResponse(List.of(1.0, 0.0, 0.0, 0.0), null));
+
+        assertThatThrownBy(() -> service.register(request(noseImages(5)), profileImage(), "gate-dim-fail"))
+                .isInstanceOfSatisfying(ApiException.class, e -> {
+                    assertThat(e.getStatus()).isEqualTo(org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY);
+                    assertThat(e.getErrorCode()).isEqualTo("PROFILE_FACE_EMBEDDING_DIMENSION_MISMATCH");
+                    assertThat(e.getDetails()).containsEntry("failure_reason", "EMBEDDING_DIMENSION_MISMATCH");
+                });
+
+        assertNoPipelineRows();
+        verify(qdrantDogVectorClient, never()).searchReferencePoints(anyList(), anyInt(), anyDouble());
+        verify(qdrantDogVectorClient, never()).searchCentroidPoints(anyList(), anyInt(), anyDouble());
+        verify(fileStorageService, never()).storeNoseImage(anyString(), any());
+        verify(qdrantDogVectorClient, never()).upsertAll(anyList());
+    }
+
+    @Test
+    void registerProfileCentroidGateWithoutFaceImageKeepsLegacyFlowWhenNotRequired() {
+        ReflectionTestUtils.setField(service, "profileCentroidGateEnabled", true);
+        ReflectionTestUtils.setField(service, "profileCentroidGateRequireFaceImage", false);
+        when(embedClient.embedBatch(anyList(), anyString())).thenReturn(batchResponse(consistentVectors()));
+
+        DogRegisterResponse response = service.register(request(noseImages(5)), null, "gate-no-face");
+
+        assertThat(response.registrationAllowed()).isTrue();
+        assertThat(response.status()).isEqualTo("REGISTERED");
+        verify(embedClient, never()).extractNoseEmbeddingFromFaceImage(any(), anyString(), anyString(), anyString());
+        verify(qdrantDogVectorClient).searchCentroidPoints(anyList(), anyInt(), anyDouble());
+    }
+
+    @Test
+    void registerProfileCentroidGateRequiresFaceImageAndRejectsBeforeEmbedQdrantFileAndDbRows() {
+        ReflectionTestUtils.setField(service, "demoTraceEnabled", true);
+        ReflectionTestUtils.setField(service, "profileCentroidGateEnabled", true);
+        ReflectionTestUtils.setField(service, "profileCentroidGateRequireFaceImage", true);
+
+        assertThatThrownBy(() -> service.register(request(noseImages(5)), null, "gate-missing-face"))
+                .isInstanceOfSatisfying(ApiException.class, e -> {
+                    assertThat(e.getStatus()).isEqualTo(org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY);
+                    assertThat(e.getErrorCode()).isEqualTo("FACE_CHECK_IMAGE_REQUIRED");
+                    assertThat(e.getMessage()).isEqualTo("얼굴·코 확인용 정면 사진이 필요합니다.");
+                    assertThat(e.getDetails()).containsEntry("failure_reason", "FACE_CHECK_IMAGE_ABSENT");
+                });
+
+        assertNoPipelineRows();
+        verify(fileStorageService, never()).storeProfileImage(anyString(), any());
+        verify(fileStorageService, never()).storeNoseImage(anyString(), any());
+        verify(embedClient, never()).embedBatch(anyList(), anyString());
+        verify(embedClient, never()).embedBatch(anyList());
+        verify(embedClient, never()).extractNoseEmbeddingFromFaceImage(any(), anyString(), anyString(), anyString());
+        verify(qdrantDogVectorClient, never()).searchReferencePoints(anyList(), anyInt(), anyDouble());
+        verify(qdrantDogVectorClient, never()).searchCentroidPoints(anyList(), anyInt(), anyDouble());
+        verify(qdrantDogVectorClient, never()).upsertAll(anyList());
     }
 
     @Test
@@ -514,6 +804,33 @@ class DogRegistrationServiceTest {
     }
 
     @Test
+    void registerIgnoresStaleQdrantCandidateMissingFromMysqlAndRegisters() {
+        when(embedClient.embedBatch(anyList())).thenReturn(batchResponse(consistentVectors()));
+        when(qdrantDogVectorClient.searchReferencePoints(anyList(), anyInt(), anyDouble()))
+                .thenReturn(List.of(vectorResult("stale-dog", 1.0)));
+
+        DogRegisterResponse response = service.register(request(noseImages(5)));
+
+        Dog dog = dogs.get(response.dogId());
+        VerificationLog log = onlyVerificationLog();
+
+        assertThat(dog.getStatus()).isEqualTo(DogStatus.REGISTERED);
+        assertThat(dogImages).hasSize(5);
+        assertThat(dogNoseReferences).hasSize(6);
+        assertThat(log.getResult()).isEqualTo(VerificationResult.PASSED);
+        assertThat(log.getCandidateDogId()).isNull();
+
+        assertThat(response.registrationAllowed()).isTrue();
+        assertThat(response.status()).isEqualTo("REGISTERED");
+        assertThat(response.embeddingStatus()).isEqualTo("COMPLETED");
+        assertThat(response.maxSimilarityScore()).isEqualTo(0.0);
+        assertThat(response.topMatch()).isNull();
+
+        verify(qdrantDogVectorClient).upsertAll(anyList());
+        verify(fileStorageService, never()).deleteStoredFilesQuietly(anyCollection());
+    }
+
+    @Test
     void registerBelowDuplicateThresholdRegistersAndUpsertsQdrant() {
         Dog candidate = candidateDog("candidate-dog", "Jindo");
         dogs.put(candidate.getId(), candidate);
@@ -627,6 +944,28 @@ class DogRegistrationServiceTest {
         return verificationLogs.values().iterator().next();
     }
 
+    private static ListAppender<ILoggingEvent> attachServiceLogAppender() {
+        Logger logger = (Logger) LoggerFactory.getLogger(DogRegistrationService.class);
+        logger.setLevel(Level.INFO);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        return appender;
+    }
+
+    private static void detachServiceLogAppender(ListAppender<ILoggingEvent> appender) {
+        Logger logger = (Logger) LoggerFactory.getLogger(DogRegistrationService.class);
+        logger.detachAppender(appender);
+        appender.stop();
+    }
+
+    private static List<String> summaryMessages(ListAppender<ILoggingEvent> appender) {
+        return appender.list.stream()
+                .map(ILoggingEvent::getFormattedMessage)
+                .filter(message -> message.contains("[DEMO_SUMMARY]"))
+                .toList();
+    }
+
     private void assertNoPipelineRows() {
         assertThat(dogs).isEmpty();
         assertThat(dogImages).isEmpty();
@@ -708,6 +1047,45 @@ class DogRegistrationServiceTest {
                 MODEL,
                 3,
                 scoreItems,
+                null,
+                null,
+                null,
+                failureReason
+        );
+    }
+
+    private static EmbedClient.FaceNoseEmbeddingResponse faceEmbeddingResponse(
+            List<Double> embedding,
+            String failureReason
+    ) {
+        boolean extracted = failureReason == null;
+        return new EmbedClient.FaceNoseEmbeddingResponse(
+                extracted,
+                extracted ? 0.95484 : null,
+                extracted ? List.of(10.0, 20.0, 110.0, 120.0) : null,
+                extracted ? 224 : null,
+                extracted ? 224 : null,
+                MODEL,
+                embedding == null ? 3 : embedding.size(),
+                embedding,
+                faceQualityResponse(failureReason),
+                failureReason
+        );
+    }
+
+    private static EmbedClient.FaceCheckQualityResponse faceQualityResponse(String failureReason) {
+        if (!"NOSE_TOO_LARGE_FOR_FACE_CHECK".equals(failureReason)) {
+            return null;
+        }
+        return new EmbedClient.FaceCheckQualityResponse(
+                "face_check",
+                false,
+                0.48,
+                0.75,
+                0.70,
+                0.08,
+                0.50,
+                0.55,
                 failureReason
         );
     }

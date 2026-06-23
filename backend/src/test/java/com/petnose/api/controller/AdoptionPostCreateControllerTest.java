@@ -29,6 +29,7 @@ import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.test.web.servlet.request.MockMultipartHttpServletRequestBuilder;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.ResultActions;
 
@@ -267,6 +268,29 @@ class AdoptionPostCreateControllerTest {
         createPost(tokenFor(currentUser), dog.getId(), "제목", "내용", "OPEN")
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.error_code").value("DOG_OWNER_MISMATCH"));
+    }
+
+    @Test
+    void createAcceptsDevUserIdFallbackWhenAuthorizationHeaderIsMissing() throws Exception {
+        User user = saveUser("개발 보호자", true);
+        Dog dog = saveDog(user, DogStatus.REGISTERED);
+        saveVerificationLog(user, dog, saveNoseImage(dog), VerificationResult.PASSED);
+
+        MockMultipartHttpServletRequestBuilder request = multipart("/api/adoption-posts");
+        request.param("user_id", user.getId().toString());
+        request.param("dog_id", dog.getId());
+        request.param("title", "개발 모드 분양글");
+        request.param("content", "DEV_USER_ID fallback으로 작성합니다.");
+        request.param("status", "OPEN");
+        request.file(profileImage());
+
+        mockMvc.perform(request)
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.dog_id").value(dog.getId()))
+                .andExpect(jsonPath("$.status").value("OPEN"));
+
+        AdoptionPost saved = adoptionPostRepository.findAll().getFirst();
+        assertThat(saved.getAuthorUserId()).isEqualTo(user.getId());
     }
 
     @Test
