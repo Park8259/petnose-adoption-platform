@@ -22,6 +22,8 @@ import com.petnose.api.dto.adoption.AdoptionPostOwnerListItemResponse;
 import com.petnose.api.dto.adoption.AdoptionPostOwnerListResponse;
 import com.petnose.api.dto.adoption.AdoptionPostStatusUpdateRequest;
 import com.petnose.api.dto.adoption.AdoptionPostStatusUpdateResponse;
+import com.petnose.api.dto.adoption.AdoptionVerificationStatusResponse;
+import com.petnose.api.dto.adoption.AdoptionVerificationStatusUpdateRequest;
 import com.petnose.api.exception.ApiException;
 import com.petnose.api.repository.AdoptionPostLikeRepository;
 import com.petnose.api.repository.AdoptionPostRepository;
@@ -310,6 +312,42 @@ public class AdoptionPostService {
         return toStatusUpdateResponse(post);
     }
 
+    @Transactional(readOnly = true)
+    public AdoptionVerificationStatusResponse getVerificationStatus(Long currentUserId, Long postId) {
+        AdoptionPost post = adoptionPostRepository.findById(postId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "POST_NOT_FOUND", "Adoption post was not found."));
+        validatePostParticipant(post, currentUserId);
+        return toVerificationStatusResponse(post);
+    }
+
+    @Transactional
+    public AdoptionVerificationStatusResponse updateVerificationStatus(
+            Long currentUserId,
+            Long postId,
+            AdoptionVerificationStatusUpdateRequest request
+    ) {
+        if (request == null || !request.hasAnyStep()) {
+            throw validationFailed("수정할 인증 단계 값이 필요합니다.");
+        }
+
+        AdoptionPost post = adoptionPostRepository.findById(postId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "POST_NOT_FOUND", "Adoption post was not found."));
+        validatePostParticipant(post, currentUserId);
+
+        if (request.verificationStep1Completed() != null) {
+            post.setVerificationStep1Completed(request.verificationStep1Completed());
+        }
+        if (request.verificationStep2Completed() != null) {
+            post.setVerificationStep2Completed(request.verificationStep2Completed());
+        }
+        if (request.verificationStep3Completed() != null) {
+            post.setVerificationStep3Completed(request.verificationStep3Completed());
+        }
+
+        adoptionPostRepository.flush();
+        return toVerificationStatusResponse(post);
+    }
+
     private void validateRequest(AdoptionPostCreateRequest request) {
         if (request == null) {
             throw validationFailed("request는 필수입니다.");
@@ -474,6 +512,19 @@ public class AdoptionPostService {
         }
     }
 
+    private void validatePostParticipant(AdoptionPost post, Long currentUserId) {
+        if (!isPostParticipant(post, currentUserId)) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "POST_PARTICIPANT_REQUIRED", "이 분양 진행 상태를 조회하거나 수정할 권한이 없습니다.");
+        }
+    }
+
+    private boolean isPostParticipant(AdoptionPost post, Long currentUserId) {
+        return currentUserId != null
+                && (currentUserId.equals(post.getAuthorUserId())
+                || currentUserId.equals(post.getReservedByUserId())
+                || currentUserId.equals(post.getAdopterUserId()));
+    }
+
     private void applyStatusTransition(
             Long currentUserId,
             AdoptionPost post,
@@ -494,6 +545,8 @@ public class AdoptionPostService {
 
         if (currentStatus == AdoptionPostStatus.RESERVED && targetStatus == AdoptionPostStatus.OPEN) {
             post.setStatus(AdoptionPostStatus.OPEN);
+            post.setReservedByUserId(null);
+            post.setReservedAt(null);
             if (post.getPublishedAt() == null) {
                 post.setPublishedAt(now);
             }
@@ -512,6 +565,12 @@ public class AdoptionPostService {
             post.setClosedAt(now);
             post.setAdopterUserId(adopterUserId);
             post.setAdoptedAt(now);
+            if (post.getReservedByUserId() == null) {
+                post.setReservedByUserId(adopterUserId);
+            }
+            if (post.getReservedAt() == null) {
+                post.setReservedAt(now);
+            }
             markDogAdopted(post.getDogId());
             return;
         }
@@ -718,8 +777,26 @@ public class AdoptionPostService {
                 post.getPublishedAt(),
                 post.getClosedAt(),
                 post.getAdopterUserId(),
+                post.getReservedByUserId(),
+                post.getReservedAt(),
                 post.getAdoptedAt(),
+                post.isVerificationStep1Completed(),
+                post.isVerificationStep2Completed(),
+                post.isVerificationStep3Completed(),
                 post.getCreatedAt(),
+                post.getUpdatedAt()
+        );
+    }
+
+    private AdoptionVerificationStatusResponse toVerificationStatusResponse(AdoptionPost post) {
+        return new AdoptionVerificationStatusResponse(
+                post.getId(),
+                post.getStatus().name(),
+                post.getReservedByUserId(),
+                post.getAdopterUserId(),
+                post.isVerificationStep1Completed(),
+                post.isVerificationStep2Completed(),
+                post.isVerificationStep3Completed(),
                 post.getUpdatedAt()
         );
     }
@@ -744,6 +821,13 @@ public class AdoptionPostService {
                 dog.getHealth(),
                 context.profileImageUrlsByDogId().get(dog.getId()),
                 context.verificationStatusesByDogId().getOrDefault(dog.getId(), "PENDING"),
+                post.getReservedByUserId(),
+                post.getReservedAt(),
+                post.getAdopterUserId(),
+                post.getAdoptedAt(),
+                post.isVerificationStep1Completed(),
+                post.isVerificationStep2Completed(),
+                post.isVerificationStep3Completed(),
                 author.getDisplayName(),
                 author.getContactPhone(),
                 author.getRegion(),

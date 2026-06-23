@@ -11,6 +11,14 @@ public record ChatMessageResponse(
         String senderUid,
         String type,
         String text,
+        @JsonProperty("image_url")
+        String imageUrl,
+        @JsonProperty("image_mime_type")
+        String imageMimeType,
+        @JsonProperty("image_file_size")
+        Long imageFileSize,
+        @JsonProperty("image_sha256")
+        String imageSha256,
         @JsonProperty("created_at")
         String createdAt
 ) {

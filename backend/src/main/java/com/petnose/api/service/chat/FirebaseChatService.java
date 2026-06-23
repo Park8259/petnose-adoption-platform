@@ -12,6 +12,7 @@ import com.petnose.api.domain.enums.AdoptionPostStatus;
 import com.petnose.api.domain.enums.DogImageType;
 import com.petnose.api.domain.enums.DogStatus;
 import com.petnose.api.domain.enums.FcmPlatform;
+import com.petnose.api.dto.adoption.AdoptionPostStatusUpdateResponse;
 import com.petnose.api.dto.chat.*;
 import com.petnose.api.exception.ApiException;
 import com.petnose.api.repository.AdoptionPostRepository;
@@ -24,10 +25,14 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.*;
 
 @Slf4j
@@ -43,6 +48,7 @@ public class FirebaseChatService {
     private final DogImageRepository dogImageRepository;
     private final UserRepository userRepository;
     private final FileStorageService fileStorageService;
+    private final ChatRoomPostStatusSyncService chatRoomPostStatusSyncService;
     private final Firestore firestore;
     private final FirebaseAuth firebaseAuth;
     private final FirebaseMessaging firebaseMessaging;
@@ -53,6 +59,7 @@ public class FirebaseChatService {
             DogImageRepository dogImageRepository,
             UserRepository userRepository,
             FileStorageService fileStorageService,
+            ChatRoomPostStatusSyncService chatRoomPostStatusSyncService,
             ObjectProvider<Firestore> firestoreProvider,
             ObjectProvider<FirebaseAuth> firebaseAuthProvider,
             ObjectProvider<FirebaseMessaging> firebaseMessagingProvider
@@ -62,6 +69,7 @@ public class FirebaseChatService {
         this.dogImageRepository = dogImageRepository;
         this.userRepository = userRepository;
         this.fileStorageService = fileStorageService;
+        this.chatRoomPostStatusSyncService = chatRoomPostStatusSyncService;
         this.firestore = firestoreProvider.getIfAvailable();
         this.firebaseAuth = firebaseAuthProvider.getIfAvailable();
         this.firebaseMessaging = firebaseMessagingProvider.getIfAvailable();
@@ -281,7 +289,170 @@ public class FirebaseChatService {
         }
 
         sendPushToOtherParticipants(roomId, post.getId(), participantIds, senderUserId, trimmedText);
-        return new ChatMessageResponse(messageRef.getId(), roomId, senderUid, "TEXT", trimmedText, responseCreatedAt.toString());
+        return new ChatMessageResponse(messageRef.getId(), roomId, senderUid, "TEXT", trimmedText, null, null, null, null, responseCreatedAt.toString());
+    }
+
+    @Transactional(readOnly = true)
+    public ChatMessageResponse sendImageMessage(String roomId, Long senderUserId, MultipartFile image, String clientMessageId) {
+        Firestore db = requireFirestore();
+        requireActiveUser(senderUserId);
+
+        DocumentReference roomRef = db.collection(CHAT_ROOMS).document(roomId);
+        DocumentSnapshot roomSnapshot = requireRoom(roomRef);
+        List<Long> participantIds = readParticipantUserIds(roomSnapshot);
+        if (!participantIds.contains(senderUserId)) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "CHAT_ROOM_ACCESS_DENIED", "이 채팅방에 메시지를 보낼 권한이 없습니다.");
+        }
+
+        Long postId = roomSnapshot.getLong("post_id");
+        if (postId == null) {
+            throw new ApiException(HttpStatus.CONFLICT, "CHAT_ROOM_NOT_FOUND", "채팅방의 게시글 정보가 올바르지 않습니다.");
+        }
+
+        AdoptionPost post = requirePost(postId);
+        validateRoomId(roomId, post, roomSnapshot);
+        if (!canSendMessage(post.getStatus())) {
+            throw new ApiException(
+                    HttpStatus.CONFLICT,
+                    "CHAT_ROOM_ALREADY_CLOSED",
+                    "현재 게시글 상태에서는 메시지를 보낼 수 없습니다.",
+                    Map.of("post_id", post.getId(), "status", post.getStatus().name())
+            );
+        }
+
+        ChatMessageResponse existingMessage = findExistingMessage(roomRef, roomId, senderUserId, clientMessageId);
+        if (existingMessage != null) {
+            return existingMessage;
+        }
+
+        FileStorageService.StoredFile stored = fileStorageService.storeChatMessageImage(roomId, image);
+        String imageUrl = fileStorageService.toPublicUrl(stored.relativePath());
+        DocumentReference messageRef = roomRef.collection(MESSAGES).document();
+        String senderUid = firebaseUid(senderUserId);
+        Instant responseCreatedAt = Instant.now();
+
+        Map<String, Object> message = new LinkedHashMap<>();
+        message.put("message_id", messageRef.getId());
+        message.put("room_id", roomId);
+        message.put("sender_uid", senderUid);
+        message.put("sender_user_id", senderUserId);
+        message.put("type", "IMAGE");
+        message.put("text", "");
+        message.put("image_path", stored.relativePath());
+        message.put("image_url", imageUrl);
+        message.put("image_mime_type", stored.mimeType());
+        message.put("image_file_size", stored.fileSize());
+        message.put("image_sha256", stored.sha256());
+        message.put("client_message_id", clientMessageId == null ? "" : clientMessageId);
+        message.put("created_at", FieldValue.serverTimestamp());
+
+        ChatRoomState roomState = ChatRoomState.from(post.getStatus());
+        WriteBatch batch = db.batch();
+        batch.set(messageRef, message);
+        batch.set(roomRef, Map.of(
+                "updated_at", FieldValue.serverTimestamp(),
+                "synced_at", FieldValue.serverTimestamp(),
+                "post_status_snapshot", post.getStatus().name(),
+                "room_status", roomState.roomStatus(),
+                "message_enabled", roomState.messageEnabled(),
+                "last_message", Map.of(
+                        "text_preview", "[이미지]",
+                        "sender_uid", senderUid,
+                        "created_at", FieldValue.serverTimestamp()
+                )
+        ), SetOptions.merge());
+
+        try {
+            batch.commit().get();
+        } catch (Exception e) {
+            fileStorageService.deleteStoredFileQuietly(stored);
+            throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "CHAT_MESSAGE_SEND_FAILED", "이미지 메시지를 전송하지 못했습니다.");
+        }
+
+        sendPushToOtherParticipants(roomId, post.getId(), participantIds, senderUserId, "[이미지]");
+        return new ChatMessageResponse(
+                messageRef.getId(),
+                roomId,
+                senderUid,
+                "IMAGE",
+                "",
+                imageUrl,
+                stored.mimeType(),
+                stored.fileSize(),
+                stored.sha256(),
+                responseCreatedAt.toString()
+        );
+    }
+
+    @Transactional
+    public AdoptionPostStatusUpdateResponse reserveFromRoom(String roomId, Long currentUserId) {
+        RoomActionContext context = requireInquirerActionContext(roomId, currentUserId);
+        AdoptionPost post = context.post();
+        if (post.getStatus() != AdoptionPostStatus.OPEN) {
+            throw invalidChatAction("CHAT_RESERVATION_NOT_ALLOWED", "OPEN 상태의 분양글만 예약할 수 있습니다.", post);
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+        post.setStatus(AdoptionPostStatus.RESERVED);
+        post.setReservedByUserId(currentUserId);
+        post.setReservedAt(now);
+        post.setClosedAt(null);
+        if (post.getPublishedAt() == null) {
+            post.setPublishedAt(now);
+        }
+        adoptionPostRepository.flush();
+        scheduleChatRoomStatusSync(post.getId(), post.getStatus());
+        return toStatusUpdateResponse(post);
+    }
+
+    @Transactional
+    public AdoptionPostStatusUpdateResponse cancelReservationFromRoom(String roomId, Long currentUserId) {
+        RoomActionContext context = requireInquirerActionContext(roomId, currentUserId);
+        AdoptionPost post = context.post();
+        if (post.getStatus() != AdoptionPostStatus.RESERVED) {
+            throw invalidChatAction("CHAT_RESERVATION_CANCEL_NOT_ALLOWED", "RESERVED 상태의 분양글만 예약 취소할 수 있습니다.", post);
+        }
+        validateReservationOwner(post, currentUserId);
+
+        LocalDateTime now = LocalDateTime.now();
+        post.setStatus(AdoptionPostStatus.OPEN);
+        post.setReservedByUserId(null);
+        post.setReservedAt(null);
+        post.setClosedAt(null);
+        if (post.getPublishedAt() == null) {
+            post.setPublishedAt(now);
+        }
+        adoptionPostRepository.flush();
+        scheduleChatRoomStatusSync(post.getId(), post.getStatus());
+        return toStatusUpdateResponse(post);
+    }
+
+    @Transactional
+    public AdoptionPostStatusUpdateResponse completeFromRoom(String roomId, Long currentUserId) {
+        RoomActionContext context = requireInquirerActionContext(roomId, currentUserId);
+        AdoptionPost post = context.post();
+        if (post.getStatus() != AdoptionPostStatus.OPEN && post.getStatus() != AdoptionPostStatus.RESERVED) {
+            throw invalidChatAction("CHAT_COMPLETION_NOT_ALLOWED", "OPEN 또는 RESERVED 상태의 분양글만 분양 완료할 수 있습니다.", post);
+        }
+        if (post.getStatus() == AdoptionPostStatus.RESERVED) {
+            validateReservationOwner(post, currentUserId);
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+        post.setStatus(AdoptionPostStatus.COMPLETED);
+        post.setAdopterUserId(currentUserId);
+        post.setAdoptedAt(now);
+        post.setClosedAt(now);
+        if (post.getReservedByUserId() == null) {
+            post.setReservedByUserId(currentUserId);
+        }
+        if (post.getReservedAt() == null) {
+            post.setReservedAt(now);
+        }
+        markDogAdopted(post.getDogId());
+        adoptionPostRepository.flush();
+        scheduleChatRoomStatusSync(post.getId(), post.getStatus());
+        return toStatusUpdateResponse(post);
     }
 
     @Transactional(readOnly = true)
@@ -301,6 +472,94 @@ public class FirebaseChatService {
         } catch (Exception e) {
             throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "CHAT_MESSAGE_SEND_FAILED", "채팅방 읽음 처리를 저장하지 못했습니다.");
         }
+    }
+
+    private RoomActionContext requireInquirerActionContext(String roomId, Long currentUserId) {
+        requireActiveUser(currentUserId);
+        Firestore db = requireFirestore();
+        DocumentReference roomRef = db.collection(CHAT_ROOMS).document(roomId);
+        DocumentSnapshot roomSnapshot = requireRoom(roomRef);
+        List<Long> participantIds = readParticipantUserIds(roomSnapshot);
+        if (!participantIds.contains(currentUserId)) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "CHAT_ROOM_ACCESS_DENIED", "이 채팅방에 접근할 권한이 없습니다.");
+        }
+
+        Long inquirerUserId = roomSnapshot.getLong("inquirer_user_id");
+        if (!Objects.equals(inquirerUserId, currentUserId)) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "CHAT_INQUIRER_ACTION_REQUIRED", "입양 희망자만 이 채팅 액션을 호출할 수 있습니다.");
+        }
+
+        Long postId = roomSnapshot.getLong("post_id");
+        if (postId == null) {
+            throw new ApiException(HttpStatus.CONFLICT, "CHAT_ROOM_NOT_FOUND", "채팅방의 게시글 정보가 올바르지 않습니다.");
+        }
+
+        AdoptionPost post = requirePost(postId);
+        validateRoomId(roomId, post, roomSnapshot);
+        return new RoomActionContext(roomRef, roomSnapshot, post);
+    }
+
+    private void validateReservationOwner(AdoptionPost post, Long currentUserId) {
+        if (post.getReservedByUserId() != null && !Objects.equals(post.getReservedByUserId(), currentUserId)) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "CHAT_RESERVATION_OWNER_MISMATCH", "예약한 입양 희망자만 이 액션을 호출할 수 있습니다.");
+        }
+    }
+
+    private void markDogAdopted(String dogId) {
+        Dog dog = requireDog(dogId);
+        dog.setStatus(DogStatus.ADOPTED);
+    }
+
+    private ApiException invalidChatAction(String code, String message, AdoptionPost post) {
+        return new ApiException(
+                HttpStatus.CONFLICT,
+                code,
+                message,
+                Map.of("post_id", post.getId(), "status", post.getStatus().name())
+        );
+    }
+
+    private void scheduleChatRoomStatusSync(Long postId, AdoptionPostStatus status) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    syncChatRoomPostStatusSafely(postId, status);
+                }
+            });
+            return;
+        }
+
+        syncChatRoomPostStatusSafely(postId, status);
+    }
+
+    private void syncChatRoomPostStatusSafely(Long postId, AdoptionPostStatus status) {
+        try {
+            chatRoomPostStatusSyncService.syncPostStatus(postId, status);
+        } catch (Exception ignored) {
+            // MySQL adoption status remains the source of truth.
+        }
+    }
+
+    private AdoptionPostStatusUpdateResponse toStatusUpdateResponse(AdoptionPost post) {
+        return new AdoptionPostStatusUpdateResponse(
+                post.getId(),
+                post.getDogId(),
+                post.getTitle(),
+                post.getContent(),
+                post.getStatus().name(),
+                post.getPublishedAt(),
+                post.getClosedAt(),
+                post.getAdopterUserId(),
+                post.getReservedByUserId(),
+                post.getReservedAt(),
+                post.getAdoptedAt(),
+                post.isVerificationStep1Completed(),
+                post.isVerificationStep2Completed(),
+                post.isVerificationStep3Completed(),
+                post.getCreatedAt(),
+                post.getUpdatedAt()
+        );
     }
 
     private Firestore requireFirestore() {
@@ -460,6 +719,10 @@ public class FirebaseChatService {
                     firebaseUid(senderUserId),
                     Optional.ofNullable(message.getString("type")).orElse("TEXT"),
                     Optional.ofNullable(message.getString("text")).orElse(""),
+                    message.getString("image_url"),
+                    message.getString("image_mime_type"),
+                    message.getLong("image_file_size"),
+                    message.getString("image_sha256"),
                     createdAt == null ? Instant.now().toString() : createdAt.toDate().toInstant().toString()
             );
         } catch (Exception e) {
@@ -581,5 +844,12 @@ public class FirebaseChatService {
             log.warn("[FCM] 사용자 디바이스 조회 실패: recipientUserId={}, error={}", userId, e.getClass().getSimpleName());
             return List.of();
         }
+    }
+
+    private record RoomActionContext(
+            DocumentReference roomRef,
+            DocumentSnapshot roomSnapshot,
+            AdoptionPost post
+    ) {
     }
 }

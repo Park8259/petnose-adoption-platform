@@ -60,6 +60,39 @@ public class PasswordResetEmailService {
         }
     }
 
+    @Async("mailTaskExecutor")
+    public void sendTemporaryPasswordEmailAsync(String toEmail, String temporaryPassword) {
+        try {
+            if (!properties.isEmailEnabled()) {
+                log.debug("Password reset email delivery is disabled.");
+                return;
+            }
+            if (!StringUtils.hasText(toEmail) || !StringUtils.hasText(temporaryPassword)) {
+                log.warn("Temporary password email skipped because recipient or password is missing.");
+                return;
+            }
+
+            JavaMailSender mailSender = mailSenderProvider.getIfAvailable();
+            if (mailSender == null) {
+                log.warn("Temporary password email skipped because JavaMailSender is not configured.");
+                return;
+            }
+
+            SimpleMailMessage message = new SimpleMailMessage();
+            message.setTo(toEmail);
+            if (StringUtils.hasText(properties.getMailFrom())) {
+                message.setFrom(properties.getMailFrom());
+            }
+            message.setSubject(defaultIfBlank(properties.getMailSubject(), "[PetNose] 임시 비밀번호 안내"));
+            message.setText(temporaryPasswordEmailText(temporaryPassword));
+
+            mailSender.send(message);
+            log.info("Temporary password email queued successfully for recipient={}", maskEmail(toEmail));
+        } catch (Exception e) {
+            log.warn("Temporary password email delivery failed for recipient={}: {}", maskEmail(toEmail), e.getMessage());
+        }
+    }
+
     private String buildResetUrl(String rawResetToken) {
         String template = properties.getResetUrlTemplate();
         if (!StringUtils.hasText(template) || !template.contains(TOKEN_PLACEHOLDER)) {
@@ -79,6 +112,17 @@ public class PasswordResetEmailService {
                 이 링크는 %s 까지 유효합니다.
                 본인이 요청하지 않았다면 이 이메일을 무시해 주세요.
                 """.formatted(resetUrl, expiresAtText);
+    }
+
+    private String temporaryPasswordEmailText(String temporaryPassword) {
+        return """
+                PetNose 비밀번호 찾기를 요청하셨습니다.
+
+                아래 임시 비밀번호로 로그인한 뒤, 마이페이지에서 새 비밀번호로 변경해 주세요.
+                임시 비밀번호: %s
+
+                본인이 요청하지 않았다면 즉시 로그인 후 비밀번호를 변경해 주세요.
+                """.formatted(temporaryPassword);
     }
 
     private String defaultIfBlank(String value, String defaultValue) {

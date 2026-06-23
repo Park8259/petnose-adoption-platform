@@ -25,6 +25,12 @@ public class AdoptionPost {
     @Column(name = "adopter_user_id")
     private Long adopterUserId;
 
+    @Column(name = "reserved_by_user_id")
+    private Long reservedByUserId;
+
+    @Column(name = "reserved_at")
+    private LocalDateTime reservedAt;
+
     @Column(name = "dog_id", nullable = false, length = 36)
     private String dogId;
 
@@ -49,6 +55,15 @@ public class AdoptionPost {
 
     @Column(name = "adopted_at")
     private LocalDateTime adoptedAt;
+
+    @Column(name = "verification_step1_completed", nullable = false)
+    private boolean verificationStep1Completed = false;
+
+    @Column(name = "verification_step2_completed", nullable = false)
+    private boolean verificationStep2Completed = false;
+
+    @Column(name = "verification_step3_completed", nullable = false)
+    private boolean verificationStep3Completed = false;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;

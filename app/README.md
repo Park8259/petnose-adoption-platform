@@ -1,60 +1,57 @@
-# app - Flutter 앱
+# nosetag_app
 
-> 이 문서는 production Flutter 앱 구현 전 단계의 최소 안내입니다.
+NoseTag Flutter app.
 
----
+## Profile Draft Nose Preview Check
 
-## 역할
+The dog registration screen keeps the normal display profile image flow and
+adds one separate front-facing face/nose check image. The app sends that
+face/nose check image to the Spring Boot profile draft endpoint as
+`profile_image`, then moves to the existing five-image nose capture screen when
+the backend confirms `profile_nose_preview.extracted=true`.
 
-`app/`은 사용자가 직접 사용하는 PetNose production Flutter 앱 구현을 위한 공간입니다.
-Spring Boot API 서버와 HTTP 통신하며, 강아지 등록, 비문 인증, 입양 게시판 조회 등 실제 사용자 기능이 이곳에서 구현됩니다.
+The display profile image remains in Flutter state and is passed to the
+existing registration/post flow. If the backend must persist both the display
+profile image and the face/nose check image in the draft step, the API needs a
+separate field in a later backend task.
 
-API 계약은 [docs/PETNOSE_MVP_API_CONTRACT.md](../docs/PETNOSE_MVP_API_CONTRACT.md)를 참고하세요.
-
----
-
-## 개발 환경
-
-- Flutter 3.x 이상
-- Dart 3.x 이상
+Run the backend stack first. To enable detector-backed preview on the server,
+configure the backend environment outside git:
 
 ```bash
-flutter pub get
-flutter run
+DOG_NOSE_EXTRACT_ENABLED=true
+DOG_NOSE_DETECTOR_BACKEND=yolov5_legacy
+DOG_NOSE_DETECTOR_WEIGHTS=<absolute-local-best.pt>
+DOG_NOSE_YOLOV5_REPO=<absolute-local-yolov5-dir>
 ```
 
----
+If detector settings or weights are missing, a
+`profile_nose_preview.failure_reason` of `DETECTOR_UNAVAILABLE` is expected and
+does not mean the Flutter request failed.
 
-## 주의사항
+Android emulator:
 
-- API base URL은 환경별로 분리하여 관리합니다. 하드코딩하지 않습니다.
-- 로컬 개발 시 백엔드는 `http://localhost` 또는 로컬 nginx/API 포트로 접속합니다.
-- `POST /api/dogs/register`는 `nose_images` multipart field로 비문 기준 사진을 정확히 5장 업로드합니다. Registration 단건 `nose_image`는 active contract가 아닙니다.
-- Handover verification은 registration과 다르게 `POST /api/adoption-posts/{post_id}/handover-verifications`에 단건 `nose_image`를 업로드합니다.
-- `POST /api/adoption-posts`의 required `profile_image` 업로드는 `multipart/form-data`를 사용합니다.
-- 현재 `app/`은 production Flutter 구현 전 단계이므로, registration UI 구현 시 backend v2 contract에 맞춰 5장 업로드 flow로 구현해야 합니다.
-- dev 전용 API(`/api/dev/*`)는 production 앱 기능 계약에 포함하지 않습니다.
-
----
-
-## Firebase Chat Visual Smoke
-
-Firebase chat 수동 시각 검증용 Flutter harness는 production 앱 구현과 분리되어 있습니다.
-
-```text
-tools/flutter-chat-visual-smoke/
+```bash
+cd app
+flutter run \
+  --dart-define=API_BASE_URL=http://3.35.4.4/api \
+  --dart-define=FILE_BASE_URL=http://3.35.4.4/files/ \
+  --dart-define=ENABLE_FIREBASE=false \
+  --dart-define=DEV_USER_ID=1
 ```
 
-이 harness는 testing/tooling 용도이며 production UI가 아닙니다. Firebase custom token 로그인, Spring API 기반 채팅방 생성/메시지 전송/read marking, Firestore realtime listener 확인은 위 tool README를 따르세요.
+Physical device:
 
----
+```bash
+cd app
+flutter run \
+  --dart-define=API_BASE_URL=http://3.35.4.4/api \
+  --dart-define=FILE_BASE_URL=http://3.35.4.4/files/ \
+  --dart-define=ENABLE_FIREBASE=false \
+  --dart-define=DEV_USER_ID=1
+```
 
-## 팀 최소 운영 규칙
-
-- `app/`에는 production 앱 구현만 둡니다.
-- 수동 검증 도구, fixture, smoke harness는 `tools/` 또는 `scripts/` 아래에 둡니다.
-- Firebase service account JSON, Spring JWT, Firebase custom token, FCM token, `.env`는 커밋하지 않습니다.
-
----
-
-> 추후 빌드 방법, 환경 분기, 상태관리 패턴 등 상세 내용을 이 문서에 추가할 예정입니다.
+`DEV_USER_ID` is only a local fallback for the current profile-draft dev flow.
+When login stores `user_id`, the app uses that value first. Firebase, chat,
+push, and the backend five-image nose verification implementation are outside
+this profile draft preview check.

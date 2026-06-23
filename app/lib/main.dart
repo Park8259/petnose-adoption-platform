@@ -1,41 +1,41 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:nosetag_app/screens/login_screen.dart';
 
-void main() {
-  runApp(const PetNoseApp());
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  const enableFirebase = bool.fromEnvironment(
+    'ENABLE_FIREBASE',
+    defaultValue: false,
+  );
+
+  if (enableFirebase) {
+    try {
+      await Firebase.initializeApp();
+    } catch (error, stackTrace) {
+      debugPrint('Firebase initialization skipped/failed: $error');
+      debugPrint('$stackTrace');
+    }
+  }
+
+  runApp(const NoseTagApp());
 }
 
-class PetNoseApp extends StatelessWidget {
-  const PetNoseApp({super.key});
+class NoseTagApp extends StatelessWidget {
+  const NoseTagApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'PetNose',
+      title: 'NoseTag',
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xff287067)),
-        useMaterial3: true,
+        fontFamily: 'Pretendard',
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFFC6A77D)),
+        scaffoldBackgroundColor: const Color(0xFFFFFBF6),
       ),
-      home: const PetNosePlaceholderScreen(),
-    );
-  }
-}
-
-class PetNosePlaceholderScreen extends StatelessWidget {
-  const PetNosePlaceholderScreen({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return const Scaffold(
-      body: Center(
-        child: Padding(
-          padding: EdgeInsets.all(24),
-          child: Text(
-            'PetNose production app scaffold',
-            textAlign: TextAlign.center,
-          ),
-        ),
-      ),
+      home: const LoginScreen(),
     );
   }
 }

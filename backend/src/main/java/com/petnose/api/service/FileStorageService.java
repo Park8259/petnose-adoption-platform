@@ -50,6 +50,10 @@ public class FileStorageService {
         return storeImageAt("users/%s/profile".formatted(userId), file);
     }
 
+    public StoredFile storeChatMessageImage(String roomId, MultipartFile file) {
+        return storeImageAt("chat/%s/messages".formatted(sanitizeBaseName(roomId)), file);
+    }
+
     private StoredFile storeImageAt(String relativeDirectory, MultipartFile file) {
         if (file == null || file.isEmpty()) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_IMAGE", "이미지 파일이 비어 있습니다.");

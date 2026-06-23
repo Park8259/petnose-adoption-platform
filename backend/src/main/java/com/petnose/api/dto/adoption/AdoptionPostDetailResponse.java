@@ -36,6 +36,20 @@ public record AdoptionPostDetailResponse(
         String profileImageUrl,
         @JsonProperty("verification_status")
         String verificationStatus,
+        @JsonProperty("reserved_by_user_id")
+        Long reservedByUserId,
+        @JsonProperty("reserved_at")
+        LocalDateTime reservedAt,
+        @JsonProperty("adopter_user_id")
+        Long adopterUserId,
+        @JsonProperty("adopted_at")
+        LocalDateTime adoptedAt,
+        @JsonProperty("verification_step1_completed")
+        boolean verificationStep1Completed,
+        @JsonProperty("verification_step2_completed")
+        boolean verificationStep2Completed,
+        @JsonProperty("verification_step3_completed")
+        boolean verificationStep3Completed,
         @JsonProperty("author_display_name")
         String authorDisplayName,
         @JsonProperty("author_contact_phone")

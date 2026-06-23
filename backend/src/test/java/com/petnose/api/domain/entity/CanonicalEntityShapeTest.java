@@ -242,17 +242,41 @@ class CanonicalEntityShapeTest {
     void adoptionPostEntityAndRuntimeMigrationAlignWithCreatePolicy() throws Exception {
         Set<String> fields = declaredFieldNames(AdoptionPost.class);
         Column adopterUserId = AdoptionPost.class.getDeclaredField("adopterUserId").getAnnotation(Column.class);
+        Column reservedByUserId = AdoptionPost.class.getDeclaredField("reservedByUserId").getAnnotation(Column.class);
+        Column reservedAt = AdoptionPost.class.getDeclaredField("reservedAt").getAnnotation(Column.class);
         Column adoptedAt = AdoptionPost.class.getDeclaredField("adoptedAt").getAnnotation(Column.class);
+        Column verificationStep1Completed = AdoptionPost.class.getDeclaredField("verificationStep1Completed").getAnnotation(Column.class);
+        Column verificationStep2Completed = AdoptionPost.class.getDeclaredField("verificationStep2Completed").getAnnotation(Column.class);
+        Column verificationStep3Completed = AdoptionPost.class.getDeclaredField("verificationStep3Completed").getAnnotation(Column.class);
         Column title = AdoptionPost.class.getDeclaredField("title").getAnnotation(Column.class);
         Column content = AdoptionPost.class.getDeclaredField("content").getAnnotation(Column.class);
         Column price = AdoptionPost.class.getDeclaredField("price").getAnnotation(Column.class);
         Column status = AdoptionPost.class.getDeclaredField("status").getAnnotation(Column.class);
 
-        assertThat(fields).contains("adopterUserId", "adoptedAt", "price");
+        assertThat(fields).contains(
+                "adopterUserId",
+                "reservedByUserId",
+                "reservedAt",
+                "adoptedAt",
+                "verificationStep1Completed",
+                "verificationStep2Completed",
+                "verificationStep3Completed",
+                "price"
+        );
         assertThat(adopterUserId.name()).isEqualTo("adopter_user_id");
         assertThat(adopterUserId.nullable()).isTrue();
+        assertThat(reservedByUserId.name()).isEqualTo("reserved_by_user_id");
+        assertThat(reservedByUserId.nullable()).isTrue();
+        assertThat(reservedAt.name()).isEqualTo("reserved_at");
+        assertThat(reservedAt.nullable()).isTrue();
         assertThat(adoptedAt.name()).isEqualTo("adopted_at");
         assertThat(adoptedAt.nullable()).isTrue();
+        assertThat(verificationStep1Completed.name()).isEqualTo("verification_step1_completed");
+        assertThat(verificationStep1Completed.nullable()).isFalse();
+        assertThat(verificationStep2Completed.name()).isEqualTo("verification_step2_completed");
+        assertThat(verificationStep2Completed.nullable()).isFalse();
+        assertThat(verificationStep3Completed.name()).isEqualTo("verification_step3_completed");
+        assertThat(verificationStep3Completed.nullable()).isFalse();
         assertThat(title.length()).isEqualTo(200);
         assertThat(title.nullable()).isFalse();
         assertThat(content.nullable()).isFalse();
@@ -289,6 +313,18 @@ class CanonicalEntityShapeTest {
                 "ADD COLUMN price BIGINT NULL AFTER health",
                 "CHECK (age IS NULL OR age >= 0)",
                 "CHECK (price IS NULL OR price >= 0)"
+        );
+
+        String reservationAndVerificationMigration = resourceText("db/migration/V12__add_chat_reservation_and_verification_steps.sql");
+        assertThat(reservationAndVerificationMigration).contains(
+                "ADD COLUMN reserved_by_user_id BIGINT NULL AFTER adopter_user_id",
+                "ADD COLUMN reserved_at TIMESTAMP NULL AFTER reserved_by_user_id",
+                "ADD COLUMN verification_step1_completed BOOLEAN NOT NULL DEFAULT FALSE",
+                "ADD COLUMN verification_step2_completed BOOLEAN NOT NULL DEFAULT FALSE",
+                "ADD COLUMN verification_step3_completed BOOLEAN NOT NULL DEFAULT FALSE",
+                "ADD KEY idx_adoption_posts_reserved_by_user_id (reserved_by_user_id)",
+                "ADD KEY idx_adoption_posts_reserved_status_reserved_at (reserved_by_user_id, status, reserved_at)",
+                "FOREIGN KEY (reserved_by_user_id) REFERENCES users(id)"
         );
     }
 
