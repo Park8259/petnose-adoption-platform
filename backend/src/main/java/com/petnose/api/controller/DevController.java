@@ -1,6 +1,8 @@
 package com.petnose.api.controller;
 
 import com.petnose.api.client.EmbedClient;
+import com.petnose.api.dto.registration.ProfileNosePreviewApiResponse;
+import com.petnose.api.service.ProfileNosePreviewService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -34,6 +36,7 @@ public class DevController {
     );
 
     private final EmbedClient embedClient;
+    private final ProfileNosePreviewService profileNosePreviewService;
 
     @Value("${spring.application.name:petnose-api}")
     private String appName;
@@ -145,29 +148,10 @@ public class DevController {
      * DB/Qdrant에는 아무 것도 기록하지 않습니다.
      */
     @PostMapping("/profile-nose-preview")
-    public ResponseEntity<Map<String, Object>> profileNosePreview(
-            @RequestParam("profile_image") MultipartFile profileImage
+    public ResponseEntity<ProfileNosePreviewApiResponse> profileNosePreview(
+            @RequestParam(value = "profile_image", required = false) MultipartFile profileImage
     ) {
-        try {
-            if (profileImage == null || profileImage.isEmpty()) {
-                return invalidInput("profile_image is required.");
-            }
-
-            Map<String, Object> response = embedClient.extractProfileNose(
-                    profileImage.getBytes(),
-                    filenameOrDefault(profileImage, "profile-image.png"),
-                    contentTypeOrDefault(profileImage)
-            );
-            return ResponseEntity.ok(response);
-        } catch (EmbedClient.EmbedClientException e) {
-            return upstreamFailure("profile-nose-preview", e);
-        } catch (IOException e) {
-            log.error("[DevController] profile-nose-preview 입력 처리 실패: {}", e.getMessage(), e);
-            return invalidInput(e.getMessage());
-        } catch (Exception e) {
-            log.error("[DevController] profile-nose-preview 예외: {}", e.getMessage(), e);
-            return internalError(e.getMessage());
-        }
+        return ResponseEntity.ok(profileNosePreviewService.preview(profileImage));
     }
 
     /**

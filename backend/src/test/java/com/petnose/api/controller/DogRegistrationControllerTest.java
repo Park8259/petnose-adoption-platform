@@ -9,11 +9,13 @@ import com.petnose.api.dto.registration.DogProfileDraftRequest;
 import com.petnose.api.dto.registration.DogProfileDraftResponse;
 import com.petnose.api.dto.registration.DuplicateCandidateResponse;
 import com.petnose.api.dto.registration.ProfileMatchScoreResponse;
+import com.petnose.api.dto.registration.ProfileNosePreviewApiResponse;
 import com.petnose.api.dto.registration.ProfileNosePreviewResponse;
 import com.petnose.api.dto.registration.ScoreBreakdownResponse;
 import com.petnose.api.exception.ApiException;
 import com.petnose.api.service.AuthService;
 import com.petnose.api.service.DogRegistrationService;
+import com.petnose.api.service.ProfileNosePreviewService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -37,6 +39,7 @@ import static org.hamcrest.Matchers.nullValue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -60,9 +63,53 @@ class DogRegistrationControllerTest {
     @MockBean
     private AuthService authService;
 
+    @MockBean
+    private ProfileNosePreviewService profileNosePreviewService;
+
     @BeforeEach
     void setUpProfileFirstFlag() {
         ReflectionTestUtils.setField(dogRegistrationController, "profileFirstEnabled", true);
+    }
+
+    @Test
+    void profileNosePreviewUsesProductDemoSafeEndpointWithoutAuth() throws Exception {
+        when(profileNosePreviewService.preview(ArgumentMatchers.any()))
+                .thenReturn(new ProfileNosePreviewApiResponse(
+                        true,
+                        0.95484,
+                        224,
+                        224,
+                        null,
+                        "정면 사진에서 비문 영역을 확인했습니다.",
+                        null
+                ));
+
+        mockMvc.perform(multipart("/api/dogs/profile-nose-preview")
+                        .file(new MockMultipartFile("profile_image", "profile.jpg", "image/jpeg", new byte[]{1, 2, 3})))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.extracted").value(true))
+                .andExpect(jsonPath("$.confidence").value(0.95484))
+                .andExpect(jsonPath("$.crop_width").value(224))
+                .andExpect(jsonPath("$.crop_height").value(224))
+                .andExpect(jsonPath("$.failure_reason").value(nullValue()))
+                .andExpect(jsonPath("$.error_code").value(nullValue()));
+
+        verify(profileNosePreviewService).preview(ArgumentMatchers.any());
+        verifyNoInteractions(authService, dogRegistrationService);
+    }
+
+    @Test
+    void profileNosePreviewMissingProfileImageReturnsValidationFailed() throws Exception {
+        when(profileNosePreviewService.preview(ArgumentMatchers.isNull()))
+                .thenThrow(new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_FAILED", "profile_image는 필수입니다."));
+
+        mockMvc.perform(multipart("/api/dogs/profile-nose-preview"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error_code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.message").value("profile_image는 필수입니다."));
+
+        verify(profileNosePreviewService).preview(ArgumentMatchers.isNull());
+        verifyNoInteractions(authService, dogRegistrationService);
     }
 
     @Test
