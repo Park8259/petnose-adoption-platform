@@ -96,6 +96,8 @@ nose:
 petnose:
   profile-first:
     enabled: ${PETNOSE_PROFILE_FIRST_ENABLED:false}
+  profile-nose-preview:
+    enabled: ${PROFILE_NOSE_PREVIEW_ENABLED:${DOG_NOSE_EXTRACT_ENABLED:false}}
   registration-timing-log-enabled: ${PETNOSE_REGISTRATION_TIMING_LOG_ENABLED:false}
   profile-nose-match:
     threshold: ${PROFILE_NOSE_MATCH_THRESHOLD:0.65}

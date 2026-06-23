@@ -5,9 +5,11 @@ import com.petnose.api.dto.registration.DogRegisterResponse;
 import com.petnose.api.dto.registration.DogNoseVerificationResponse;
 import com.petnose.api.dto.registration.DogProfileDraftRequest;
 import com.petnose.api.dto.registration.DogProfileDraftResponse;
+import com.petnose.api.dto.registration.ProfileNosePreviewApiResponse;
 import com.petnose.api.exception.ApiException;
 import com.petnose.api.service.AuthService;
 import com.petnose.api.service.DogRegistrationService;
+import com.petnose.api.service.ProfileNosePreviewService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
@@ -25,9 +27,17 @@ public class DogRegistrationController {
 
     private final AuthService authService;
     private final DogRegistrationService dogRegistrationService;
+    private final ProfileNosePreviewService profileNosePreviewService;
 
     @Value("${petnose.profile-first.enabled:false}")
     private boolean profileFirstEnabled;
+
+    @PostMapping(value = "/profile-nose-preview", consumes = "multipart/form-data")
+    public ResponseEntity<ProfileNosePreviewApiResponse> profileNosePreview(
+            @RequestParam(value = "profile_image", required = false) MultipartFile profileImage
+    ) {
+        return ResponseEntity.ok(profileNosePreviewService.preview(profileImage));
+    }
 
     @PostMapping(value = "/profile-draft", consumes = "multipart/form-data")
     public ResponseEntity<DogProfileDraftResponse> createProfileDraft(

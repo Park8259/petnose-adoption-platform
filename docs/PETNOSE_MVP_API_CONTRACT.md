@@ -44,7 +44,7 @@ Base URL: `http://<host>/api`
 | 2 | `POST /api/auth/login` | 구현됨 | Bearer access token과 current user payload를 받는다. |
 | 3 | `GET /api/users/me` | 구현됨 | profile readiness field를 읽는다. |
 | 4 | `PATCH /api/users/me/profile` | 구현됨 | 누락된 `display_name`과 선택적 phone/region을 채운다. |
-| 5 | `POST /api/dogs/profile-draft` -> `POST /api/dogs/{dog_id}/nose-verification` | 구현됨 | 프로필/기본정보를 먼저 PENDING dog로 저장한 뒤 비문 5장으로 profile consistency와 기존 중복탐지를 완료한다. |
+| 5 | `POST /api/dogs/profile-nose-preview`, then `POST /api/dogs/profile-draft` -> `POST /api/dogs/{dog_id}/nose-verification` | 구현됨 | 사진 선택 즉시 비파괴 YOLO preview를 제공하고, 프로필/기본정보를 PENDING dog로 저장한 뒤 비문 5장으로 profile consistency와 기존 중복탐지를 완료한다. |
 | 6 | `registration_allowed=false` | 구현됨 | duplicate suspected 화면으로 분기하고 post creation을 막는다. Qdrant upsert는 수행하지 않는다. |
 | 7 | `registration_allowed=true` | 구현됨 | response `dog_id`를 분양글 작성 form state에 저장한다. dog nose v2의 `qdrant_point_id` response field는 `null`이며 Qdrant point ids는 `dog_nose_references`가 추적한다. |
 | 8 | `POST /api/adoption-posts` | 구현됨 | 이미 등록된 `dog_id`, title, content, status, required `profile_image`로 `DRAFT` 또는 `OPEN` post를 만든다. |
@@ -111,7 +111,7 @@ Final implemented app-requested endpoints:
 - Auth/User: `POST /api/auth/register` with `application/json`, `POST /api/auth/register` with `multipart/form-data`, optional multipart `profile_image`, `POST /api/auth/login`, `GET /api/users/me`, `PATCH /api/users/me/profile`, `PATCH /api/users/me/profile-image`, `PATCH /api/users/me/password`, `POST /api/auth/password-reset/request`, `POST /api/auth/password-reset/confirm`.
 - Firebase Chat: `POST /api/firebase/custom-token`, `PUT /api/users/me/fcm-token`, `POST /api/chat/rooms`, `GET /api/chat/rooms`, `POST /api/chat/rooms/{room_id}/messages`, `PATCH /api/chat/rooms/{room_id}/read`. `FIREBASE_DISABLED` is a normal disabled-runtime response after Spring authentication succeeds.
 - Adoption Posts: `POST /api/adoption-posts`, `GET /api/adoption-posts`, `GET /api/adoption-posts/{post_id}`, `GET /api/adoption-posts/me`, `PATCH /api/adoption-posts/{post_id}/status`, `PUT /api/adoption-posts/{post_id}/like`, `DELETE /api/adoption-posts/{post_id}/like`, `GET /api/adoption-posts/liked/me`.
-- Dogs: `POST /api/dogs/profile-draft`, `POST /api/dogs/{dog_id}/nose-verification`, backward-compatible `POST /api/dogs/register`, `GET /api/dogs/me`, `GET /api/dogs/{dog_id}`, `GET /api/dogs/adopted/me`.
+- Dogs: `POST /api/dogs/profile-nose-preview`, backward-compatible alias `POST /api/dev/profile-nose-preview`, `POST /api/dogs/profile-draft`, `POST /api/dogs/{dog_id}/nose-verification`, backward-compatible `POST /api/dogs/register`, `GET /api/dogs/me`, `GET /api/dogs/{dog_id}`, `GET /api/dogs/adopted/me`.
 - Handover: `POST /api/adoption-posts/{post_id}/handover-verifications` remains the existing handover-time verification API. It is not a post-adoption periodic verification API.
 
 ### A. 회원가입 multipart
@@ -897,6 +897,69 @@ Demo runtime gate:
 - `DOG_NOSE_DETECTOR_DEVICE=cuda:0`
 - YOLO weight and YOLOv5 repository are mounted read-only from the server.
 - ONNX Runtime is not used in this product demo runtime.
+
+Profile nose preview is a non-destructive compatibility endpoint for the
+existing Flutter UX, which calls the server immediately after selecting a
+front/profile photo:
+
+```http
+POST /api/dogs/profile-nose-preview
+Content-Type: multipart/form-data
+Authorization: optional
+```
+
+Backward-compatible alias:
+
+```http
+POST /api/dev/profile-nose-preview
+Content-Type: multipart/form-data
+Authorization: optional
+```
+
+Fields:
+
+- `profile_image`: file, required
+
+Behavior:
+
+- Does not create a dog.
+- Does not insert DB rows.
+- Does not store files.
+- Does not call Qdrant search or upsert.
+- Calls Python Embed `/internal/nose/extract` only when
+  `petnose.profile-nose-preview.enabled=true`.
+- The response never includes raw crop bytes, `crop_base64`, raw vectors, or
+  detector bounding boxes.
+- Detector disabled/unavailable/no-nose/low-confidence outcomes are returned as
+  explicit `failure_reason`/`error_code` values instead of HTTP 500.
+
+Response `200` success:
+
+```json
+{
+  "extracted": true,
+  "confidence": 0.95484,
+  "crop_width": 224,
+  "crop_height": 224,
+  "failure_reason": null,
+  "message": "정면 사진에서 비문 영역을 확인했습니다.",
+  "error_code": null
+}
+```
+
+Response `200` no usable nose:
+
+```json
+{
+  "extracted": false,
+  "confidence": 0.31,
+  "crop_width": null,
+  "crop_height": null,
+  "failure_reason": "LOW_CONFIDENCE",
+  "message": "정면 사진에서 비문 영역을 충분히 확인하지 못했습니다. 더 선명한 정면 사진을 선택해주세요.",
+  "error_code": "LOW_CONFIDENCE"
+}
+```
 
 Step 1 creates a draft dog:
 
