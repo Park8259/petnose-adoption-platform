@@ -877,6 +877,62 @@ Error codes:
 
 ## Dog Registration
 
+### Non-mutating profile nose preview
+
+This endpoint preserves the existing Flutter UX where the app checks the front/profile image immediately after image selection. It is a product/demo-safe preview only.
+
+```http
+POST /api/dogs/profile-nose-preview
+Content-Type: multipart/form-data
+Authorization: optional
+```
+
+Backward-compatible alias: `POST /api/dev/profile-nose-preview`.
+
+Fields:
+
+- `profile_image`: file, required
+
+Behavior:
+
+- Calls Python Embed `/internal/nose/extract` with `purpose=face_check` only when the profile nose preview runtime is enabled.
+- Does not create a dog.
+- Does not insert DB rows.
+- Does not create `verification_logs`.
+- Does not store the original image or extracted crop.
+- Does not call Qdrant.
+- Does not expose `crop_base64`, raw vectors, detector internals, or uploaded image bytes.
+
+Response `200` success:
+
+```json
+{
+  "extracted": true,
+  "confidence": 0.95484,
+  "crop_width": 224,
+  "crop_height": 224,
+  "failure_reason": null,
+  "message": "정면 사진에서 비문 영역을 확인했습니다.",
+  "error_code": null
+}
+```
+
+Response `200` no nose / low confidence / detector disabled:
+
+```json
+{
+  "extracted": false,
+  "confidence": 0.31,
+  "crop_width": null,
+  "crop_height": null,
+  "failure_reason": "LOW_CONFIDENCE",
+  "message": "정면 사진에서 비문 영역을 충분히 확인하지 못했습니다. 더 선명한 정면 사진을 선택해주세요.",
+  "error_code": "LOW_CONFIDENCE"
+}
+```
+
+If `DOG_NOSE_EXTRACT_ENABLED=false`, the response is `200` with `failure_reason=PROFILE_NOSE_PREVIEW_DISABLED` so the app can keep the non-mutating image-selection flow without treating the condition as a network failure. Missing `profile_image` returns `400 VALIDATION_FAILED`.
+
 ### Profile-first two-step Dog 등록
 
 This is the active profile-first flow for product demos. It keeps Spring Boot as the orchestration layer. Python Embed only receives image bytes and returns crop/embedding/similarity JSON; it never writes DB rows and never calls Qdrant.

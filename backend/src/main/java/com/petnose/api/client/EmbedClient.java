@@ -22,6 +22,8 @@ import java.util.Map;
 @Component
 public class EmbedClient {
 
+    private static final String FACE_CHECK_PURPOSE = "face_check";
+
     private final WebClient webClient;
 
     public EmbedClient(@Qualifier("embedWebClient") WebClient webClient) {
@@ -109,6 +111,11 @@ public class EmbedClient {
 
     @SuppressWarnings("unchecked")
     public BatchEmbedResponse embedBatch(List<BatchImageInput> images) {
+        return embedBatch(images, null);
+    }
+
+    @SuppressWarnings("unchecked")
+    public BatchEmbedResponse embedBatch(List<BatchImageInput> images, String requestId) {
         if (images == null || images.isEmpty()) {
             throw new EmbedClientException("embed batch 요청 이미지가 비어 있습니다.", null, null, null);
         }
@@ -130,6 +137,7 @@ public class EmbedClient {
         try {
             response = webClient.post()
                     .uri("/embed-batch")
+                    .headers(headers -> setRequestId(headers, requestId))
                     .contentType(MediaType.MULTIPART_FORM_DATA)
                     .body(BodyInserters.fromMultipartData(builder.build()))
                     .retrieve()
@@ -215,9 +223,44 @@ public class EmbedClient {
 
     @SuppressWarnings("unchecked")
     public Map<String, Object> extractProfileNose(byte[] imageBytes, String filename, String contentType) {
+        return extractProfileNose(imageBytes, filename, contentType, null, null);
+    }
+
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> extractProfileNose(byte[] imageBytes, String filename, String contentType, String requestId) {
+        return extractProfileNose(imageBytes, filename, contentType, null, requestId);
+    }
+
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> extractProfileNose(
+            byte[] imageBytes,
+            String filename,
+            String contentType,
+            String purpose,
+            String requestId
+    ) {
         MultipartBodyBuilder builder = new MultipartBodyBuilder();
         addMultipartFilePart(builder, "image", imageBytes, filename, contentType);
-        return postMultipartForMap("/internal/nose/extract", builder, "nose extract service");
+        addOptionalTextPart(builder, "purpose", purpose);
+        return postMultipartForMap("/internal/nose/extract", builder, "nose extract service", requestId);
+    }
+
+    public FaceNoseEmbeddingResponse extractNoseEmbeddingFromFaceImage(
+            byte[] imageBytes,
+            String filename,
+            String contentType,
+            String requestId
+    ) {
+        MultipartBodyBuilder builder = new MultipartBodyBuilder();
+        addMultipartFilePart(builder, "image", imageBytes, filename, contentType);
+        addOptionalTextPart(builder, "purpose", FACE_CHECK_PURPOSE);
+        Map<String, Object> response = postMultipartForMap(
+                "/internal/nose/extract-embed",
+                builder,
+                "nose extract embed service",
+                requestId
+        );
+        return parseFaceNoseEmbeddingResponse(response);
     }
 
     @SuppressWarnings("unchecked")
@@ -241,6 +284,16 @@ public class EmbedClient {
             String profileContentType,
             List<BatchImageInput> noseImages
     ) {
+        return profileNoseMatchBatch(profileImageBytes, profileFilename, profileContentType, noseImages, null);
+    }
+
+    public ProfileNoseMatchBatchResponse profileNoseMatchBatch(
+            byte[] profileImageBytes,
+            String profileFilename,
+            String profileContentType,
+            List<BatchImageInput> noseImages,
+            String requestId
+    ) {
         if (noseImages == null || noseImages.isEmpty()) {
             throw new EmbedClientException("profile nose match batch 요청 이미지가 비어 있습니다.", null, null, null);
         }
@@ -261,7 +314,8 @@ public class EmbedClient {
         Map<String, Object> response = postMultipartForMap(
                 "/internal/nose/profile-match-batch",
                 builder,
-                "profile nose match batch service"
+                "profile nose match batch service",
+                requestId
         );
         return parseProfileNoseMatchBatchResponse(response);
     }
@@ -326,6 +380,34 @@ public class EmbedClient {
             String model,
             Integer dimension,
             List<ProfileNoseMatchBatchScore> scores,
+            Double profileVsCentroidScore,
+            Boolean profileVsCentroidPassed,
+            Integer centroidDimension,
+            String failureReason
+    ) {}
+
+    public record FaceNoseEmbeddingResponse(
+            boolean extracted,
+            Double confidence,
+            List<Double> bboxXyxy,
+            Integer cropWidth,
+            Integer cropHeight,
+            String model,
+            Integer dimension,
+            List<Double> embedding,
+            FaceCheckQualityResponse quality,
+            String failureReason
+    ) {}
+
+    public record FaceCheckQualityResponse(
+            String purpose,
+            boolean passed,
+            Double noseAreaRatio,
+            Double noseWidthRatio,
+            Double noseHeightRatio,
+            Double edgeMarginRatio,
+            Double centerX,
+            Double centerY,
             String failureReason
     ) {}
 
@@ -371,12 +453,24 @@ public class EmbedClient {
         imagePart.contentType(MediaType.parseMediaType(contentType));
     }
 
+    private static void addOptionalTextPart(MultipartBodyBuilder builder, String partName, String value) {
+        if (value != null && !value.isBlank()) {
+            builder.part(partName, value.trim());
+        }
+    }
+
     @SuppressWarnings("unchecked")
     private Map<String, Object> postMultipartForMap(String uri, MultipartBodyBuilder builder, String operationName) {
+        return postMultipartForMap(uri, builder, operationName, null);
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> postMultipartForMap(String uri, MultipartBodyBuilder builder, String operationName, String requestId) {
         Map<String, Object> response;
         try {
             response = webClient.post()
                     .uri(uri)
+                    .headers(headers -> setRequestId(headers, requestId))
                     .contentType(MediaType.MULTIPART_FORM_DATA)
                     .body(BodyInserters.fromMultipartData(builder.build()))
                     .retrieve()
@@ -403,11 +497,28 @@ public class EmbedClient {
         return response;
     }
 
+    private static void setRequestId(org.springframework.http.HttpHeaders headers, String requestId) {
+        if (requestId != null && !requestId.isBlank()) {
+            headers.set("X-Request-Id", requestId.trim());
+        }
+    }
+
     private static List<Double> toVector(List<?> rawVector, Map<String, Object> response) {
         List<Double> vector = new ArrayList<>();
         for (Object value : rawVector) {
             if (!(value instanceof Number number)) {
                 throw new EmbedClientException("embed batch service 응답 item.vector 값이 숫자가 아닙니다.", null, String.valueOf(response), null);
+            }
+            vector.add(number.doubleValue());
+        }
+        return vector;
+    }
+
+    private static List<Double> toVectorWithoutBody(List<?> rawVector, String fieldName) {
+        List<Double> vector = new ArrayList<>();
+        for (Object value : rawVector) {
+            if (!(value instanceof Number number)) {
+                throw new EmbedClientException("nose extract embed service 응답 %s 값이 숫자가 아닙니다.".formatted(fieldName), null, null, null);
             }
             vector.add(number.doubleValue());
         }
@@ -455,7 +566,54 @@ public class EmbedClient {
                 valueOrNull(response.get("model")),
                 numberAsInteger(response.get("dimension")),
                 List.copyOf(scores),
+                numberAsDouble(response.get("profile_vs_centroid_score")),
+                booleanObject(response.get("profile_vs_centroid_passed")),
+                numberAsInteger(response.get("centroid_dimension")),
                 valueOrNull(response.get("failure_reason"))
+        );
+    }
+
+    private static FaceNoseEmbeddingResponse parseFaceNoseEmbeddingResponse(Map<String, Object> response) {
+        List<Double> bbox = null;
+        Object bboxObj = response.get("bbox_xyxy");
+        if (bboxObj instanceof List<?> rawBbox) {
+            bbox = toVectorWithoutBody(rawBbox, "bbox_xyxy");
+        }
+
+        List<Double> embedding = null;
+        Object embeddingObj = response.get("embedding");
+        if (embeddingObj instanceof List<?> rawEmbedding) {
+            embedding = toVectorWithoutBody(rawEmbedding, "embedding");
+        }
+
+        return new FaceNoseEmbeddingResponse(
+                booleanValue(response.get("extracted")),
+                numberAsDouble(response.get("confidence")),
+                bbox == null ? null : List.copyOf(bbox),
+                numberAsInteger(response.get("crop_width")),
+                numberAsInteger(response.get("crop_height")),
+                valueOrNull(response.get("model")),
+                numberAsInteger(response.get("dimension")),
+                embedding == null ? null : List.copyOf(embedding),
+                parseFaceCheckQualityResponse(response.get("quality")),
+                valueOrNull(response.get("failure_reason"))
+        );
+    }
+
+    private static FaceCheckQualityResponse parseFaceCheckQualityResponse(Object value) {
+        if (!(value instanceof Map<?, ?> quality)) {
+            return null;
+        }
+        return new FaceCheckQualityResponse(
+                valueOrNull(quality.get("purpose")),
+                booleanValue(quality.get("passed")),
+                numberAsDouble(quality.get("nose_area_ratio")),
+                numberAsDouble(quality.get("nose_width_ratio")),
+                numberAsDouble(quality.get("nose_height_ratio")),
+                numberAsDouble(quality.get("edge_margin_ratio")),
+                numberAsDouble(quality.get("center_x")),
+                numberAsDouble(quality.get("center_y")),
+                valueOrNull(quality.get("failure_reason"))
         );
     }
 
@@ -479,6 +637,10 @@ public class EmbedClient {
 
     private static boolean booleanValue(Object value) {
         return value instanceof Boolean bool && bool;
+    }
+
+    private static Boolean booleanObject(Object value) {
+        return value instanceof Boolean bool ? bool : null;
     }
 
     public static class EmbedClientException extends RuntimeException {

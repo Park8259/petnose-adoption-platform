@@ -61,6 +61,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -74,8 +75,14 @@ public class DogRegistrationService {
     private static final String EMBEDDING_MODE_MULTI_REFERENCE = "MULTI_REFERENCE";
     private static final String SCORE_POLICY = DogNoseScoreBreakdown.MAX_REFERENCE_OR_CENTROID_POLICY;
     private static final String PROFILE_NOSE_MISMATCH = "PROFILE_NOSE_MISMATCH";
+    private static final String PROFILE_CENTROID_MISMATCH = "PROFILE_CENTROID_MISMATCH";
+    private static final String PROFILE_FACE_EMBED_FAILED = "PROFILE_FACE_EMBED_FAILED";
+    private static final String PROFILE_FACE_EMBEDDING_DIMENSION_MISMATCH = "PROFILE_FACE_EMBEDDING_DIMENSION_MISMATCH";
+    private static final String FACE_CHECK_IMAGE_REQUIRED = "FACE_CHECK_IMAGE_REQUIRED";
     private static final String DETECTOR_UNAVAILABLE = "DETECTOR_UNAVAILABLE";
     private static final String MEDIAN_AGGREGATE = "median";
+    private static final String DEMO_TRACE_PREFIX = "[DEMO_TRACE]";
+    private static final String DEMO_SUMMARY_PREFIX = "[DEMO_SUMMARY]";
 
     private final UserRepository userRepository;
     private final DogRepository dogRepository;
@@ -103,8 +110,53 @@ public class DogRegistrationService {
     @Value("${qdrant.search-score-threshold:0.55}")
     private double qdrantSearchScoreThreshold;
 
+    @Value("${qdrant.collection}")
+    private String qdrantCollection;
+
     @Value("${petnose.registration-timing-log-enabled:true}")
     private boolean registrationTimingLogEnabled;
+
+    @Value("${demo-trace.enabled:false}")
+    private boolean demoTraceEnabled;
+
+    @Value("${demo-trace.profile-compare.enabled:false}")
+    private boolean demoTraceProfileCompareEnabled;
+
+    @Value("${demo-trace.profile-compare.threshold:0.65}")
+    private double demoTraceProfileCompareThreshold;
+
+    @Value("${demo-trace.profile-compare.min-pass-count:4}")
+    private int demoTraceProfileCompareMinPassCount;
+
+    @Value("${demo-trace.profile-compare.log-per-image:true}")
+    private boolean demoTraceProfileCompareLogPerImage;
+
+    @Value("${demo-trace.reference-log-pairs:false}")
+    private boolean demoTraceReferenceLogPairs;
+
+    @Value("${demo-trace.profile-compare.fail-open:true}")
+    private boolean demoTraceProfileCompareFailOpen;
+
+    @Value("${demo-summary.enabled:false}")
+    private boolean demoSummaryEnabled;
+
+    @Value("${demo-summary.include-request-id:false}")
+    private boolean demoSummaryIncludeRequestId;
+
+    @Value("${demo-summary.include-timing:false}")
+    private boolean demoSummaryIncludeTiming;
+
+    @Value("${profile-centroid-gate.enabled:false}")
+    private boolean profileCentroidGateEnabled;
+
+    @Value("${profile-centroid-gate.threshold:0.65}")
+    private double profileCentroidGateThreshold;
+
+    @Value("${profile-centroid-gate.require-face-image:false}")
+    private boolean profileCentroidGateRequireFaceImage;
+
+    @Value("${profile-centroid-gate.fail-open:false}")
+    private boolean profileCentroidGateFailOpen;
 
     public DogProfileDraftResponse createProfileDraft(DogProfileDraftRequest request) {
         validateRequiredFields(new DogRegisterRequest(
@@ -188,6 +240,24 @@ public class DogRegistrationService {
     }
 
     public DogRegisterResponse register(DogRegisterRequest request) {
+        return register(request, null, null, null);
+    }
+
+    public DogRegisterResponse register(
+            DogRegisterRequest request,
+            MultipartFile faceCheckImage,
+            String requestId
+    ) {
+        return register(request, null, faceCheckImage, requestId);
+    }
+
+    public DogRegisterResponse register(
+            DogRegisterRequest request,
+            MultipartFile profileImage,
+            MultipartFile faceCheckImage,
+            String requestId
+    ) {
+        String traceRequestId = requestIdForTrace(requestId);
         RegistrationTiming timing = new RegistrationTiming();
         boolean completed = false;
         try {
@@ -200,6 +270,13 @@ public class DogRegistrationService {
             List<NoseImageUpload> uploads = readNoseImages(request.noseImages());
             timing.mark("read_nose_images");
 
+            logDemoRegisterRequest(request, uploads.size(), hasPresentFile(profileImage), hasPresentFile(faceCheckImage), traceRequestId);
+            rejectMissingRequiredFaceCheckImageBeforePipeline(faceCheckImage, traceRequestId);
+            timing.mark("require_face_check_image");
+
+            runDemoProfileNoseCompare(request, faceCheckImage, uploads, traceRequestId);
+            timing.mark("demo_profile_nose_compare");
+
             User user = userRepository.findById(request.userId())
                     .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "USER_NOT_FOUND", "존재하지 않는 user_id 입니다."));
             timing.mark("load_user");
@@ -207,7 +284,7 @@ public class DogRegistrationService {
             String dogId = UUID.randomUUID().toString();
             timing.setDogId(dogId);
 
-            EmbedClient.BatchEmbedResponse embedResponse = requestBatchEmbeddingOrFail(dogId, uploads);
+            EmbedClient.BatchEmbedResponse embedResponse = requestBatchEmbeddingOrFail(dogId, uploads, traceRequestId);
             timing.mark("embed_batch");
 
             validateBatchEmbeddingDimensionOrFail(dogId, embedResponse, uploads.size());
@@ -227,7 +304,14 @@ public class DogRegistrationService {
             List<Double> centroidVector = NoseVectorMath.centroid(referenceVectors);
             timing.mark("centroid_build");
 
-            DogNoseAggregationResult aggregationResult = searchExistingDogsOrFail(dogId, referenceVectors, centroidVector);
+            logDemoNoseReferenceTrace(qualityReport, referenceVectors, centroidVector, traceRequestId);
+
+            ProfileNoseMatchResult profileNoseMatchResult =
+                    enforceProfileCentroidGateOrFail(faceCheckImage, centroidVector, embedResponse, traceRequestId);
+            timing.mark("profile_centroid_gate");
+            logDemoSummaryNoseReference(qualityReport, referenceVectors, centroidVector, traceRequestId);
+
+            DogNoseAggregationResult aggregationResult = searchExistingDogsOrFail(dogId, referenceVectors, centroidVector, traceRequestId);
             timing.mark("qdrant_search");
 
             DogNoseDecision decision = dogNoseDecisionPolicy.evaluate(
@@ -242,29 +326,29 @@ public class DogRegistrationService {
             String scoreBreakdownJson = toScoreBreakdownJson(scoreBreakdown, qualityReport);
             timing.mark("score_breakdown");
 
-            List<FileStorageService.StoredFile> storedFiles = storeNoseImages(dogId, uploads);
+            StoredRegistrationImages storedImages = storeRegistrationImages(dogId, profileImage, uploads);
             timing.mark("file_store");
 
             PendingRegistration pending;
             try {
                 pending = transactionTemplate.execute(status ->
-                        createPendingRows(user.getId(), dogId, request, birthDate, age, price, storedFiles)
+                        createPendingRows(user.getId(), dogId, request, birthDate, age, price, storedImages.profileImage(), storedImages.noseImages())
                 );
                 timing.mark("db_create_pending_rows");
             } catch (RuntimeException e) {
-                fileStorageService.deleteStoredFilesQuietly(storedFiles);
+                deleteStoredRegistrationImagesQuietly(storedImages);
                 throw e;
             }
             if (pending == null) {
-                fileStorageService.deleteStoredFilesQuietly(storedFiles);
+                deleteStoredRegistrationImagesQuietly(storedImages);
                 throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "REGISTRATION_INIT_FAILED", "등록 초기화에 실패했습니다.");
             }
 
             DogRegisterResponse response = switch (decision.result()) {
                 case DUPLICATE_SUSPECTED, REVIEW_REQUIRED ->
-                        completeRegistrationWithoutQdrant(pending, embedResponse, decision, scoreBreakdown, scoreBreakdownJson, timing);
+                        completeRegistrationWithoutQdrant(pending, embedResponse, decision, scoreBreakdown, scoreBreakdownJson, timing, traceRequestId, profileNoseMatchResult);
                 case PASSED ->
-                        completePassedRegistration(pending, embedResponse, referenceVectors, centroidVector, decision, scoreBreakdown, scoreBreakdownJson, timing);
+                        completePassedRegistration(pending, embedResponse, referenceVectors, centroidVector, decision, scoreBreakdown, scoreBreakdownJson, timing, traceRequestId, profileNoseMatchResult);
                 default -> throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "REGISTRATION_DECISION_FAILED", "등록 판정 결과가 올바르지 않습니다.");
             };
             completed = true;
@@ -283,7 +367,7 @@ public class DogRegistrationService {
         timing.setDogId(dog.getId());
         boolean completed = false;
         try {
-            EmbedClient.BatchEmbedResponse embedResponse = requestBatchEmbeddingOrFail(dog.getId(), uploads);
+            EmbedClient.BatchEmbedResponse embedResponse = requestBatchEmbeddingOrFail(dog.getId(), uploads, null);
             timing.mark("embed_batch");
 
             validateBatchEmbeddingDimensionOrFail(dog.getId(), embedResponse, uploads.size());
@@ -303,7 +387,11 @@ public class DogRegistrationService {
             List<Double> centroidVector = NoseVectorMath.centroid(referenceVectors);
             timing.mark("centroid_build");
 
-            DogNoseAggregationResult aggregationResult = searchExistingDogsOrFail(dog.getId(), referenceVectors, centroidVector);
+            logDemoNoseReferenceTrace(qualityReport, referenceVectors, centroidVector, null);
+            logDemoSummaryNoseReference(qualityReport, referenceVectors, centroidVector, null);
+            ProfileNoseMatchResult profileNoseMatchResult = ProfileNoseMatchResult.empty();
+
+            DogNoseAggregationResult aggregationResult = searchExistingDogsOrFail(dog.getId(), referenceVectors, centroidVector, null);
             timing.mark("qdrant_search");
 
             DogNoseDecision decision = dogNoseDecisionPolicy.evaluate(
@@ -338,9 +426,9 @@ public class DogRegistrationService {
 
             DogRegisterResponse response = switch (decision.result()) {
                 case DUPLICATE_SUSPECTED, REVIEW_REQUIRED ->
-                        completeRegistrationWithoutQdrant(pending, embedResponse, decision, scoreBreakdown, scoreBreakdownJson, timing);
+                        completeRegistrationWithoutQdrant(pending, embedResponse, decision, scoreBreakdown, scoreBreakdownJson, timing, null, profileNoseMatchResult);
                 case PASSED ->
-                        completePassedRegistration(pending, embedResponse, referenceVectors, centroidVector, decision, scoreBreakdown, scoreBreakdownJson, timing);
+                        completePassedRegistration(pending, embedResponse, referenceVectors, centroidVector, decision, scoreBreakdown, scoreBreakdownJson, timing, null, profileNoseMatchResult);
                 default -> throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "REGISTRATION_DECISION_FAILED", "등록 판정 결과가 올바르지 않습니다.");
             };
             completed = true;
@@ -397,7 +485,7 @@ public class DogRegistrationService {
         verificationLog.setResult(VerificationResult.PENDING);
         verificationLogRepository.save(verificationLog);
 
-        return new PendingRegistration(dogId, List.copyOf(noseImages), verificationLog.getId());
+        return new PendingRegistration(dogId, null, List.copyOf(noseImages), verificationLog.getId());
     }
 
     private ProfileNosePreviewResponse previewProfileNose(FileStorageService.StoredFile storedProfile) {
@@ -418,6 +506,494 @@ public class DogRegistrationService {
             log.warn("[DogRegistration] profile preview extraction skipped: message={}", e.getMessage());
             return new ProfileNosePreviewResponse(false, null, null, null, DETECTOR_UNAVAILABLE);
         }
+    }
+
+    private void runDemoProfileNoseCompare(
+            DogRegisterRequest request,
+            MultipartFile faceCheckImage,
+            List<NoseImageUpload> uploads,
+            String requestId
+    ) {
+        if (!demoTraceEnabled || !demoTraceProfileCompareEnabled || !hasPresentFile(faceCheckImage)) {
+            return;
+        }
+
+        long startedNanos = System.nanoTime();
+        log.info("{} flow=profile_nose_compare step=start request_id={} user_id={} dog_name={} breed={} face_image_present=true nose_count={} threshold={} required_pass={}",
+                DEMO_TRACE_PREFIX,
+                safe(requestId),
+                request.userId(),
+                safe(request.name()),
+                safe(request.breed()),
+                uploads.size(),
+                formatScore(demoTraceProfileCompareThreshold),
+                demoTraceProfileCompareMinPassCount);
+
+        try {
+            List<EmbedClient.BatchImageInput> noseInputs = uploads.stream()
+                    .map(upload -> new EmbedClient.BatchImageInput(upload.bytes(), upload.filename(), upload.contentType()))
+                    .toList();
+
+            EmbedClient.ProfileNoseMatchBatchResponse response = embedClient.profileNoseMatchBatch(
+                    faceCheckImage.getBytes(),
+                    filenameOrDefault(faceCheckImage.getOriginalFilename(), 0),
+                    contentTypeOrDefault(faceCheckImage),
+                    noseInputs,
+                    requestId
+            );
+            DemoProfileCompareStats stats = demoProfileCompareStats(response);
+            String decision = stats.passed() ? "PASS" : "FAIL";
+            int failCount = Math.max(0, stats.total() - stats.passCount());
+            log.info("{} flow=profile_nose_compare step=summary request_id={} model={} dimension={} threshold={} threshold_calibrated={} total={} pass={} fail={} min={} max={} mean={} median={} min_percent={} max_percent={} median_percent={} decision={} elapsed_ms={}",
+                    DEMO_TRACE_PREFIX,
+                    safe(requestId),
+                    safe(response.model()),
+                    response.dimension(),
+                    formatScore(demoTraceProfileCompareThreshold),
+                    response.thresholdCalibrated(),
+                    stats.total(),
+                    stats.passCount(),
+                    failCount,
+                    formatNullableScore(stats.minScore()),
+                    formatNullableScore(stats.maxScore()),
+                    formatNullableScore(stats.meanScore()),
+                    formatNullableScore(stats.medianScore()),
+                    formatNullablePercent(stats.minScore()),
+                    formatNullablePercent(stats.maxScore()),
+                    formatNullablePercent(stats.medianScore()),
+                    decision,
+                    elapsedMillis(startedNanos));
+
+            logDemoProfileCentroidCompare(response, requestId);
+
+            if (demoTraceProfileCompareLogPerImage) {
+                for (ProfileMatchScoreResponse score : stats.scores()) {
+                    log.info("{} flow=profile_nose_compare step=per_image request_id={} index={} score={} percent={} passed={}",
+                            DEMO_TRACE_PREFIX,
+                            safe(requestId),
+                            score.index(),
+                            formatNullableScore(score.score()),
+                            formatNullablePercent(score.score()),
+                            score.passed());
+                }
+            }
+
+            if (response.failureReason() != null) {
+                log.info("{} flow=profile_nose_compare step=failed request_id={} failure_reason={} action={}",
+                        DEMO_TRACE_PREFIX,
+                        safe(requestId),
+                        safe(response.failureReason()),
+                        demoTraceProfileCompareFailOpen ? "ignored_fail_open" : "ignored_trace_only");
+            }
+        } catch (Exception e) {
+            log.info("{} flow=profile_nose_compare step=failed request_id={} failure_reason={} action={} elapsed_ms={}",
+                    DEMO_TRACE_PREFIX,
+                    safe(requestId),
+                    safe(e.getClass().getSimpleName()),
+                    demoTraceProfileCompareFailOpen ? "ignored_fail_open" : "ignored_trace_only",
+                    elapsedMillis(startedNanos));
+        }
+    }
+
+    private ProfileNoseMatchResult enforceProfileCentroidGateOrFail(
+            MultipartFile faceCheckImage,
+            List<Double> centroidVector,
+            EmbedClient.BatchEmbedResponse embedResponse,
+            String requestId
+    ) {
+        boolean faceImagePresent = hasPresentFile(faceCheckImage);
+        if (!profileCentroidGateEnabled) {
+            logProfileCentroidGateSkipped(requestId, "GATE_DISABLED", faceImagePresent);
+            return ProfileNoseMatchResult.empty();
+        }
+        if (!faceImagePresent) {
+            if (!profileCentroidGateRequireFaceImage) {
+                logProfileCentroidGateSkipped(requestId, "FACE_CHECK_IMAGE_ABSENT", false);
+                return ProfileNoseMatchResult.empty();
+            }
+            handleProfileCentroidGateFailure(
+                    FACE_CHECK_IMAGE_REQUIRED,
+                    "얼굴·코 확인용 정면 사진이 필요합니다.",
+                    "FACE_CHECK_IMAGE_ABSENT",
+                    null,
+                    embedResponse.model(),
+                    embedResponse.dimension(),
+                    requestId
+            );
+            return ProfileNoseMatchResult.empty();
+        }
+
+        long startedNanos = System.nanoTime();
+        if (demoTraceEnabled) {
+            log.info("{} flow=profile_centroid_gate step=start request_id={} face_image_present=true threshold={} fail_open={} expected_dimension={}",
+                    DEMO_TRACE_PREFIX,
+                    safe(requestId),
+                    formatScore(profileCentroidGateThreshold),
+                    profileCentroidGateFailOpen,
+                    expectedVectorDimension);
+        }
+
+        EmbedClient.FaceNoseEmbeddingResponse response;
+        try {
+            response = embedClient.extractNoseEmbeddingFromFaceImage(
+                    faceCheckImage.getBytes(),
+                    filenameOrDefault(faceCheckImage.getOriginalFilename(), 0),
+                    contentTypeOrDefault(faceCheckImage),
+                    requestId
+            );
+        } catch (IOException e) {
+            handleProfileCentroidGateFailure(
+                    PROFILE_FACE_EMBED_FAILED,
+                    "얼굴·코 확인용 정면 사진을 읽지 못했습니다.",
+                    "FACE_IMAGE_READ_FAILED",
+                    null,
+                    embedResponse.model(),
+                    embedResponse.dimension(),
+                    requestId
+            );
+            return ProfileNoseMatchResult.empty();
+        } catch (EmbedClient.EmbedClientException e) {
+            handleProfileCentroidGateFailure(
+                    PROFILE_FACE_EMBED_FAILED,
+                    "얼굴·코 확인용 정면 사진에서 코 임베딩을 만들지 못했습니다.",
+                    "EMBED_SERVICE_UNAVAILABLE",
+                    null,
+                    embedResponse.model(),
+                    embedResponse.dimension(),
+                    requestId
+            );
+            return ProfileNoseMatchResult.empty();
+        }
+
+        if (demoTraceEnabled) {
+            log.info("{} flow=profile_centroid_gate step=face_embed_done request_id={} extracted={} confidence={} crop={} model={} dimension={} failure_reason={} elapsed_ms={}",
+                    DEMO_TRACE_PREFIX,
+                    safe(requestId),
+                    response.extracted(),
+                    formatNullableScore(response.confidence()),
+                    cropText(response.cropWidth(), response.cropHeight()),
+                    safe(response.model()),
+                    response.dimension(),
+                    safe(response.failureReason()),
+                    elapsedMillis(startedNanos));
+        }
+        logProfileCentroidGateQuality(response.quality(), requestId);
+        logDemoSummaryFaceCheck(response, requestId);
+
+        List<Double> faceEmbedding = response.embedding();
+        if (!response.extracted() || faceEmbedding == null || faceEmbedding.isEmpty()) {
+            String failureReason = response.failureReason() == null ? "NO_FACE_NOSE_EMBEDDING" : response.failureReason();
+            handleProfileCentroidGateFailure(
+                    PROFILE_FACE_EMBED_FAILED,
+                    profileFaceFailureMessage(failureReason),
+                    failureReason,
+                    null,
+                    response.model(),
+                    response.dimension(),
+                    requestId,
+                    response.quality()
+            );
+            return ProfileNoseMatchResult.empty();
+        }
+
+        if (!isGateDimensionValid(response, faceEmbedding, centroidVector, embedResponse)) {
+            handleProfileCentroidGateFailure(
+                    PROFILE_FACE_EMBEDDING_DIMENSION_MISMATCH,
+                    "얼굴·코 확인용 정면 사진 임베딩 차원이 비문 임베딩 차원과 일치하지 않습니다.",
+                    "EMBEDDING_DIMENSION_MISMATCH",
+                    null,
+                    response.model(),
+                    response.dimension(),
+                    requestId,
+                    response.quality()
+            );
+            return ProfileNoseMatchResult.empty();
+        }
+
+        double score = NoseVectorMath.dot(faceEmbedding, centroidVector);
+        boolean passed = score >= profileCentroidGateThreshold;
+        logDemoSummaryProfileCentroid(passed, score, requestId);
+        if (demoTraceEnabled) {
+            log.info("{} flow=profile_centroid_gate step=compare request_id={} profile_vs_centroid={} profile_vs_centroid_percent={} threshold={} passed={} face_dimension={} centroid_dimension={} model={}",
+                    DEMO_TRACE_PREFIX,
+                    safe(requestId),
+                    formatScore(score),
+                    formatPercent(score),
+                    formatScore(profileCentroidGateThreshold),
+                    passed,
+                    faceEmbedding.size(),
+                    centroidVector.size(),
+                    safe(response.model()));
+        }
+
+        if (!passed) {
+            String message = "얼굴·코 확인 사진과 비문 5장이 같은 강아지로 확인되지 않았습니다. 일치도 %s%%, 기준 %s%%"
+                    .formatted(formatPercent(score), formatPercent(profileCentroidGateThreshold));
+            logProfileCentroidGateDecision(requestId, "FAIL", "PROFILE_CENTROID_MISMATCH", score, response.model(), response.dimension());
+            handleProfileCentroidGateFailure(
+                    PROFILE_CENTROID_MISMATCH,
+                    message,
+                    "PROFILE_CENTROID_MISMATCH",
+                    score,
+                    response.model(),
+                    response.dimension(),
+                    requestId,
+                    response.quality()
+            );
+            return new ProfileNoseMatchResult(score);
+        }
+
+        logProfileCentroidGateDecision(requestId, "PASS", null, score, response.model(), response.dimension());
+        return new ProfileNoseMatchResult(score);
+    }
+
+    private void rejectMissingRequiredFaceCheckImageBeforePipeline(
+            MultipartFile faceCheckImage,
+            String requestId
+    ) {
+        if (!profileCentroidGateEnabled
+                || !profileCentroidGateRequireFaceImage
+                || hasPresentFile(faceCheckImage)) {
+            return;
+        }
+        logProfileCentroidGateMissingFaceDecision(requestId);
+        logDemoSummary(
+                "[2] face-vs-centroid",
+                "FAIL",
+                List.of("reason=FACE_CHECK_IMAGE_REQUIRED"),
+                requestId
+        );
+        logDemoSummaryFinalRejected("FACE_CHECK_IMAGE_REQUIRED", requestId);
+        throw new ApiException(
+                HttpStatus.UNPROCESSABLE_ENTITY,
+                FACE_CHECK_IMAGE_REQUIRED,
+                "얼굴·코 확인용 정면 사진이 필요합니다.",
+                profileCentroidGateDetails("FACE_CHECK_IMAGE_ABSENT", null, null, null, null)
+        );
+    }
+
+    private boolean isGateDimensionValid(
+            EmbedClient.FaceNoseEmbeddingResponse response,
+            List<Double> faceEmbedding,
+            List<Double> centroidVector,
+            EmbedClient.BatchEmbedResponse embedResponse
+    ) {
+        return response.dimension() != null
+                && response.dimension() == expectedVectorDimension
+                && response.dimension() == embedResponse.dimension()
+                && faceEmbedding.size() == expectedVectorDimension
+                && centroidVector != null
+                && centroidVector.size() == expectedVectorDimension
+                && vectorFinite(faceEmbedding)
+                && vectorFinite(centroidVector);
+    }
+
+    private void handleProfileCentroidGateFailure(
+            String errorCode,
+            String message,
+            String failureReason,
+            Double score,
+            String model,
+            Integer dimension,
+            String requestId
+    ) {
+        handleProfileCentroidGateFailure(errorCode, message, failureReason, score, model, dimension, requestId, null);
+    }
+
+    private void handleProfileCentroidGateFailure(
+            String errorCode,
+            String message,
+            String failureReason,
+            Double score,
+            String model,
+            Integer dimension,
+            String requestId,
+            EmbedClient.FaceCheckQualityResponse quality
+    ) {
+        String action = profileCentroidGateFailOpen ? "continue_fail_open" : "reject";
+        if (demoTraceEnabled) {
+            log.info("{} flow=profile_centroid_gate step=failed request_id={} failure_reason={} action={} score={} score_percent={} threshold={} model={} dimension={}",
+                    DEMO_TRACE_PREFIX,
+                    safe(requestId),
+                    safe(failureReason),
+                    action,
+                    formatNullableScore(score),
+                    formatNullablePercent(score),
+                    formatScore(profileCentroidGateThreshold),
+                    safe(model),
+                    dimension);
+        }
+        if (profileCentroidGateFailOpen) {
+            return;
+        }
+        logDemoSummaryFinalRejected(failureReason, requestId);
+        throw new ApiException(
+                HttpStatus.UNPROCESSABLE_ENTITY,
+                errorCode,
+                message,
+                profileCentroidGateDetails(failureReason, score, model, dimension, quality)
+        );
+    }
+
+    private void logProfileCentroidGateQuality(EmbedClient.FaceCheckQualityResponse quality, String requestId) {
+        if (!demoTraceEnabled || quality == null) {
+            return;
+        }
+        String action = quality.passed()
+                ? "continue"
+                : (profileCentroidGateFailOpen ? "continue_fail_open" : "reject_before_qdrant");
+        log.info("{} flow=profile_centroid_gate step=face_quality request_id={} purpose={} passed={} failure_reason={} nose_area_ratio={} nose_width_ratio={} nose_height_ratio={} edge_margin_ratio={} center_x={} center_y={} action={}",
+                DEMO_TRACE_PREFIX,
+                safe(requestId),
+                safe(quality.purpose()),
+                quality.passed(),
+                safe(quality.failureReason()),
+                formatNullableScore(quality.noseAreaRatio()),
+                formatNullableScore(quality.noseWidthRatio()),
+                formatNullableScore(quality.noseHeightRatio()),
+                formatNullableScore(quality.edgeMarginRatio()),
+                formatNullableScore(quality.centerX()),
+                formatNullableScore(quality.centerY()),
+                action);
+    }
+
+    private void logProfileCentroidGateSkipped(String requestId, String reason, boolean faceImagePresent) {
+        if (!demoTraceEnabled) {
+            return;
+        }
+        log.info("{} flow=profile_centroid_gate step=skipped request_id={} reason={} gate_enabled={} face_image_present={} threshold={}",
+                DEMO_TRACE_PREFIX,
+                safe(requestId),
+                safe(reason),
+                profileCentroidGateEnabled,
+                faceImagePresent,
+                formatScore(profileCentroidGateThreshold));
+    }
+
+    private void logProfileCentroidGateMissingFaceDecision(String requestId) {
+        if (!demoTraceEnabled) {
+            return;
+        }
+        log.info("{} flow=profile_centroid_gate step=decision request_id={} decision=FAIL reason=FACE_CHECK_IMAGE_ABSENT action=reject_before_qdrant qdrant_search=skipped qdrant_upsert=skipped db_write=skipped",
+                DEMO_TRACE_PREFIX,
+                safe(requestId));
+    }
+
+    private void logProfileCentroidGateDecision(
+            String requestId,
+            String decision,
+            String failureReason,
+            Double score,
+            String model,
+            Integer dimension
+    ) {
+        if (!demoTraceEnabled) {
+            return;
+        }
+        log.info("{} flow=profile_centroid_gate step=decision request_id={} decision={} action={} failure_reason={} score={} score_percent={} threshold={} model={} dimension={}",
+                DEMO_TRACE_PREFIX,
+                safe(requestId),
+                safe(decision),
+                "FAIL".equals(decision) && profileCentroidGateFailOpen ? "continue_fail_open" : ("FAIL".equals(decision) ? "reject" : "continue"),
+                safe(failureReason),
+                formatNullableScore(score),
+                formatNullablePercent(score),
+                formatScore(profileCentroidGateThreshold),
+                safe(model),
+                dimension);
+    }
+
+    private Map<String, Object> profileCentroidGateDetails(
+            String failureReason,
+            Double score,
+            String model,
+            Integer dimension,
+            EmbedClient.FaceCheckQualityResponse quality
+    ) {
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("failure_reason", failureReason);
+        details.put("similarity_score", score);
+        details.put("similarity_percent", score == null ? null : formatPercent(score));
+        details.put("threshold", profileCentroidGateThreshold);
+        details.put("threshold_percent", formatPercent(profileCentroidGateThreshold));
+        details.put("model", model);
+        details.put("dimension", dimension);
+        if (quality != null) {
+            details.put("quality", faceCheckQualityDetails(quality));
+        }
+        return details;
+    }
+
+    private Map<String, Object> faceCheckQualityDetails(EmbedClient.FaceCheckQualityResponse quality) {
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("purpose", quality.purpose());
+        details.put("passed", quality.passed());
+        details.put("nose_area_ratio", quality.noseAreaRatio());
+        details.put("nose_width_ratio", quality.noseWidthRatio());
+        details.put("nose_height_ratio", quality.noseHeightRatio());
+        details.put("edge_margin_ratio", quality.edgeMarginRatio());
+        details.put("center_x", quality.centerX());
+        details.put("center_y", quality.centerY());
+        details.put("failure_reason", quality.failureReason());
+        return details;
+    }
+
+    private String profileFaceFailureMessage(String failureReason) {
+        return switch (failureReason) {
+            case "NOSE_TOO_LARGE_FOR_FACE_CHECK" -> "코만 너무 크게 나온 사진입니다. 얼굴이 조금 더 보이는 정면 사진을 선택해주세요.";
+            case "NOSE_TOO_SMALL_FOR_FACE_CHECK" -> "코가 너무 작게 보입니다. 얼굴과 코가 더 잘 보이는 사진을 선택해주세요.";
+            case "NOSE_TOUCHES_IMAGE_EDGE" -> "코가 사진 가장자리에 너무 가깝거나 잘렸습니다.";
+            case "NOSE_OFF_CENTER" -> "코가 사진 중앙에서 너무 벗어났습니다. 정면 사진을 선택해주세요.";
+            case "MULTIPLE_NOSES_DETECTED" -> "여러 개의 코 후보가 감지되었습니다. 한 마리만 나온 사진을 선택해주세요.";
+            case "NO_NOSE_DETECTED" -> "코 영역을 찾지 못했습니다. 더 선명한 정면 사진을 선택해주세요.";
+            default -> "얼굴·코 확인용 정면 사진에서 코 영역 임베딩을 만들지 못했습니다.";
+        };
+    }
+
+    private static String cropText(Integer width, Integer height) {
+        if (width == null || height == null) {
+            return "null";
+        }
+        return "%dx%d".formatted(width, height);
+    }
+
+    private DemoProfileCompareStats demoProfileCompareStats(EmbedClient.ProfileNoseMatchBatchResponse response) {
+        List<ProfileMatchScoreResponse> scores = new ArrayList<>();
+        for (int i = 0; i < response.scores().size(); i++) {
+            EmbedClient.ProfileNoseMatchBatchScore score = response.scores().get(i);
+            Double value = score.similarityScore();
+            scores.add(new ProfileMatchScoreResponse(
+                    score.index() <= 0 ? i + 1 : score.index(),
+                    value,
+                    value != null && value >= demoTraceProfileCompareThreshold
+            ));
+        }
+        List<Double> values = scores.stream()
+                .map(ProfileMatchScoreResponse::score)
+                .filter(value -> value != null)
+                .toList();
+        Double min = values.stream().min(Comparator.naturalOrder()).orElse(null);
+        Double max = values.stream().max(Comparator.naturalOrder()).orElse(null);
+        Double mean = values.isEmpty() ? null : values.stream().mapToDouble(Double::doubleValue).average().orElse(0.0);
+        Double median = median(values);
+        int passCount = (int) scores.stream().filter(ProfileMatchScoreResponse::passed).count();
+        boolean passed = response.profileNoseExtracted()
+                && response.failureReason() == null
+                && scores.size() == noseRegistrationProperties.getReferenceMaxCount()
+                && passCount >= demoTraceProfileCompareMinPassCount
+                && median != null
+                && median >= demoTraceProfileCompareThreshold;
+
+        return new DemoProfileCompareStats(
+                scores.size(),
+                passCount,
+                min,
+                max,
+                mean,
+                median,
+                List.copyOf(scores),
+                passed
+        );
     }
 
     private ProfileConsistencyDecision requestProfileConsistency(
@@ -605,14 +1181,40 @@ public class DogRegistrationService {
         return List.copyOf(uploads);
     }
 
-    private EmbedClient.BatchEmbedResponse requestBatchEmbeddingOrFail(String dogId, List<NoseImageUpload> uploads) {
+    private EmbedClient.BatchEmbedResponse requestBatchEmbeddingOrFail(
+            String dogId,
+            List<NoseImageUpload> uploads,
+            String requestId
+    ) {
         List<EmbedClient.BatchImageInput> inputs = uploads.stream()
                 .map(upload -> new EmbedClient.BatchImageInput(upload.bytes(), upload.filename(), upload.contentType()))
                 .toList();
 
+        long startedNanos = System.nanoTime();
+        if (demoTraceEnabled) {
+            log.info("{} flow=embed_batch step=start request_id={} dog_id={} image_count={}",
+                    DEMO_TRACE_PREFIX, safe(requestId), safe(dogId), uploads.size());
+        }
         try {
-            return embedClient.embedBatch(inputs);
+            EmbedClient.BatchEmbedResponse response = requestId == null || requestId.isBlank()
+                    ? embedClient.embedBatch(inputs)
+                    : embedClient.embedBatch(inputs, requestId);
+            if (demoTraceEnabled) {
+                log.info("{} flow=embed_batch step=done request_id={} dog_id={} image_count={} model={} dimension={} elapsed_ms={}",
+                        DEMO_TRACE_PREFIX,
+                        safe(requestId),
+                        safe(dogId),
+                        uploads.size(),
+                        safe(response.model()),
+                        response.dimension(),
+                        elapsedMillis(startedNanos));
+            }
+            return response;
         } catch (EmbedClient.EmbedClientException e) {
+            if (demoTraceEnabled) {
+                log.info("{} flow=dog_register step=failed request_id={} dog_id={} failure_reason=EMBED_SERVICE_UNAVAILABLE elapsed_ms={}",
+                        DEMO_TRACE_PREFIX, safe(requestId), safe(dogId), elapsedMillis(startedNanos));
+            }
             log.warn("[DogRegistration] embed batch 실패: dogId={}, upstreamStatus={}, message={}",
                     dogId, e.getUpstreamStatus(), e.getMessage());
             if (e.getUpstreamStatus() != null && e.getUpstreamStatus() == 400) {
@@ -671,8 +1273,18 @@ public class DogRegistrationService {
     private DogNoseAggregationResult searchExistingDogsOrFail(
             String dogId,
             List<List<Double>> referenceVectors,
-            List<Double> centroidVector
+            List<Double> centroidVector,
+            String requestId
     ) {
+        long startedNanos = System.nanoTime();
+        if (demoTraceEnabled) {
+            log.info("{} flow=dog_register step=qdrant_search_start request_id={} dog_id={} collection={} dimension={}",
+                    DEMO_TRACE_PREFIX,
+                    safe(requestId),
+                    safe(dogId),
+                    safe(qdrantCollection),
+                    expectedVectorDimension);
+        }
         try {
             List<QdrantDogVectorClient.QdrantVectorSearchResult> referenceResults = new ArrayList<>();
             for (List<Double> referenceVector : referenceVectors) {
@@ -686,18 +1298,76 @@ public class DogRegistrationService {
                     qdrantDogVectorClient.searchCentroidPoints(
                             centroidVector,
                             qdrantSearchTopK,
-                            qdrantSearchScoreThreshold
-                    );
-            return dogNoseCandidateAggregator.aggregate(
+                    qdrantSearchScoreThreshold
+            );
+            DogNoseAggregationResult result = dogNoseCandidateAggregator.aggregate(
                     referenceResults,
                     centroidResults,
                     noseRegistrationProperties.getReviewLowerBound()
             );
+            result = filterExistingDogCandidates(result, requestId, dogId);
+            DogNoseCandidateScore topCandidate = result.topCandidate();
+            Double topScore = topCandidate == null ? null : topCandidate.finalScore();
+            logDemoSummaryQdrant(topScore, noseRegistrationProperties.getDuplicateThreshold(), requestId);
+            if (demoTraceEnabled) {
+                log.info("{} flow=dog_register step=qdrant_search_done request_id={} dog_id={} candidate_count={} top_score={} top_score_percent={} duplicate_threshold={} duplicate={} elapsed_ms={}",
+                        DEMO_TRACE_PREFIX,
+                        safe(requestId),
+                        safe(dogId),
+                        result.candidates().size(),
+                        formatNullableScore(topScore),
+                        formatNullablePercent(topScore),
+                        formatScore(noseRegistrationProperties.getDuplicateThreshold()),
+                        topScore != null && topScore >= noseRegistrationProperties.getDuplicateThreshold(),
+                        elapsedMillis(startedNanos));
+            }
+            return result;
         } catch (QdrantDogVectorClient.QdrantClientException e) {
             log.warn("[DogRegistration] qdrant v2 search 실패: dogId={}, status={}, message={}",
                     dogId, e.getUpstreamStatus(), e.getMessage());
             throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "QDRANT_SEARCH_FAILED", "중복 검증 검색에 실패했습니다.");
         }
+    }
+
+    private DogNoseAggregationResult filterExistingDogCandidates(
+            DogNoseAggregationResult result,
+            String requestId,
+            String dogId
+    ) {
+        if (result == null) {
+            return new DogNoseAggregationResult(List.of(), null);
+        }
+        if (result.candidates().isEmpty()) {
+            return result;
+        }
+
+        List<DogNoseCandidateScore> existingCandidates = new ArrayList<>();
+        int staleCandidateCount = 0;
+        for (DogNoseCandidateScore candidate : result.candidates()) {
+            if (dogRepository.findById(candidate.dogId()).isPresent()) {
+                existingCandidates.add(candidate);
+                continue;
+            }
+            staleCandidateCount++;
+            log.warn("[DogRegistration] stale qdrant candidate ignored: requestId={}, dogId={}, candidateDogId={}",
+                    safe(requestId), safe(dogId), safe(candidate.dogId()));
+        }
+
+        if (staleCandidateCount > 0 && demoTraceEnabled) {
+            log.info("{} flow=dog_register step=qdrant_stale_candidates_ignored request_id={} dog_id={} stale_count={} remaining_count={}",
+                    DEMO_TRACE_PREFIX,
+                    safe(requestId),
+                    safe(dogId),
+                    staleCandidateCount,
+                    existingCandidates.size());
+        }
+        if (staleCandidateCount == 0) {
+            return result;
+        }
+        return new DogNoseAggregationResult(
+                List.copyOf(existingCandidates),
+                existingCandidates.isEmpty() ? null : existingCandidates.get(0)
+        );
     }
 
     private List<FileStorageService.StoredFile> storeNoseImages(String dogId, List<NoseImageUpload> uploads) {
@@ -713,6 +1383,36 @@ public class DogRegistrationService {
         return List.copyOf(storedFiles);
     }
 
+    private StoredRegistrationImages storeRegistrationImages(
+            String dogId,
+            MultipartFile profileImage,
+            List<NoseImageUpload> uploads
+    ) {
+        FileStorageService.StoredFile storedProfile = null;
+        List<FileStorageService.StoredFile> storedNoseFiles = new ArrayList<>();
+        try {
+            if (hasPresentFile(profileImage)) {
+                storedProfile = fileStorageService.storeProfileImage(dogId, profileImage);
+            }
+            for (NoseImageUpload upload : uploads) {
+                storedNoseFiles.add(fileStorageService.storeNoseImage(dogId, upload.file()));
+            }
+            return new StoredRegistrationImages(storedProfile, List.copyOf(storedNoseFiles));
+        } catch (RuntimeException e) {
+            fileStorageService.deleteStoredFileQuietly(storedProfile);
+            fileStorageService.deleteStoredFilesQuietly(storedNoseFiles);
+            throw e;
+        }
+    }
+
+    private void deleteStoredRegistrationImagesQuietly(StoredRegistrationImages storedImages) {
+        if (storedImages == null) {
+            return;
+        }
+        fileStorageService.deleteStoredFileQuietly(storedImages.profileImage());
+        fileStorageService.deleteStoredFilesQuietly(storedImages.noseImages());
+    }
+
     private PendingRegistration createPendingRows(
             Long userId,
             String dogId,
@@ -720,6 +1420,7 @@ public class DogRegistrationService {
             LocalDate birthDate,
             Integer age,
             Long price,
+            FileStorageService.StoredFile storedProfile,
             List<FileStorageService.StoredFile> storedFiles
     ) {
         Dog dog = new Dog();
@@ -735,6 +1436,10 @@ public class DogRegistrationService {
         dog.setPrice(price);
         dog.setStatus(DogStatus.PENDING);
         dogRepository.save(dog);
+
+        if (storedProfile != null) {
+            dogImageRepository.save(buildDogImage(dogId, DogImageType.PROFILE, storedProfile));
+        }
 
         List<StoredNoseImage> noseImages = new ArrayList<>();
         for (FileStorageService.StoredFile storedFile : storedFiles) {
@@ -756,7 +1461,7 @@ public class DogRegistrationService {
         verificationLog.setResult(VerificationResult.PENDING);
         verificationLogRepository.save(verificationLog);
 
-        return new PendingRegistration(dogId, List.copyOf(noseImages), verificationLog.getId());
+        return new PendingRegistration(dogId, storedProfile, List.copyOf(noseImages), verificationLog.getId());
     }
 
     private DogImage buildDogImage(String dogId, DogImageType imageType, FileStorageService.StoredFile storedFile) {
@@ -776,15 +1481,18 @@ public class DogRegistrationService {
             DogNoseDecision decision,
             ScoreBreakdownResponse scoreBreakdown,
             String scoreBreakdownJson,
-            RegistrationTiming timing
+            RegistrationTiming timing,
+            String requestId,
+            ProfileNoseMatchResult profileNoseMatchResult
     ) {
         transactionTemplate.executeWithoutResult(status ->
                 markAsDecision(pending, embedResponse, decision, scoreBreakdownJson)
         );
         timing.mark("db_mark_decision");
 
-        DogRegisterResponse response = buildResponse(pending, embedResponse, decision, scoreBreakdown, messageFor(decision.result()));
+        DogRegisterResponse response = buildResponse(pending, embedResponse, decision, scoreBreakdown, profileNoseMatchResult, messageFor(decision.result()));
         timing.mark("build_response");
+        logDemoFinalDecision(pending, embedResponse, decision, response, "skipped", requestId);
         return response;
     }
 
@@ -796,7 +1504,9 @@ public class DogRegistrationService {
             DogNoseDecision decision,
             ScoreBreakdownResponse scoreBreakdown,
             String scoreBreakdownJson,
-            RegistrationTiming timing
+            RegistrationTiming timing,
+            String requestId,
+            ProfileNoseMatchResult profileNoseMatchResult
     ) {
         List<PreparedQdrantPoint> preparedPoints = prepareQdrantPoints(pending, embedResponse, referenceVectors, centroidVector);
         List<QdrantDogVectorClient.QdrantPointUpsertRequest> upsertRequests = preparedPoints.stream()
@@ -851,8 +1561,9 @@ public class DogRegistrationService {
             throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "QDRANT_UPSERT_FAILED", "벡터 인덱스 동기화에 실패했습니다.");
         }
 
-        DogRegisterResponse response = buildResponse(pending, embedResponse, decision, scoreBreakdown, messageFor(decision.result()));
+        DogRegisterResponse response = buildResponse(pending, embedResponse, decision, scoreBreakdown, profileNoseMatchResult, messageFor(decision.result()));
         timing.mark("build_response");
+        logDemoFinalDecision(pending, embedResponse, decision, response, "done", requestId);
         return response;
     }
 
@@ -1110,6 +1821,7 @@ public class DogRegistrationService {
             EmbedClient.BatchEmbedResponse embedResponse,
             DogNoseDecision decision,
             ScoreBreakdownResponse scoreBreakdown,
+            ProfileNoseMatchResult profileNoseMatchResult,
             String message
     ) {
         StoredNoseImage representative = pending.representativeNoseImage();
@@ -1127,8 +1839,11 @@ public class DogRegistrationService {
                 embedResponse.model(),
                 embedResponse.dimension(),
                 decision.finalScore(),
+                profileNoseMatchResult == null ? null : profileNoseMatchResult.score(),
                 fileStorageService.toPublicUrl(representative.storedFile().relativePath()),
-                null,
+                pending.profileImage() == null
+                        ? null
+                        : fileStorageService.toPublicUrl(pending.profileImage().relativePath()),
                 buildTopMatch(decision.topCandidate()),
                 EMBEDDING_MODE_MULTI_REFERENCE,
                 pending.noseImages().size(),
@@ -1189,6 +1904,327 @@ public class DogRegistrationService {
             case REVIEW_REQUIRED -> "기존 등록견과 유사도가 애매해 검토가 필요합니다.";
             default -> "등록 상태를 확인할 수 없습니다.";
         };
+    }
+
+    private void logDemoRegisterRequest(
+            DogRegisterRequest request,
+            int noseCount,
+            boolean profileImagePresent,
+            boolean faceCheckImagePresent,
+            String requestId
+    ) {
+        if (!demoTraceEnabled) {
+            return;
+        }
+        log.info("{} flow=dog_register step=request_received request_id={} user_id={} dog_name={} breed={} gender={} nose_count={} profile_image_present={} face_check_image_present={}",
+                DEMO_TRACE_PREFIX,
+                safe(requestId),
+                request.userId(),
+                safe(request.name()),
+                safe(request.breed()),
+                safe(request.gender()),
+                noseCount,
+                profileImagePresent,
+                faceCheckImagePresent);
+    }
+
+    private void logDemoNoseReferenceTrace(
+            ReferenceQualityReport qualityReport,
+            List<List<Double>> referenceVectors,
+            List<Double> centroidVector,
+            String requestId
+    ) {
+        if (!demoTraceEnabled) {
+            return;
+        }
+        try {
+            List<Double> pairwiseValues = qualityReport.pairwiseScores().stream()
+                    .map(PairwiseScore::score)
+                    .toList();
+            DemoScoreStats pairwiseStats = demoScoreStats(pairwiseValues, qualityReport.threshold());
+            String decision = referenceQualityPassed(qualityReport) ? "PASS" : "FAIL";
+            log.info("{} flow=nose_reference step=pairwise_summary request_id={} pair_count={} min={} max={} mean={} median={} threshold={} pass={} fail={} decision={}",
+                    DEMO_TRACE_PREFIX,
+                    safe(requestId),
+                    qualityReport.pairwiseScores().size(),
+                    formatNullableScore(pairwiseStats.min()),
+                    formatNullableScore(pairwiseStats.max()),
+                    formatNullableScore(pairwiseStats.mean()),
+                    formatNullableScore(pairwiseStats.median()),
+                    formatScore(qualityReport.threshold()),
+                    pairwiseStats.passCount(),
+                    pairwiseStats.failCount(),
+                    decision);
+
+            if (demoTraceReferenceLogPairs) {
+                for (PairwiseScore pair : qualityReport.pairwiseScores()) {
+                    log.info("{} flow=nose_reference step=pair request_id={} pair={}-{} score={} percent={} passed={}",
+                            DEMO_TRACE_PREFIX,
+                            safe(requestId),
+                            pair.imageA(),
+                            pair.imageB(),
+                            formatScore(pair.score()),
+                            formatPercent(pair.score()),
+                            pair.score() >= qualityReport.threshold());
+                }
+            }
+
+            long outlierCount = qualityReport.perImageQualities().stream()
+                    .filter(quality -> quality.belowThresholdPairsCount() > 0)
+                    .count();
+            log.info("{} flow=nose_reference step=quality_check request_id={} passed={} verdict={} reason={} min_pairwise={} median_pairwise={} average_pairwise={} weakest_image_index={} weakest_image_average={} outlier_count={}",
+                    DEMO_TRACE_PREFIX,
+                    safe(requestId),
+                    referenceQualityPassed(qualityReport),
+                    qualityReport.verdict(),
+                    referenceQualityPassed(qualityReport) ? null : qualityReport.verdict(),
+                    formatScore(qualityReport.minPairwiseScore()),
+                    formatNullableScore(pairwiseStats.median()),
+                    formatScore(qualityReport.averagePairwiseScore()),
+                    qualityReport.weakestImageIndex(),
+                    formatNullableScore(qualityReport.weakestImageAverageScore()),
+                    outlierCount);
+
+            log.info("{} flow=nose_reference step=centroid_built request_id={} source_count={} dimension={} norm={} finite={}",
+                    DEMO_TRACE_PREFIX,
+                    safe(requestId),
+                    referenceVectors.size(),
+                    centroidVector == null ? null : centroidVector.size(),
+                    formatNullableScore(vectorNorm(centroidVector)),
+                    vectorFinite(centroidVector));
+
+            List<Double> centroidSimilarities = new ArrayList<>();
+            for (int i = 0; i < referenceVectors.size(); i++) {
+                double score = NoseVectorMath.dot(referenceVectors.get(i), centroidVector);
+                centroidSimilarities.add(score);
+                log.info("{} flow=nose_reference step=to_centroid request_id={} index={} score={} percent={} passed={}",
+                        DEMO_TRACE_PREFIX,
+                        safe(requestId),
+                        i + 1,
+                        formatScore(score),
+                        formatPercent(score),
+                        score >= qualityReport.threshold());
+            }
+            DemoScoreStats centroidStats = demoScoreStats(centroidSimilarities, qualityReport.threshold());
+            log.info("{} flow=nose_reference step=centroid_similarity_summary request_id={} min={} max={} mean={} median={} threshold={} pass={} fail={}",
+                    DEMO_TRACE_PREFIX,
+                    safe(requestId),
+                    formatNullableScore(centroidStats.min()),
+                    formatNullableScore(centroidStats.max()),
+                    formatNullableScore(centroidStats.mean()),
+                    formatNullableScore(centroidStats.median()),
+                    formatScore(qualityReport.threshold()),
+                    centroidStats.passCount(),
+                    centroidStats.failCount());
+        } catch (Exception e) {
+            log.info("{} flow=nose_reference step=trace_failed request_id={} failure_reason={} action=ignored_fail_open",
+                    DEMO_TRACE_PREFIX,
+                    safe(requestId),
+                    safe(e.getClass().getSimpleName()));
+        }
+    }
+
+    private void logDemoProfileCentroidCompare(
+            EmbedClient.ProfileNoseMatchBatchResponse response,
+            String requestId
+    ) {
+        Double score = response.profileVsCentroidScore();
+        if (score == null) {
+            return;
+        }
+        boolean passed = response.profileVsCentroidPassed() != null
+                ? response.profileVsCentroidPassed()
+                : score >= demoTraceProfileCompareThreshold;
+        log.info("{} flow=profile_nose_compare step=centroid_compare request_id={} profile_vs_centroid={} profile_vs_centroid_percent={} threshold={} passed={} centroid_dimension={}",
+                DEMO_TRACE_PREFIX,
+                safe(requestId),
+                formatScore(score),
+                formatPercent(score),
+                formatScore(demoTraceProfileCompareThreshold),
+                passed,
+                response.centroidDimension());
+    }
+
+    private void logDemoFinalDecision(
+            PendingRegistration pending,
+            EmbedClient.BatchEmbedResponse embedResponse,
+            DogNoseDecision decision,
+            DogRegisterResponse response,
+            String qdrantUpsert,
+            String requestId
+    ) {
+        DogNoseCandidateScore topCandidate = decision.topCandidate();
+        if (demoTraceEnabled) {
+            log.info("{} flow=dog_register step=decision request_id={} dog_id={} decision={} registration_allowed={} max_similarity={} max_similarity_percent={} candidate_dog_id={} qdrant_upsert={} dog_status={} verification_result={} model={} dimension={}",
+                    DEMO_TRACE_PREFIX,
+                    safe(requestId),
+                    safe(pending.dogId()),
+                    safe(response.status()),
+                    response.registrationAllowed(),
+                    formatScore(decision.finalScore()),
+                    formatPercent(decision.finalScore()),
+                    topCandidate == null ? null : safe(topCandidate.dogId()),
+                    qdrantUpsert,
+                    safe(response.status()),
+                    safe(response.verificationStatus()),
+                    safe(embedResponse.model()),
+                    embedResponse.dimension());
+        }
+        logDemoSummaryFinal(response.status(), qdrantUpsert, response.registrationAllowed(), requestId);
+    }
+
+    private void logDemoSummaryFaceCheck(EmbedClient.FaceNoseEmbeddingResponse response, String requestId) {
+        if (!demoSummaryEnabled || response == null) {
+            return;
+        }
+        EmbedClient.FaceCheckQualityResponse quality = response.quality();
+        boolean qualityPassed = quality == null || quality.passed();
+        boolean passed = response.extracted() && qualityPassed;
+        if (passed) {
+            logDemoSummary(
+                    "[1] face-check",
+                    "PASS",
+                    List.of(
+                            "confidence=" + summaryPercent(response.confidence()),
+                            "crop=" + summaryCrop(response.cropWidth(), response.cropHeight())
+                    ),
+                    requestId
+            );
+            return;
+        }
+
+        String reason = quality != null && quality.failureReason() != null
+                ? quality.failureReason()
+                : response.failureReason();
+        logDemoSummary(
+                "[1] face-check",
+                "FAIL",
+                List.of("reason=" + summaryText(reason)),
+                requestId
+        );
+    }
+
+    private void logDemoSummaryProfileCentroid(boolean passed, double score, String requestId) {
+        logDemoSummary(
+                "[2] face-vs-centroid",
+                passed ? "PASS" : "FAIL",
+                List.of(
+                        "similarity=" + summaryPercent(score),
+                        "threshold=" + summaryPercent(profileCentroidGateThreshold)
+                ),
+                requestId
+        );
+    }
+
+    private void logDemoSummaryNoseReference(
+            ReferenceQualityReport qualityReport,
+            List<List<Double>> referenceVectors,
+            List<Double> centroidVector,
+            String requestId
+    ) {
+        if (!demoSummaryEnabled || qualityReport == null) {
+            return;
+        }
+        List<Double> centroidSimilarities = new ArrayList<>();
+        if (referenceVectors != null && centroidVector != null) {
+            for (List<Double> referenceVector : referenceVectors) {
+                centroidSimilarities.add(NoseVectorMath.dot(referenceVector, centroidVector));
+            }
+        }
+        DemoScoreStats stats = demoScoreStats(centroidSimilarities, qualityReport.threshold());
+        String status = switch (qualityReport.verdict()) {
+            case ACCEPTED -> "PASS";
+            case WARN_ACCEPTED -> "WARN";
+            case RETAKE_ONE, RETAKE_ALL -> "FAIL";
+        };
+        int total = referenceVectors == null ? 0 : referenceVectors.size();
+        logDemoSummary(
+                "[3] nose-reference",
+                status,
+                List.of(
+                        "median=" + summaryPercent(stats.median()),
+                        "min=" + summaryPercent(stats.min()),
+                        "pass=" + stats.passCount() + "/" + total
+                ),
+                requestId
+        );
+    }
+
+    private void logDemoSummaryQdrant(Double topScore, double duplicateThreshold, String requestId) {
+        if (topScore == null) {
+            logDemoSummary(
+                    "[4] qdrant-duplicate",
+                    "PASS",
+                    List.of("top_match=none"),
+                    requestId
+            );
+            return;
+        }
+        boolean duplicate = topScore >= duplicateThreshold;
+        logDemoSummary(
+                "[4] qdrant-duplicate",
+                duplicate ? "DUPLICATE" : "PASS",
+                List.of(
+                        "top_similarity=" + summaryPercent(topScore),
+                        "threshold=" + summaryPercent(duplicateThreshold)
+                ),
+                requestId
+        );
+    }
+
+    private void logDemoSummaryFinal(
+            String status,
+            String qdrantUpsert,
+            boolean registrationAllowed,
+            String requestId
+    ) {
+        List<String> details = new ArrayList<>();
+        details.add("qdrant_upsert=" + summaryText(qdrantUpsert));
+        if (!registrationAllowed) {
+            details.add("registration_allowed=false");
+        }
+        logDemoSummary("[5] final", summaryText(status), details, requestId);
+    }
+
+    private void logDemoSummaryFinalRejected(String reason, String requestId) {
+        logDemoSummary(
+                "[5] final",
+                "REJECTED",
+                List.of(
+                        "reason=" + summaryText(reason),
+                        "qdrant=skipped",
+                        "db_write=skipped"
+                ),
+                requestId
+        );
+    }
+
+    private void logDemoSummary(
+            String stage,
+            String status,
+            List<String> details,
+            String requestId
+    ) {
+        if (!demoSummaryEnabled) {
+            return;
+        }
+        StringBuilder builder = new StringBuilder();
+        builder.append(DEMO_SUMMARY_PREFIX)
+                .append(' ')
+                .append("%-22s".formatted(stage))
+                .append(' ')
+                .append(summaryText(status));
+        if (details != null) {
+            for (String detail : details) {
+                if (detail != null && !detail.isBlank()) {
+                    builder.append(" | ").append(safe(detail));
+                }
+            }
+        }
+        if (demoSummaryIncludeRequestId && requestId != null && !requestId.isBlank()) {
+            builder.append(" | request_id=").append(safe(requestId));
+        }
+        log.info(builder.toString());
     }
 
     private Dog getDogOrThrow(String dogId) {
@@ -1299,6 +2335,48 @@ public class DogRegistrationService {
         return (sorted.get(middle - 1) + sorted.get(middle)) / 2.0;
     }
 
+    private DemoScoreStats demoScoreStats(List<Double> values, double threshold) {
+        List<Double> presentValues = values == null
+                ? List.of()
+                : values.stream()
+                .filter(value -> value != null && Double.isFinite(value))
+                .toList();
+        if (presentValues.isEmpty()) {
+            return new DemoScoreStats(null, null, null, null, 0, 0);
+        }
+        Double min = presentValues.stream().min(Comparator.naturalOrder()).orElse(null);
+        Double max = presentValues.stream().max(Comparator.naturalOrder()).orElse(null);
+        Double mean = presentValues.stream().mapToDouble(Double::doubleValue).average().orElse(0.0);
+        Double median = median(presentValues);
+        int passCount = (int) presentValues.stream().filter(value -> value >= threshold).count();
+        return new DemoScoreStats(min, max, mean, median, passCount, presentValues.size() - passCount);
+    }
+
+    private static boolean referenceQualityPassed(ReferenceQualityReport report) {
+        return report.verdict() == ReferenceQualityVerdict.ACCEPTED
+                || report.verdict() == ReferenceQualityVerdict.WARN_ACCEPTED;
+    }
+
+    private static Double vectorNorm(List<Double> vector) {
+        if (vector == null || vector.isEmpty()) {
+            return null;
+        }
+        double sum = 0.0;
+        for (Double value : vector) {
+            if (value == null || !Double.isFinite(value)) {
+                return null;
+            }
+            sum += value * value;
+        }
+        return Math.sqrt(sum);
+    }
+
+    private static boolean vectorFinite(List<Double> vector) {
+        return vector != null
+                && !vector.isEmpty()
+                && vector.stream().allMatch(value -> value != null && Double.isFinite(value));
+    }
+
     private static String valueOrNull(Object value) {
         return value == null ? null : String.valueOf(value);
     }
@@ -1315,8 +2393,79 @@ public class DogRegistrationService {
         return value instanceof Boolean bool && bool;
     }
 
+    private static boolean hasPresentFile(MultipartFile file) {
+        return file != null && !file.isEmpty();
+    }
+
+    private String requestIdForTrace(String requestId) {
+        if (requestId != null && !requestId.isBlank()) {
+            return requestId.trim();
+        }
+        return demoTraceEnabled || demoSummaryEnabled ? UUID.randomUUID().toString() : null;
+    }
+
     private String filenameOrDefault(String filename, int referenceIndex) {
         return filename == null || filename.isBlank() ? "nose_image_%d.jpg".formatted(referenceIndex) : filename;
+    }
+
+    private static String contentTypeOrDefault(MultipartFile file) {
+        String contentType = file.getContentType();
+        return contentType == null || contentType.isBlank() ? "image/png" : contentType;
+    }
+
+    private static long elapsedMillis(long startedNanos) {
+        return Math.round((System.nanoTime() - startedNanos) / 1_000_000.0);
+    }
+
+    private static String safe(String value) {
+        if (value == null) {
+            return null;
+        }
+        String sanitized = value
+                .replace('\n', '_')
+                .replace('\r', '_')
+                .replace('\t', '_')
+                .trim();
+        if (sanitized.length() > 120) {
+            return sanitized.substring(0, 120);
+        }
+        return sanitized;
+    }
+
+    private static String formatScore(double score) {
+        return "%.4f".formatted(score);
+    }
+
+    private static String formatNullableScore(Double score) {
+        return score == null ? "null" : formatScore(score);
+    }
+
+    private static String formatPercent(double score) {
+        return "%.1f".formatted(score * 100.0);
+    }
+
+    private static String formatNullablePercent(Double score) {
+        return score == null ? "null" : formatPercent(score);
+    }
+
+    private static String summaryText(String value) {
+        String safeValue = safe(value);
+        return safeValue == null || safeValue.isBlank() ? "none" : safeValue;
+    }
+
+    private static String summaryPercent(double score) {
+        return formatPercent(score) + "%";
+    }
+
+    private static String summaryPercent(Double score) {
+        return score == null ? "none" : summaryPercent(score.doubleValue());
+    }
+
+    private static String summaryCrop(Integer width, Integer height) {
+        if (width == null || height == null) {
+            return "none";
+        }
+        return "%dx%d".formatted(width, height);
     }
 
     private BigDecimal toScore(double score) {
@@ -1393,14 +2542,27 @@ public class DogRegistrationService {
     ) {
     }
 
+    private record StoredRegistrationImages(
+            FileStorageService.StoredFile profileImage,
+            List<FileStorageService.StoredFile> noseImages
+    ) {
+    }
+
     private record PendingRegistration(
             String dogId,
+            FileStorageService.StoredFile profileImage,
             List<StoredNoseImage> noseImages,
             Long verificationLogId
     ) {
 
         private StoredNoseImage representativeNoseImage() {
             return noseImages.get(0);
+        }
+    }
+
+    private record ProfileNoseMatchResult(Double score) {
+        static ProfileNoseMatchResult empty() {
+            return new ProfileNoseMatchResult(null);
         }
     }
 
@@ -1426,6 +2588,28 @@ public class DogRegistrationService {
             String model,
             Integer dimension,
             String failureReason
+    ) {
+    }
+
+    private record DemoProfileCompareStats(
+            int total,
+            int passCount,
+            Double minScore,
+            Double maxScore,
+            Double meanScore,
+            Double medianScore,
+            List<ProfileMatchScoreResponse> scores,
+            boolean passed
+    ) {
+    }
+
+    private record DemoScoreStats(
+            Double min,
+            Double max,
+            Double mean,
+            Double median,
+            int passCount,
+            int failCount
     ) {
     }
 }

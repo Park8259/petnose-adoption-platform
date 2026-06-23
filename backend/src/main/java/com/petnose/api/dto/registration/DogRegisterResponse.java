@@ -23,6 +23,8 @@ public record DogRegisterResponse(
         Integer dimension,
         @JsonProperty("max_similarity_score")
         Double maxSimilarityScore,
+        @JsonProperty("profile_nose_match_score")
+        Double profileNoseMatchScore,
         @JsonProperty("nose_image_url")
         String noseImageUrl,
         @JsonProperty("profile_image_url")

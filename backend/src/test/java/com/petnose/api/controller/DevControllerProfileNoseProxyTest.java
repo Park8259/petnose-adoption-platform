@@ -1,6 +1,8 @@
 package com.petnose.api.controller;
 
 import com.petnose.api.client.EmbedClient;
+import com.petnose.api.dto.registration.ProfileNosePreviewApiResponse;
+import com.petnose.api.service.ProfileNosePreviewService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
@@ -16,6 +18,7 @@ import java.util.Map;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
@@ -40,15 +43,21 @@ class DevControllerProfileNoseProxyTest {
     @MockBean
     private EmbedClient embedClient;
 
+    @MockBean
+    private ProfileNosePreviewService profileNosePreviewService;
+
     @Test
     void profileNosePreviewProxiesToPythonEmbedServiceOnly() throws Exception {
-        Map<String, Object> upstreamResponse = new LinkedHashMap<>();
-        upstreamResponse.put("extracted", true);
-        upstreamResponse.put("crop_width", 224);
-        upstreamResponse.put("crop_height", 224);
-        upstreamResponse.put("failure_reason", null);
-        when(embedClient.extractProfileNose(any(byte[].class), eq("profile.jpg"), eq(MediaType.IMAGE_JPEG_VALUE)))
-                .thenReturn(upstreamResponse);
+        when(profileNosePreviewService.preview(any(), isNull()))
+                .thenReturn(new ProfileNosePreviewApiResponse(
+                        true,
+                        0.95484,
+                        224,
+                        224,
+                        null,
+                        "정면 사진에서 비문 영역을 확인했습니다.",
+                        null
+                ));
 
         MockMultipartFile profileImage = new MockMultipartFile(
                 "profile_image",
@@ -60,10 +69,11 @@ class DevControllerProfileNoseProxyTest {
         mockMvc.perform(multipart("/api/dev/profile-nose-preview").file(profileImage))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.extracted").value(true))
+                .andExpect(jsonPath("$.confidence").value(0.95484))
                 .andExpect(jsonPath("$.crop_width").value(224))
                 .andExpect(jsonPath("$.crop_height").value(224));
 
-        verify(embedClient).extractProfileNose(any(byte[].class), eq("profile.jpg"), eq(MediaType.IMAGE_JPEG_VALUE));
+        verify(profileNosePreviewService).preview(any(), isNull());
         verifyNoMoreInteractions(embedClient);
     }
 

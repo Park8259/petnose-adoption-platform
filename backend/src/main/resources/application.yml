@@ -95,6 +95,8 @@ nose:
 
 petnose:
   registration-timing-log-enabled: ${PETNOSE_REGISTRATION_TIMING_LOG_ENABLED:true}
+  profile-nose-preview:
+    enabled: ${PROFILE_NOSE_PREVIEW_ENABLED:${DOG_NOSE_EXTRACT_ENABLED:false}}
   profile-nose-match:
     threshold: ${PROFILE_NOSE_MATCH_THRESHOLD:0.65}
     min-pass-count: ${PROFILE_NOSE_MATCH_MIN_PASS_COUNT:4}
@@ -103,6 +105,28 @@ petnose:
     match-threshold: ${PETNOSE_HANDOVER_VERIFICATION_MATCH_THRESHOLD:0.65}
     ambiguous-threshold: ${PETNOSE_HANDOVER_VERIFICATION_AMBIGUOUS_THRESHOLD:0.65}
     top-k: ${PETNOSE_HANDOVER_VERIFICATION_TOP_K:5}
+
+demo-trace:
+  enabled: ${DEMO_TRACE_ENABLED:false}
+  reference-log-pairs: ${DEMO_TRACE_REFERENCE_LOG_PAIRS:false}
+  health-access-log: ${DEMO_TRACE_HEALTH_ACCESS_LOG:false}
+  profile-compare:
+    enabled: ${DEMO_TRACE_PROFILE_COMPARE_ENABLED:false}
+    threshold: ${DEMO_TRACE_PROFILE_COMPARE_THRESHOLD:0.65}
+    min-pass-count: ${DEMO_TRACE_PROFILE_COMPARE_MIN_PASS_COUNT:4}
+    log-per-image: ${DEMO_TRACE_PROFILE_COMPARE_LOG_PER_IMAGE:true}
+    fail-open: ${DEMO_TRACE_PROFILE_COMPARE_FAIL_OPEN:true}
+
+demo-summary:
+  enabled: ${DEMO_SUMMARY_ENABLED:false}
+  include-request-id: ${DEMO_SUMMARY_INCLUDE_REQUEST_ID:false}
+  include-timing: ${DEMO_SUMMARY_INCLUDE_TIMING:false}
+
+profile-centroid-gate:
+  enabled: ${PROFILE_CENTROID_GATE_ENABLED:false}
+  threshold: ${PROFILE_CENTROID_GATE_THRESHOLD:0.65}
+  require-face-image: ${PROFILE_CENTROID_GATE_REQUIRE_FACE_IMAGE:false}
+  fail-open: ${PROFILE_CENTROID_GATE_FAIL_OPEN:false}
 
 auth:
   jwt:

@@ -1,6 +1,8 @@
 package com.petnose.api.controller;
 
 import com.petnose.api.client.EmbedClient;
+import com.petnose.api.dto.registration.ProfileNosePreviewApiResponse;
+import com.petnose.api.service.ProfileNosePreviewService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -15,6 +17,7 @@ import java.time.Instant;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * [DEV ONLY] 개발 및 연결 검증용 엔드포인트.
@@ -32,8 +35,13 @@ public class DevController {
     private static final byte[] DEV_SAMPLE_PNG = Base64.getDecoder().decode(
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7+9kAAAAAASUVORK5CYII="
     );
+    private static final String DEMO_TRACE_PREFIX = "[DEMO_TRACE]";
+    private static final String DEMO_SUMMARY_PREFIX = "[DEMO_SUMMARY]";
+    private static final String REQUEST_ID_HEADER = "X-Request-Id";
+    private static final String FACE_CHECK_PURPOSE = "face_check";
 
     private final EmbedClient embedClient;
+    private final ProfileNosePreviewService profileNosePreviewService;
 
     @Value("${spring.application.name:petnose-api}")
     private String appName;
@@ -52,6 +60,15 @@ public class DevController {
 
     @Value("${qdrant.distance:Cosine}")
     private String qdrantDistance;
+
+    @Value("${demo-trace.enabled:false}")
+    private boolean demoTraceEnabled;
+
+    @Value("${demo-summary.enabled:false}")
+    private boolean demoSummaryEnabled;
+
+    @Value("${demo-summary.include-request-id:false}")
+    private boolean demoSummaryIncludeRequestId;
 
     /** Spring Boot 기동 확인용 ping */
     @GetMapping("/ping")
@@ -145,29 +162,12 @@ public class DevController {
      * DB/Qdrant에는 아무 것도 기록하지 않습니다.
      */
     @PostMapping("/profile-nose-preview")
-    public ResponseEntity<Map<String, Object>> profileNosePreview(
-            @RequestParam("profile_image") MultipartFile profileImage
+    public ResponseEntity<ProfileNosePreviewApiResponse> profileNosePreview(
+            @RequestHeader(value = REQUEST_ID_HEADER, required = false) String requestId,
+            @RequestParam(value = "profile_image", required = false) MultipartFile profileImage
     ) {
-        try {
-            if (profileImage == null || profileImage.isEmpty()) {
-                return invalidInput("profile_image is required.");
-            }
-
-            Map<String, Object> response = embedClient.extractProfileNose(
-                    profileImage.getBytes(),
-                    filenameOrDefault(profileImage, "profile-image.png"),
-                    contentTypeOrDefault(profileImage)
-            );
-            return ResponseEntity.ok(response);
-        } catch (EmbedClient.EmbedClientException e) {
-            return upstreamFailure("profile-nose-preview", e);
-        } catch (IOException e) {
-            log.error("[DevController] profile-nose-preview 입력 처리 실패: {}", e.getMessage(), e);
-            return invalidInput(e.getMessage());
-        } catch (Exception e) {
-            log.error("[DevController] profile-nose-preview 예외: {}", e.getMessage(), e);
-            return internalError(e.getMessage());
-        }
+        String traceRequestId = demoTraceEnabled || demoSummaryEnabled ? requestIdOrNew(requestId) : requestId;
+        return ResponseEntity.ok(profileNosePreviewService.preview(profileImage, traceRequestId));
     }
 
     /**
@@ -227,6 +227,126 @@ public class DevController {
     private static String contentTypeOrDefault(MultipartFile file) {
         String contentType = file.getContentType();
         return contentType == null || contentType.isBlank() ? "image/png" : contentType;
+    }
+
+    private static String requestIdOrNew(String requestId) {
+        return requestId == null || requestId.isBlank()
+                ? UUID.randomUUID().toString()
+                : requestId.trim();
+    }
+
+    private static long elapsedMillis(long startedNanos) {
+        return Math.round((System.nanoTime() - startedNanos) / 1_000_000.0);
+    }
+
+    private static String safe(String value) {
+        if (value == null) {
+            return null;
+        }
+        String sanitized = value
+                .replace('\n', '_')
+                .replace('\r', '_')
+                .replace('\t', '_')
+                .trim();
+        return sanitized.length() > 120 ? sanitized.substring(0, 120) : sanitized;
+    }
+
+    private static String valueOrNull(Object value) {
+        return value == null ? null : String.valueOf(value);
+    }
+
+    private static String formatNullableScore(Object value) {
+        if (value instanceof Number number) {
+            return "%.4f".formatted(number.doubleValue());
+        }
+        return "null";
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> mapOrNull(Object value) {
+        return value instanceof Map<?, ?> map ? (Map<String, Object>) map : null;
+    }
+
+    private void logDemoSummaryPreview(Map<String, Object> response, String requestId) {
+        if (!demoSummaryEnabled || response == null) {
+            return;
+        }
+        boolean extracted = booleanValue(response.get("extracted"));
+        if (extracted) {
+            logDemoSummary(
+                    "[preview] face-check",
+                    "PASS",
+                    "confidence=" + summaryPercent(numberAsDouble(response.get("confidence"))),
+                    "crop=" + summaryCrop(numberAsInteger(response.get("crop_width")), numberAsInteger(response.get("crop_height"))),
+                    requestId
+            );
+            return;
+        }
+        logDemoSummary(
+                "[preview] face-check",
+                "FAIL",
+                "reason=" + summaryText(valueOrNull(response.get("failure_reason"))),
+                null,
+                requestId
+        );
+    }
+
+    private void logDemoSummary(
+            String stage,
+            String status,
+            String detailA,
+            String detailB,
+            String requestId
+    ) {
+        if (!demoSummaryEnabled) {
+            return;
+        }
+        StringBuilder builder = new StringBuilder();
+        builder.append(DEMO_SUMMARY_PREFIX)
+                .append(' ')
+                .append("%-22s".formatted(stage))
+                .append(' ')
+                .append(summaryText(status));
+        appendSummaryDetail(builder, detailA);
+        appendSummaryDetail(builder, detailB);
+        if (demoSummaryIncludeRequestId && requestId != null && !requestId.isBlank()) {
+            builder.append(" | request_id=").append(safe(requestId));
+        }
+        log.info(builder.toString());
+    }
+
+    private static void appendSummaryDetail(StringBuilder builder, String detail) {
+        if (detail != null && !detail.isBlank()) {
+            builder.append(" | ").append(safe(detail));
+        }
+    }
+
+    private static boolean booleanValue(Object value) {
+        return value instanceof Boolean bool && bool;
+    }
+
+    private static Double numberAsDouble(Object value) {
+        return value instanceof Number number ? number.doubleValue() : null;
+    }
+
+    private static Integer numberAsInteger(Object value) {
+        return value instanceof Number number ? number.intValue() : null;
+    }
+
+    private static String summaryText(String value) {
+        String safeValue = safe(value);
+        return safeValue == null || safeValue.isBlank() ? "none" : safeValue;
+    }
+
+    private static String summaryPercent(Double score) {
+        return score == null ? "none" : "%.1f%%".formatted(score * 100.0);
+    }
+
+    private static String summaryCrop(Integer width, Integer height) {
+        if (width == null || height == null) {
+            return "none";
+        }
+        return "%dx%d".formatted(width, height);
     }
 
     private ResponseEntity<Map<String, Object>> upstreamFailure(String operation, EmbedClient.EmbedClientException e) {
