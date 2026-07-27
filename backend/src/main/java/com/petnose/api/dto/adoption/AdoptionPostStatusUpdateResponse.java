@@ -21,8 +21,18 @@ public record AdoptionPostStatusUpdateResponse(
         LocalDateTime closedAt,
         @JsonProperty("adopter_user_id")
         Long adopterUserId,
+        @JsonProperty("reserved_by_user_id")
+        Long reservedByUserId,
+        @JsonProperty("reserved_at")
+        LocalDateTime reservedAt,
         @JsonProperty("adopted_at")
         LocalDateTime adoptedAt,
+        @JsonProperty("verification_step1_completed")
+        boolean verificationStep1Completed,
+        @JsonProperty("verification_step2_completed")
+        boolean verificationStep2Completed,
+        @JsonProperty("verification_step3_completed")
+        boolean verificationStep3Completed,
         @JsonProperty("created_at")
         LocalDateTime createdAt,
         @JsonProperty("updated_at")

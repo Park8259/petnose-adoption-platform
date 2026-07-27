@@ -27,6 +27,12 @@ public class PasswordResetRequestResponse {
         return new PasswordResetRequestResponse(true, fields);
     }
 
+    public static PasswordResetRequestResponse exposedTemporaryPassword(String temporaryPassword) {
+        Map<String, Object> fields = new LinkedHashMap<>();
+        fields.put("temporary_password", temporaryPassword);
+        return new PasswordResetRequestResponse(true, fields);
+    }
+
     @JsonProperty("requested")
     public boolean requested() {
         return requested;

@@ -9,6 +9,8 @@ import com.petnose.api.dto.adoption.AdoptionPostListResponse;
 import com.petnose.api.dto.adoption.AdoptionPostOwnerListResponse;
 import com.petnose.api.dto.adoption.AdoptionPostStatusUpdateRequest;
 import com.petnose.api.dto.adoption.AdoptionPostStatusUpdateResponse;
+import com.petnose.api.dto.adoption.AdoptionVerificationStatusResponse;
+import com.petnose.api.dto.adoption.AdoptionVerificationStatusUpdateRequest;
 import com.petnose.api.service.AdoptionPostService;
 import com.petnose.api.service.AuthService;
 import lombok.RequiredArgsConstructor;
@@ -117,6 +119,25 @@ public class AdoptionPostController {
     ) {
         Long currentUserId = authService.currentActiveUserId(authorizationHeader);
         return adoptionPostService.updateStatus(currentUserId, postId, request);
+    }
+
+    @GetMapping("/{post_id}/verification-status")
+    public AdoptionVerificationStatusResponse getVerificationStatus(
+            @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorizationHeader,
+            @PathVariable("post_id") Long postId
+    ) {
+        Long currentUserId = authService.currentActiveUserId(authorizationHeader);
+        return adoptionPostService.getVerificationStatus(currentUserId, postId);
+    }
+
+    @PatchMapping("/{post_id}/verification-status")
+    public AdoptionVerificationStatusResponse updateVerificationStatus(
+            @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorizationHeader,
+            @PathVariable("post_id") Long postId,
+            @RequestBody AdoptionVerificationStatusUpdateRequest request
+    ) {
+        Long currentUserId = authService.currentActiveUserId(authorizationHeader);
+        return adoptionPostService.updateVerificationStatus(currentUserId, postId, request);
     }
 
     private Long resolveOptionalCurrentUserId(String authorizationHeader) {

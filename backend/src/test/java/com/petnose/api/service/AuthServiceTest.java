@@ -2,7 +2,6 @@ package com.petnose.api.service;
 
 import com.petnose.api.config.PasswordResetEmailProperties;
 import com.petnose.api.domain.entity.User;
-import com.petnose.api.domain.entity.PasswordResetToken;
 import com.petnose.api.domain.enums.UserRole;
 import com.petnose.api.dto.auth.PasswordResetRequest;
 import com.petnose.api.dto.auth.RegisterRequest;
@@ -21,10 +20,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.time.Instant;
-import java.util.HexFormat;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -103,14 +99,12 @@ class AuthServiceTest {
     }
 
     @Test
-    void requestPasswordResetSchedulesEmailOnlyAfterCommitForActiveUser() throws Exception {
-        ReflectionTestUtils.setField(authService, "passwordResetTokenTtlSeconds", 1800L);
+    void requestPasswordResetChangesToTemporaryPasswordAndSchedulesEmailOnlyAfterCommitForActiveUser() {
         User user = user(10L);
         user.setEmail("reset@example.com");
         when(userRepository.findByEmail("reset@example.com")).thenReturn(Optional.of(user));
         when(passwordResetEmailProperties.isEmailEnabled()).thenReturn(true);
-        when(passwordResetTokenRepository.save(any(PasswordResetToken.class)))
-                .thenAnswer(invocation -> invocation.getArgument(0));
+        when(passwordEncoder.encode(anyString())).thenReturn("encoded-temporary-password");
 
         TransactionSynchronizationManager.initSynchronization();
         try {
@@ -119,7 +113,8 @@ class AuthServiceTest {
             assertThat(response.requested()).isTrue();
             assertThat(response.exposedFields()).isEmpty();
             verify(passwordResetEmailService, never())
-                    .sendPasswordResetEmailAsync(anyString(), anyString(), any(Instant.class));
+                    .sendTemporaryPasswordEmailAsync(anyString(), anyString());
+            assertThat(user.getPasswordHash()).isEqualTo("encoded-temporary-password");
 
             for (TransactionSynchronization synchronization : TransactionSynchronizationManager.getSynchronizations()) {
                 synchronization.afterCommit();
@@ -128,20 +123,15 @@ class AuthServiceTest {
             TransactionSynchronizationManager.clearSynchronization();
         }
 
-        ArgumentCaptor<PasswordResetToken> tokenCaptor = ArgumentCaptor.forClass(PasswordResetToken.class);
-        verify(passwordResetTokenRepository).save(tokenCaptor.capture());
-        PasswordResetToken storedToken = tokenCaptor.getValue();
-
-        ArgumentCaptor<String> resetTokenCaptor = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<Instant> expiresAtCaptor = ArgumentCaptor.forClass(Instant.class);
-        verify(passwordResetEmailService).sendPasswordResetEmailAsync(
+        ArgumentCaptor<String> temporaryPasswordCaptor = ArgumentCaptor.forClass(String.class);
+        verify(passwordResetTokenRepository).markUnusedTokensUsedByUserId(eq(user.getId()), any(Instant.class));
+        verify(passwordResetTokenRepository, never()).save(any());
+        verify(passwordEncoder).encode(temporaryPasswordCaptor.capture());
+        verify(passwordResetEmailService).sendTemporaryPasswordEmailAsync(
                 eq("reset@example.com"),
-                resetTokenCaptor.capture(),
-                expiresAtCaptor.capture()
+                eq(temporaryPasswordCaptor.getValue())
         );
-        assertThat(storedToken.getTokenHash()).isEqualTo(sha256Hex(resetTokenCaptor.getValue()));
-        assertThat(storedToken.getTokenHash()).isNotEqualTo(resetTokenCaptor.getValue());
-        assertThat(expiresAtCaptor.getValue()).isEqualTo(storedToken.getExpiresAt());
+        assertThat(temporaryPasswordCaptor.getValue()).hasSize(12);
     }
 
     @Test
@@ -202,10 +192,5 @@ class AuthServiceTest {
                 "avatar.jpg",
                 new byte[]{1, 2, 3}
         );
-    }
-
-    private String sha256Hex(String value) throws Exception {
-        MessageDigest digest = MessageDigest.getInstance("SHA-256");
-        return HexFormat.of().formatHex(digest.digest(value.getBytes(StandardCharsets.UTF_8)));
     }
 }

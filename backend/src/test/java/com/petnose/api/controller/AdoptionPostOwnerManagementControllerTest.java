@@ -93,7 +93,12 @@ class AdoptionPostOwnerManagementControllerTest {
             "published_at",
             "closed_at",
             "adopter_user_id",
+            "reserved_by_user_id",
+            "reserved_at",
             "adopted_at",
+            "verification_step1_completed",
+            "verification_step2_completed",
+            "verification_step3_completed",
             "created_at",
             "updated_at"
     );

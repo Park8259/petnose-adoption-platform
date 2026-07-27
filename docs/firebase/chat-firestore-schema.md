@@ -42,8 +42,11 @@ These room state fields are updated during room creation, successful message sen
 - `room_id`
 - `sender_user_id`
 - `sender_uid`
-- `type`: `TEXT`
+- `type`: `TEXT` or `IMAGE`
 - `text`
+- `image_path`: server-stored relative upload path for `IMAGE` messages
+- `image_url`: public file URL for `IMAGE` messages
+- `image_mime_type`, `image_file_size`, `image_sha256`: server-recorded image metadata for `IMAGE` messages
 - `client_message_id`
 - `created_at`
 
@@ -80,4 +83,8 @@ All chat APIs require a Spring Bearer token. If Firebase is disabled, authentica
 - `POST /api/chat/rooms`: creates or returns a room for an `OPEN` post
 - `GET /api/chat/rooms`: lists rooms where the current user is a participant
 - `POST /api/chat/rooms/{roomId}/messages`: writes a message to Firestore through Spring Boot after checking MySQL `adoption_posts.status`
+- `POST /api/chat/rooms/{roomId}/messages/images`: stores an image through Spring Boot and writes an `IMAGE` message to Firestore
 - `PATCH /api/chat/rooms/{roomId}/read`: updates `last_read_at` for the current user
+- `POST /api/chat/rooms/{roomId}/reservation`: lets the room inquirer reserve the adoption post
+- `DELETE /api/chat/rooms/{roomId}/reservation`: lets the same inquirer cancel the reservation
+- `POST /api/chat/rooms/{roomId}/completion`: lets the room inquirer complete the adoption as the adopter
