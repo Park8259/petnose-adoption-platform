@@ -205,9 +205,11 @@ public class AuthService {
                 || exposePasswordResetTokenInResponse;
 
         if (user != null && user.isActive() && canDeliverTemporaryPassword) {
-            passwordResetTokenRepository.markUnusedTokensUsedByUserId(user.getId(), now);
             temporaryPassword = generateTemporaryPassword();
             user.setPasswordHash(passwordEncoder.encode(temporaryPassword));
+            // markUnusedTokensUsedByUserId has flushAutomatically=true, so the hash
+            // update above is flushed to DB before the bulk update clears the context.
+            passwordResetTokenRepository.markUnusedTokensUsedByUserId(user.getId(), now);
             scheduleTemporaryPasswordEmailAfterCommit(user, temporaryPassword);
         }
 
