@@ -95,7 +95,7 @@ public class FirebaseChatService {
         }
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public FcmTokenUpdateResponse updateFcmToken(Long userId, String fcmToken, FcmPlatform platform) {
         Firestore db = requireFirestore();
         requireActiveUser(userId);
@@ -219,7 +219,7 @@ public class FirebaseChatService {
         return new ChatRoomListResponse(allItems.subList(fromIndex, toIndex), safePage, safeSize, allItems.size());
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public ChatMessageResponse sendMessage(String roomId, Long senderUserId, String text, String clientMessageId) {
         Firestore db = requireFirestore();
         requireActiveUser(senderUserId);
@@ -292,7 +292,7 @@ public class FirebaseChatService {
         return new ChatMessageResponse(messageRef.getId(), roomId, senderUid, "TEXT", trimmedText, null, null, null, null, responseCreatedAt.toString());
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public ChatMessageResponse sendImageMessage(String roomId, Long senderUserId, MultipartFile image, String clientMessageId) {
         Firestore db = requireFirestore();
         requireActiveUser(senderUserId);
@@ -455,7 +455,7 @@ public class FirebaseChatService {
         return toStatusUpdateResponse(post);
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public ChatReadResponse markAsRead(String roomId, Long userId) {
         Firestore db = requireFirestore();
         requireActiveUser(userId);

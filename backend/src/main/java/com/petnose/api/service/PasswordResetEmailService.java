@@ -83,7 +83,7 @@ public class PasswordResetEmailService {
             if (StringUtils.hasText(properties.getMailFrom())) {
                 message.setFrom(properties.getMailFrom());
             }
-            message.setSubject(defaultIfBlank(properties.getMailSubject(), "[PetNose] 임시 비밀번호 안내"));
+            message.setSubject("[PetNose] 임시 비밀번호 안내");
             message.setText(temporaryPasswordEmailText(temporaryPassword));
 
             mailSender.send(message);

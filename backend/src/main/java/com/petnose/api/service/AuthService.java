@@ -38,7 +38,6 @@ import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
@@ -57,7 +56,6 @@ public class AuthService {
     private static final int MAX_PROFILE_REGION_LENGTH = 100;
     private static final int MIN_PASSWORD_LENGTH = 8;
     private static final int MAX_PASSWORD_LENGTH = 255;
-    private static final int PASSWORD_RESET_TOKEN_BYTES = 32;
     private static final int TEMPORARY_PASSWORD_LENGTH = 12;
     private static final String SHA_256 = "SHA-256";
     private static final String TEMPORARY_PASSWORD_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%";
@@ -460,12 +458,6 @@ public class AuthService {
 
     private ApiException invalidResetToken() {
         return new ApiException(HttpStatus.BAD_REQUEST, "INVALID_RESET_TOKEN", "유효하지 않은 비밀번호 재설정 token입니다.");
-    }
-
-    private String generatePasswordResetToken() {
-        byte[] bytes = new byte[PASSWORD_RESET_TOKEN_BYTES];
-        secureRandom.nextBytes(bytes);
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }
 
     private String generateTemporaryPassword() {
