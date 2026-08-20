@@ -19,14 +19,11 @@ import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.HexFormat;
 import java.util.Map;
-import java.util.Set;
-import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.not;
@@ -61,28 +58,26 @@ class PasswordResetApiIntegrationTest {
     private EntityManager entityManager;
 
     @Test
-    void passwordResetRequestForExistingEmailExposesDevTemporaryPasswordAndDoesNotStoreRawPassword() throws Exception {
-        saveUser("reset-existing@example.com", "password123", true);
+    void passwordResetRequestForExistingEmailExposesDevResetTokenAndSavesToken() throws Exception {
+        User saved = saveUser("reset-existing@example.com", "password123", true);
+        String originalHash = saved.getPasswordHash();
 
         MvcResult result = requestPasswordReset("  Reset-Existing@Example.COM  ")
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.requested").value(true))
-                .andExpect(jsonPath("$.temporary_password").value(not(isEmptyOrNullString())))
-                .andExpect(jsonPath("$.reset_token").doesNotExist())
-                .andExpect(jsonPath("$.expires_in").doesNotExist())
+                .andExpect(jsonPath("$.reset_token").value(not(isEmptyOrNullString())))
+                .andExpect(jsonPath("$.expires_in").isNumber())
+                .andExpect(jsonPath("$.temporary_password").doesNotExist())
                 .andReturn();
 
-        String temporaryPassword = objectMapper.readTree(responseBody(result)).get("temporary_password").asText();
+        String resetToken = objectMapper.readTree(responseBody(result)).get("reset_token").asText();
         entityManager.flush();
         entityManager.clear();
         User user = userRepository.findByEmail("reset-existing@example.com").orElseThrow();
-        Set<String> userFields = Set.of(User.class.getDeclaredFields()).stream()
-                .map(Field::getName)
-                .collect(Collectors.toSet());
 
-        assertThat(passwordResetTokenRepository.findAll()).isEmpty();
-        assertThat(user.getPasswordHash()).isNotEqualTo(temporaryPassword);
-        assertThat(userFields).doesNotContain("password", "plainPassword", "temporaryPassword");
+        assertThat(passwordResetTokenRepository.findAll()).hasSize(1);
+        assertThat(user.getPasswordHash()).isEqualTo(originalHash);
+        assertThat(passwordResetTokenRepository.findByTokenHash(sha256Hex(resetToken))).isPresent();
     }
 
     @Test
@@ -90,9 +85,8 @@ class PasswordResetApiIntegrationTest {
         requestPasswordReset("unknown-reset@example.com")
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.requested").value(true))
-                .andExpect(jsonPath("$.reset_token").doesNotExist())
-                .andExpect(jsonPath("$.temporary_password").value(nullValue()))
-                .andExpect(jsonPath("$.expires_in").doesNotExist());
+                .andExpect(jsonPath("$.reset_token").value(nullValue()))
+                .andExpect(jsonPath("$.temporary_password").doesNotExist());
 
         assertThat(passwordResetTokenRepository.findAll()).isEmpty();
     }
@@ -199,8 +193,8 @@ class PasswordResetApiIntegrationTest {
         requestPasswordReset("reset-inactive@example.com")
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.requested").value(true))
-                .andExpect(jsonPath("$.reset_token").doesNotExist())
-                .andExpect(jsonPath("$.temporary_password").value(nullValue()));
+                .andExpect(jsonPath("$.reset_token").value(nullValue()))
+                .andExpect(jsonPath("$.temporary_password").doesNotExist());
         assertThat(passwordResetTokenRepository.findAll()).isEmpty();
 
         PasswordResetToken token = new PasswordResetToken();
