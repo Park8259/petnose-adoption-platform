@@ -200,14 +200,18 @@ Canonical deployment path:
 AWS real-model deployment path:
 
 - 최신 `main` 기준 AWS EC2 실제 모델 배포는 [infra/aws/ec2-setup.md](infra/aws/ec2-setup.md)를 따릅니다.
+- NVIDIA T4 GPU가 있는 g4dn.xlarge 단일 서버 배포는 [infra/aws/g4dn-single-host-gpu.md](infra/aws/g4dn-single-host-gpu.md)를 따릅니다.
 - 배포 스크립트: `bash infra/scripts/deploy-real-model.sh`
+- GPU 배포 스크립트: `bash infra/scripts/deploy-real-model.sh --gpu`
 - 서버 스모크: `bash infra/scripts/aws-real-model-smoke.sh`
-- 이 경로는 `compose.yaml` + `compose.prod.yaml` + `compose.real-model.yaml`을 사용하며, Firebase는 명시적으로 요청할 때만 포함합니다.
+- CPU real-model 경로는 `compose.yaml` + `compose.prod.yaml` + `compose.prod-real-model.yaml`을 사용하며, GPU 경로는 마지막에 `compose.prod-gpu.yaml`을 추가합니다. Firebase는 명시적으로 요청할 때만 포함합니다.
 
 GHCR 이미지:
 
 - `ghcr.io/jaaesung/petnose-spring-api:<branch>-latest`
 - `ghcr.io/jaaesung/petnose-python-embed:<branch>-latest`
+- `ghcr.io/jaaesung/petnose-python-embed-real:<branch>-latest`
+- `ghcr.io/jaaesung/petnose-python-embed-gpu-real:<branch>-latest`
 
 결과 확인: `https://github.com/jaaesung/petnose-adoption-platform/actions`  
 태그 전략 및 운영 상세: [docs/reference/OPS_NOTES.md](docs/reference/OPS_NOTES.md)

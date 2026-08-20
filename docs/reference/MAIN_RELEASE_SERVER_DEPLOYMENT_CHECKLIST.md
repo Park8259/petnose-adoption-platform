@@ -19,6 +19,8 @@
 - Qdrant collection: `dog_nose_embeddings_real_v2`
 - Firebase chat/push: optional layer, production Firebase ON 기준 포함
 
+Inference runtime 배포 정책의 상세 기준은 [INFERENCE_RUNTIME_DEPLOYMENT_POLICY.md](INFERENCE_RUNTIME_DEPLOYMENT_POLICY.md)를 따른다.
+
 이 문서는 backend/Python/Flutter runtime behavior, Flyway migration, API contract를 변경하지 않는다.
 
 ---
@@ -37,8 +39,34 @@
 | CI/CD dog nose v2 release path | `.github/workflows/publish-images.yaml`, `.github/workflows/cd-prod.yaml`, `infra/scripts/deploy-real-model.sh` |
 | async password reset email | `docs/reference/OPS_NOTES.md`, `infra/docker/.env.example`, `infra/docker/compose.yaml` |
 | manual full feature smoke script | `scripts/manual-full-feature-smoke.ps1`, `docs/reference/MANUAL_FULL_FEATURE_SMOKE.md` |
+| model pipeline final release regression | `scripts/run-model-pipeline-final-regression.ps1`, `docs/reference/MODEL_PIPELINE_FINAL_REGRESSION.md` |
 | API transcript mode | `docs/reference/MANUAL_FULL_FEATURE_SMOKE.md` |
 | Firebase enabled chat smoke | `docs/ops-evidence/firebase-chat-release-readiness.md`, `docs/ops-evidence/firebase-chat-smoke-log.md` |
+
+---
+
+## Develop To Main Regression Gate
+
+`develop`를 `main`으로 승격하기 전에는 [MODEL_PIPELINE_FINAL_REGRESSION.md](MODEL_PIPELINE_FINAL_REGRESSION.md)를 먼저 실행한다.
+
+필수 확인:
+
+- `PlanOnly` PASS
+- `Static` PASS
+- backend/Python/optional ONNX/Docker/compose CI PASS
+- production runtime policy PASS
+- profile-first, YOLO, ONNX production runtime default-off
+- tracked model/secret/raw artifact 없음
+- core dog registration, duplicate detection, handover verification, file serving PASS
+
+환경 의존 manual gate:
+
+- real-model E2E
+- Firebase enabled chat
+- password reset email confirm
+- Qdrant/MySQL reconciliation dry-run
+
+mandatory FAIL, 이유 없는 mandatory SKIP/NOT_RUN, mutable image tag, runtime backend/vector dimension mismatch, DB/Qdrant drift가 있으면 `main` release PR을 승인하지 않는다.
 
 ---
 
@@ -90,6 +118,7 @@ GitHub에서 서버로 배치해야 하는 non-secret 운영 파일:
 - `infra/docker/compose.yaml`
 - `infra/docker/compose.prod.yaml`
 - `infra/docker/compose.prod-real-model.yaml`
+- `infra/docker/compose.prod-gpu.yaml` (g4dn GPU 배포 시에만)
 - `infra/docker/compose.firebase.yaml`
 - `infra/nginx/**`
 - `infra/scripts/deploy-real-model.sh`
@@ -127,6 +156,8 @@ SPRING_PROFILES_ACTIVE=prod
 
 SPRING_API_IMAGE=ghcr.io/jaaesung/petnose-spring-api:main-<sha7>
 PYTHON_EMBED_REAL_IMAGE=ghcr.io/jaaesung/petnose-python-embed-real:main-<sha7>
+# g4dn GPU 배포 시에만:
+# PYTHON_EMBED_GPU_REAL_IMAGE=ghcr.io/jaaesung/petnose-python-embed-gpu-real:main-<sha7>
 
 MYSQL_DATABASE=petnose
 MYSQL_USER=petnose
@@ -139,9 +170,15 @@ SPRING_DATASOURCE_PASSWORD=<same-as-MYSQL_PASSWORD>
 AUTH_JWT_SECRET=<set-strong-32byte-or-longer-secret>
 AUTH_JWT_ACCESS_TOKEN_TTL_SECONDS=3600
 
+DOG_NOSE_RUNTIME=torch
+DOG_NOSE_EXTRACT_ENABLED=false
+PETNOSE_PROFILE_FIRST_ENABLED=false
+PETNOSE_REGISTRATION_TIMING_LOG_ENABLED=false
 EMBED_MODEL=dog-nose-identification2
 EMBED_VECTOR_DIM=2048
 PYTHON_EMBED_INSTALL_REAL_DEPS=1
+EMBED_DEVICE=cpu
+EMBED_DEVICE_REQUIRED=false
 DOG_NOSE_MODEL_DIR_HOST=/opt/petnose/models/dog_nose_identification2
 
 QDRANT_COLLECTION=dog_nose_embeddings_real_v2
@@ -176,6 +213,9 @@ MAX_UPLOAD_SIZE_MB=20
 Production guardrails:
 
 - `SPRING_API_IMAGE`와 `PYTHON_EMBED_REAL_IMAGE`는 `main-<sha7>` immutable tag로 고정한다.
+- g4dn GPU 배포에서는 `PYTHON_EMBED_GPU_REAL_IMAGE=ghcr.io/jaaesung/petnose-python-embed-gpu-real:main-<sha7>`,
+  `EMBED_DEVICE=cuda:0`, `EMBED_DEVICE_REQUIRED=true`, `PETNOSE_INCLUDE_GPU=true`를 사용한다.
+- `DOG_NOSE_RUNTIME=torch`와 ONNX/YOLO/profile-first/timing flags disabled 상태를 유지한다.
 - `AUTH_PASSWORD_RESET_EXPOSE_TOKEN_IN_RESPONSE=false`를 유지한다.
 - `MYSQL_PASSWORD`와 `SPRING_DATASOURCE_PASSWORD`는 같은 값이어야 한다.
 - `FIREBASE_CREDENTIALS_HOST_PATH`는 repository 밖의 server-only JSON을 가리켜야 한다.
@@ -246,6 +286,8 @@ Script가 확인하는 항목:
 
 - env file 존재
 - required env key 존재
+- safe inference runtime policy (`torch`, ONNX/YOLO/profile-first/timing disabled)
+- immutable `main-<sha7>` image tag
 - Firebase enabled일 때 service account JSON path와 JSON 구조
 - real-model directory와 `logs/s101_224/model_final.pth`
 - Docker daemon, Docker Compose version
@@ -264,6 +306,7 @@ Pre-deploy:
 - [ ] `main-<sha7>` image tags published for Spring API and Python Embed Real
 - [ ] GHCR package visibility or server docker login ready
 - [ ] `/opt/petnose/infra/docker/.env` created with production values
+- [ ] Safe inference runtime policy 확인 (`DOG_NOSE_RUNTIME=torch`, ONNX/YOLO/profile-first/timing disabled)
 - [ ] `/opt/petnose/secrets/firebase-service-account.json` uploaded
 - [ ] `/opt/petnose/models/dog_nose_identification2/logs/s101_224/model_final.pth` uploaded
 - [ ] `scripts/verify-server-release-readiness.ps1 -IncludeFirebase` PASS
@@ -274,7 +317,7 @@ Deploy:
 - [ ] Run `bash infra/scripts/deploy-real-model.sh --firebase`
 - [ ] Confirm `docker compose ps`
 - [ ] Confirm `http://localhost/actuator/health`
-- [ ] Confirm Python model health through internal or Nginx-routed check if exposed
+- [ ] Confirm Python Embed runtime health through internal compose exec check
 - [ ] Confirm Qdrant collection `dog_nose_embeddings_real_v2`, dimension `2048`, distance `Cosine`
 
 Post-deploy:
@@ -297,7 +340,8 @@ Firebase rollback:
 Release rollback:
 
 - Pin `SPRING_API_IMAGE` and `PYTHON_EMBED_REAL_IMAGE` back to the previous known-good `main-<sha7>` tag.
+- Confirm `DOG_NOSE_RUNTIME=torch` and ONNX/YOLO/profile-first/timing flags disabled.
 - Re-run compose `config`, `pull`, and `up -d`.
-- Re-run healthcheck and sanitized smoke.
+- Re-run Spring actuator health, Python Embed runtime health, and sanitized smoke.
 
 Do not delete MySQL/Qdrant/uploads volumes during release rollback unless there is a separate approved data recovery plan.

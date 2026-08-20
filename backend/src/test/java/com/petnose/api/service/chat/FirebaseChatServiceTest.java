@@ -39,6 +39,8 @@ class FirebaseChatServiceTest {
     @Mock
     private FileStorageService fileStorageService;
     @Mock
+    private ChatRoomPostStatusSyncService chatRoomPostStatusSyncService;
+    @Mock
     private ObjectProvider<Firestore> firestoreProvider;
     @Mock
     private ObjectProvider<FirebaseAuth> firebaseAuthProvider;
@@ -60,6 +62,7 @@ class FirebaseChatServiceTest {
                 dogImageRepository,
                 userRepository,
                 fileStorageService,
+                chatRoomPostStatusSyncService,
                 firestoreProvider,
                 firebaseAuthProvider,
                 firebaseMessagingProvider

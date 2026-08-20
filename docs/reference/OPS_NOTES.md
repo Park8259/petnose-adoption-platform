@@ -311,6 +311,17 @@ docker pull ghcr.io/jaaesung/petnose-spring-api:develop-a1b2c3d
 
 ---
 
+## Production Inference Runtime Policy
+
+현재 시연 production runtime은 `dog-nose-identification2` + PyTorch(`/embed-batch`)이다.
+ONNX Runtime, YOLO extraction, profile-first API, registration timing log는 optional 코드가
+main에 존재해도 production에서는 default-off로 유지한다.
+
+향후 private inference server 분리와 ONNX 활성화 gate는
+[INFERENCE_RUNTIME_DEPLOYMENT_POLICY.md](INFERENCE_RUNTIME_DEPLOYMENT_POLICY.md)를 따른다.
+
+---
+
 ## Dev CD 실검증 체크리스트
 
 `cd-dev.yaml`은 두 방식으로 실행됩니다.

@@ -1,0 +1,21 @@
+# Measurement-only override for Python Embed CPU thread A/B testing.
+#
+# Do not include this file in normal dev/prod deployment commands. Use it only
+# for temporary experiments after setting PYTHON_EMBED_CPU_THREADS to 1 or 2.
+#
+# Example:
+#   PYTHON_EMBED_CPU_THREADS=1 docker compose --env-file infra/docker/.env \
+#     -f infra/docker/compose.yaml \
+#     -f infra/docker/compose.prod.yaml \
+#     -f infra/docker/compose.prod-real-model.yaml \
+#     -f infra/docker/compose.python-embed-cpu-thread-experiment.yaml \
+#     up -d --no-build --force-recreate python-embed
+
+services:
+  python-embed:
+    environment:
+      OMP_NUM_THREADS: ${PYTHON_EMBED_CPU_THREADS:?Set PYTHON_EMBED_CPU_THREADS to 1 or 2}
+      MKL_NUM_THREADS: ${PYTHON_EMBED_CPU_THREADS:?Set PYTHON_EMBED_CPU_THREADS to 1 or 2}
+      OPENBLAS_NUM_THREADS: ${PYTHON_EMBED_CPU_THREADS:?Set PYTHON_EMBED_CPU_THREADS to 1 or 2}
+      NUMEXPR_NUM_THREADS: ${PYTHON_EMBED_CPU_THREADS:?Set PYTHON_EMBED_CPU_THREADS to 1 or 2}
+      NUMEXPR_MAX_THREADS: ${PYTHON_EMBED_CPU_THREADS:?Set PYTHON_EMBED_CPU_THREADS to 1 or 2}

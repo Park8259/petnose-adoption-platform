@@ -49,6 +49,7 @@ schema count 불일치는 해결되었다. pre-adoption nose verification ticket
 | Flyway/runtime migration 작업 | `docs/reference/DB_MIGRATION_STRATEGY.md` |
 | Qdrant/Python Embed/file storage 경계 판단 | `docs/reference/STORAGE_AND_VECTOR_BOUNDARY.md`, `docs/reference/SPRING_PYTHON_EMBED_CONTRACT.md` |
 | ops/deploy evidence 확인 | `docs/ops-evidence/dev-cd-validation-log.md` |
+| AWS g4dn GPU 배포 | `infra/aws/g4dn-single-host-gpu.md`, `docs/reference/INFERENCE_RUNTIME_DEPLOYMENT_POLICY.md` |
 
 추가 운영/온보딩/환경 참고 문서는 `docs/reference/` 아래에 있다. reference 문서와 active canonical 문서가 충돌하면 active canonical 문서가 우선한다.
 

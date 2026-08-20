@@ -1,6 +1,8 @@
 package com.petnose.api.controller;
 
 import com.petnose.api.client.EmbedClient;
+import com.petnose.api.dto.registration.ProfileNosePreviewApiResponse;
+import com.petnose.api.service.ProfileNosePreviewService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -34,6 +36,7 @@ public class DevController {
     );
 
     private final EmbedClient embedClient;
+    private final ProfileNosePreviewService profileNosePreviewService;
 
     @Value("${spring.application.name:petnose-api}")
     private String appName;
@@ -140,6 +143,54 @@ public class DevController {
         }
     }
 
+    /**
+     * [DEV ONLY] Profile/face image에서 dog-nose crop을 미리보기로 추출합니다.
+     * DB/Qdrant에는 아무 것도 기록하지 않습니다.
+     */
+    @PostMapping("/profile-nose-preview")
+    public ResponseEntity<ProfileNosePreviewApiResponse> profileNosePreview(
+            @RequestParam(value = "profile_image", required = false) MultipartFile profileImage
+    ) {
+        return ResponseEntity.ok(profileNosePreviewService.preview(profileImage));
+    }
+
+    /**
+     * [DEV ONLY] Profile-derived nose crop과 close-up nose image를 self-match합니다.
+     * DB/Qdrant에는 아무 것도 기록하지 않습니다.
+     */
+    @PostMapping("/profile-nose-match")
+    public ResponseEntity<Map<String, Object>> profileNoseMatch(
+            @RequestParam("profile_image") MultipartFile profileImage,
+            @RequestParam("nose_image") MultipartFile noseImage
+    ) {
+        try {
+            if (profileImage == null || profileImage.isEmpty()) {
+                return invalidInput("profile_image is required.");
+            }
+            if (noseImage == null || noseImage.isEmpty()) {
+                return invalidInput("nose_image is required.");
+            }
+
+            Map<String, Object> response = embedClient.profileNoseMatch(
+                    profileImage.getBytes(),
+                    filenameOrDefault(profileImage, "profile-image.png"),
+                    contentTypeOrDefault(profileImage),
+                    noseImage.getBytes(),
+                    filenameOrDefault(noseImage, "nose-image.png"),
+                    contentTypeOrDefault(noseImage)
+            );
+            return ResponseEntity.ok(response);
+        } catch (EmbedClient.EmbedClientException e) {
+            return upstreamFailure("profile-nose-match", e);
+        } catch (IOException e) {
+            log.error("[DevController] profile-nose-match 입력 처리 실패: {}", e.getMessage(), e);
+            return invalidInput(e.getMessage());
+        } catch (Exception e) {
+            log.error("[DevController] profile-nose-match 예외: {}", e.getMessage(), e);
+            return internalError(e.getMessage());
+        }
+    }
+
     /** Qdrant 설정 확인 */
     @GetMapping("/qdrant-config")
     public Map<String, Object> qdrantConfig() {
@@ -150,5 +201,46 @@ public class DevController {
                 "vector_dimension", qdrantVectorDimension,
                 "distance", qdrantDistance
         );
+    }
+
+    private static String filenameOrDefault(MultipartFile file, String fallback) {
+        String filename = file.getOriginalFilename();
+        return filename == null || filename.isBlank() ? fallback : filename;
+    }
+
+    private static String contentTypeOrDefault(MultipartFile file) {
+        String contentType = file.getContentType();
+        return contentType == null || contentType.isBlank() ? "image/png" : contentType;
+    }
+
+    private ResponseEntity<Map<String, Object>> upstreamFailure(String operation, EmbedClient.EmbedClientException e) {
+        log.error("[DevController] {} 실패: status={}, body={}, message={}",
+                operation, e.getUpstreamStatus(), e.getUpstreamBody(), e.getMessage(), e);
+
+        Map<String, Object> errorBody = new LinkedHashMap<>();
+        errorBody.put("status", "embed_call_failed");
+        errorBody.put("error_message", e.getMessage());
+        errorBody.put("upstream_status", e.getUpstreamStatus());
+        errorBody.put("upstream_body", e.getUpstreamBody());
+        errorBody.put("timestamp", Instant.now().toString());
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(errorBody);
+    }
+
+    private ResponseEntity<Map<String, Object>> invalidInput(String message) {
+        String safeMessage = message == null ? "" : message;
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of(
+                "status", "invalid_input",
+                "error_message", safeMessage,
+                "timestamp", Instant.now().toString()
+        ));
+    }
+
+    private ResponseEntity<Map<String, Object>> internalError(String message) {
+        String safeMessage = message == null ? "" : message;
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of(
+                "status", "internal_error",
+                "error_message", safeMessage,
+                "timestamp", Instant.now().toString()
+        ));
     }
 }

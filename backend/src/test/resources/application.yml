@@ -41,6 +41,10 @@ nose:
   reference-quality-warning-enabled: ${NOSE_REFERENCE_QUALITY_WARNING_ENABLED:true}
 
 petnose:
+  profile-nose-match:
+    threshold: ${PROFILE_NOSE_MATCH_THRESHOLD:0.65}
+    min-pass-count: ${PROFILE_NOSE_MATCH_MIN_PASS_COUNT:4}
+    aggregate: ${PROFILE_NOSE_MATCH_AGGREGATE:median}
   handover-verification:
     match-threshold: ${PETNOSE_HANDOVER_VERIFICATION_MATCH_THRESHOLD:0.65}
     ambiguous-threshold: ${PETNOSE_HANDOVER_VERIFICATION_AMBIGUOUS_THRESHOLD:0.65}

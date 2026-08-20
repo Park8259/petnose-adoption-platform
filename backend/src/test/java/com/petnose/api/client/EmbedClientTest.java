@@ -26,6 +26,49 @@ class EmbedClientTest {
     }
 
     @Test
+    void profileNoseMatchBatchSendsProfileAndRepeatedNoseImagesAndParsesResponse() throws Exception {
+        AtomicReference<String> requestBody = new AtomicReference<>();
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/internal/nose/profile-match-batch", exchange -> {
+            requestBody.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.ISO_8859_1));
+            byte[] response = """
+                    {"matched":true,"threshold":0.65,"threshold_calibrated":false,"pass_count":5,"required_pass_count":4,"median_score":0.77,"mean_score":0.76,"min_score":0.69,"max_score":0.81,"profile_nose_extracted":true,"profile_confidence":0.95484,"profile_crop_width":224,"profile_crop_height":224,"model":"dog-nose-identification2:s101_224","dimension":2048,"scores":[{"index":1,"similarity_score":0.771138,"passed":true},{"index":2,"similarity_score":0.772269,"passed":true},{"index":3,"similarity_score":0.693301,"passed":true},{"index":4,"similarity_score":0.816335,"passed":true},{"index":5,"similarity_score":0.777755,"passed":true}],"failure_reason":null}
+                    """.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, response.length);
+            exchange.getResponseBody().write(response);
+            exchange.close();
+        });
+        server.start();
+
+        EmbedClient client = new EmbedClient(WebClient.builder()
+                .baseUrl("http://127.0.0.1:" + server.getAddress().getPort())
+                .build());
+
+        EmbedClient.ProfileNoseMatchBatchResponse response = client.profileNoseMatchBatch(
+                new byte[]{9, 9, 9},
+                "profile.jpg",
+                MediaType.IMAGE_JPEG_VALUE,
+                List.of(
+                        new EmbedClient.BatchImageInput(new byte[]{1}, "nose-1.jpg", MediaType.IMAGE_JPEG_VALUE),
+                        new EmbedClient.BatchImageInput(new byte[]{2}, "nose-2.jpg", MediaType.IMAGE_JPEG_VALUE),
+                        new EmbedClient.BatchImageInput(new byte[]{3}, "nose-3.jpg", MediaType.IMAGE_JPEG_VALUE),
+                        new EmbedClient.BatchImageInput(new byte[]{4}, "nose-4.jpg", MediaType.IMAGE_JPEG_VALUE),
+                        new EmbedClient.BatchImageInput(new byte[]{5}, "nose-5.jpg", MediaType.IMAGE_JPEG_VALUE)
+                )
+        );
+
+        assertThat(countOccurrences(requestBody.get(), "name=\"profile_image\"")).isEqualTo(1);
+        assertThat(countOccurrences(requestBody.get(), "name=\"nose_image\"")).isEqualTo(5);
+        assertThat(response.matched()).isTrue();
+        assertThat(response.passCount()).isEqualTo(5);
+        assertThat(response.thresholdCalibrated()).isFalse();
+        assertThat(response.profileNoseExtracted()).isTrue();
+        assertThat(response.scores()).hasSize(5);
+        assertThat(response.scores().getFirst().similarityScore()).isEqualTo(0.771138);
+    }
+
+    @Test
     void embedBatchSendsRepeatedImagesAndParsesResponse() throws Exception {
         AtomicReference<String> requestBody = new AtomicReference<>();
         AtomicReference<String> requestContentType = new AtomicReference<>();

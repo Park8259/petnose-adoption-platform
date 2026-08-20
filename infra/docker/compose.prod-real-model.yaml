@@ -13,6 +13,7 @@ services:
       EMBED_MODEL: dog-nose-identification2
       EMBED_VECTOR_DIM: "2048"
       EMBED_DEVICE: ${EMBED_DEVICE:-cpu}
+      EMBED_DEVICE_REQUIRED: ${EMBED_DEVICE_REQUIRED:-false}
       DOG_NOSE_MODEL_DIR: /models/dog_nose_identification2
       DOG_NOSE_MODEL_PATH: ${DOG_NOSE_MODEL_PATH:-}
       MAX_BATCH_IMAGES: "5"

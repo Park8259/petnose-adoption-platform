@@ -167,6 +167,8 @@ Table adoption_posts {
   id bigint [pk, increment]
   author_user_id bigint [not null, ref: > users.id]
   adopter_user_id bigint [ref: > users.id]
+  reserved_by_user_id bigint [ref: > users.id]
+  reserved_at timestamp
   dog_id char(36) [not null, ref: > dogs.id]
   title varchar(200) [not null]
   content text [not null]
@@ -175,6 +177,9 @@ Table adoption_posts {
   published_at timestamp
   closed_at timestamp
   adopted_at timestamp
+  verification_step1_completed boolean [not null, default: false]
+  verification_step2_completed boolean [not null, default: false]
+  verification_step3_completed boolean [not null, default: false]
   created_at timestamp [not null, default: `CURRENT_TIMESTAMP`]
   updated_at timestamp [not null, default: `CURRENT_TIMESTAMP`]
 
@@ -182,6 +187,8 @@ Table adoption_posts {
     author_user_id [name: "idx_adoption_posts_author_user_id"]
     adopter_user_id [name: "idx_adoption_posts_adopter_user_id"]
     (adopter_user_id, status, adopted_at) [name: "idx_adoption_posts_adopter_status_adopted_at"]
+    reserved_by_user_id [name: "idx_adoption_posts_reserved_by_user_id"]
+    (reserved_by_user_id, status, reserved_at) [name: "idx_adoption_posts_reserved_status_reserved_at"]
     dog_id [name: "idx_adoption_posts_dog_id"]
     status [name: "idx_adoption_posts_status"]
     published_at [name: "idx_adoption_posts_published_at"]

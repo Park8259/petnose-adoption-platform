@@ -9,13 +9,16 @@ import com.petnose.api.dto.chat.ChatRoomResponse;
 import com.petnose.api.dto.chat.FcmTokenUpdateRequest;
 import com.petnose.api.dto.chat.FcmTokenUpdateResponse;
 import com.petnose.api.dto.chat.FirebaseTokenResponse;
+import com.petnose.api.dto.adoption.AdoptionPostStatusUpdateResponse;
 import com.petnose.api.service.AuthService;
 import com.petnose.api.service.chat.FirebaseChatService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 @RestController
 @RequiredArgsConstructor
@@ -70,6 +73,45 @@ public class ChatController {
     ) {
         Long currentUserId = authService.currentActiveUserId(authorizationHeader);
         return firebaseChatService.sendMessage(roomId, currentUserId, request.text(), request.clientMessageId());
+    }
+
+    @PostMapping(value = "/api/chat/rooms/{room_id}/messages/images", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @ResponseStatus(HttpStatus.CREATED)
+    public ChatMessageResponse sendImageMessage(
+            @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorizationHeader,
+            @PathVariable("room_id") String roomId,
+            @RequestParam(value = "image", required = false) MultipartFile image,
+            @RequestParam(value = "client_message_id", required = false) String clientMessageId
+    ) {
+        Long currentUserId = authService.currentActiveUserId(authorizationHeader);
+        return firebaseChatService.sendImageMessage(roomId, currentUserId, image, clientMessageId);
+    }
+
+    @PostMapping("/api/chat/rooms/{room_id}/reservation")
+    public AdoptionPostStatusUpdateResponse reserveFromRoom(
+            @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorizationHeader,
+            @PathVariable("room_id") String roomId
+    ) {
+        Long currentUserId = authService.currentActiveUserId(authorizationHeader);
+        return firebaseChatService.reserveFromRoom(roomId, currentUserId);
+    }
+
+    @DeleteMapping("/api/chat/rooms/{room_id}/reservation")
+    public AdoptionPostStatusUpdateResponse cancelReservationFromRoom(
+            @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorizationHeader,
+            @PathVariable("room_id") String roomId
+    ) {
+        Long currentUserId = authService.currentActiveUserId(authorizationHeader);
+        return firebaseChatService.cancelReservationFromRoom(roomId, currentUserId);
+    }
+
+    @PostMapping("/api/chat/rooms/{room_id}/completion")
+    public AdoptionPostStatusUpdateResponse completeFromRoom(
+            @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorizationHeader,
+            @PathVariable("room_id") String roomId
+    ) {
+        Long currentUserId = authService.currentActiveUserId(authorizationHeader);
+        return firebaseChatService.completeFromRoom(roomId, currentUserId);
     }
 
     @PatchMapping("/api/chat/rooms/{room_id}/read")

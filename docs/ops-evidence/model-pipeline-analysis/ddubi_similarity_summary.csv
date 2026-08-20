@@ -1,0 +1,13 @@
+row_type,scenario,score_type,target_image_number,reference_image_number,count,mean,min,max,std,single_score,multi_max_score,multi_mean_score,delta_max_vs_single,delta_mean_vs_single,best_reference_image_number,target_images,reference_images,notes
+stats,single_reference_ref1_comparable,cosine,,,8,0.8235818517,0.7555731543,0.9018847264,0.0499416945,,,,,,,6-13,,
+stats,multi_reference_refs,target_max_similarity,,,8,0.8467103555,0.7951952477,0.9202762483,0.0420592617,,,,,,,6-13,,
+stats,multi_reference_refs,target_mean_similarity,,,8,0.8067469657,0.7664337786,0.8613825560,0.0321384033,,,,,,,6-13,,
+stats,multi_reference_refs_full_matrix,reference_target_cosine,,,40,0.8067469657,0.7100041914,0.9202762483,0.0448829954,,,,,,,6-13,,
+target_delta,single_vs_multi_comparable,target_delta,6,1 vs 1-5,,,,,,0.8834536829,0.9202762483,0.8613825560,0.0368225655,-0.0220711268,4,6,1;1-5,
+target_delta,single_vs_multi_comparable,target_delta,7,1 vs 1-5,,,,,,0.8393060067,0.8613656976,0.8392754522,0.0220596909,-0.0000305545,5,7,1;1-5,
+target_delta,single_vs_multi_comparable,target_delta,8,1 vs 1-5,,,,,,0.7654983763,0.8030315598,0.7664337786,0.0375331835,0.0009354023,4,8,1;1-5,
+target_delta,single_vs_multi_comparable,target_delta,9,1 vs 1-5,,,,,,0.9018847264,0.9018847264,0.8374755900,0.0000000000,-0.0644091365,1,9,1;1-5,
+target_delta,single_vs_multi_comparable,target_delta,10,1 vs 1-5,,,,,,0.8390939273,0.8390939273,0.7908644992,0.0000000000,-0.0482294281,1,10,1;1-5,
+target_delta,single_vs_multi_comparable,target_delta,11,1 vs 1-5,,,,,,0.8220769005,0.8220769005,0.7950634423,0.0000000000,-0.0270134582,1,11,1;1-5,
+target_delta,single_vs_multi_comparable,target_delta,12,1 vs 1-5,,,,,,0.7817680388,0.8307585364,0.7840886487,0.0489904976,0.0023206099,3,12,1;1-5,
+target_delta,single_vs_multi_comparable,target_delta,13,1 vs 1-5,,,,,,0.7555731543,0.7951952477,0.7793917587,0.0396220934,0.0238186044,2,13,1;1-5,

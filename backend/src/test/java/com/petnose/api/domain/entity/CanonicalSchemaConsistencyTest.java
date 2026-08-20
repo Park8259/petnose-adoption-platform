@@ -91,6 +91,8 @@ class CanonicalSchemaConsistencyTest {
             "id",
             "author_user_id",
             "adopter_user_id",
+            "reserved_by_user_id",
+            "reserved_at",
             "dog_id",
             "title",
             "content",
@@ -99,6 +101,9 @@ class CanonicalSchemaConsistencyTest {
             "published_at",
             "closed_at",
             "adopted_at",
+            "verification_step1_completed",
+            "verification_step2_completed",
+            "verification_step3_completed",
             "created_at",
             "updated_at"
     );
@@ -249,11 +254,19 @@ class CanonicalSchemaConsistencyTest {
                 .containsExactlyInAnyOrderElementsOf(ADOPTION_POST_COLUMNS);
         assertThat(adoptionPosts).contains(
                 "adopter_user_id BIGINT NULL",
+                "reserved_by_user_id BIGINT NULL",
+                "reserved_at TIMESTAMP NULL",
                 "adopted_at TIMESTAMP NULL",
+                "verification_step1_completed BOOLEAN NOT NULL DEFAULT FALSE",
+                "verification_step2_completed BOOLEAN NOT NULL DEFAULT FALSE",
+                "verification_step3_completed BOOLEAN NOT NULL DEFAULT FALSE",
                 "price BIGINT NULL",
                 "KEY idx_adoption_posts_adopter_user_id (adopter_user_id)",
                 "KEY idx_adoption_posts_adopter_status_adopted_at (adopter_user_id, status, adopted_at)",
+                "KEY idx_adoption_posts_reserved_by_user_id (reserved_by_user_id)",
+                "KEY idx_adoption_posts_reserved_status_reserved_at (reserved_by_user_id, status, reserved_at)",
                 "FOREIGN KEY (adopter_user_id) REFERENCES users (id)",
+                "FOREIGN KEY (reserved_by_user_id) REFERENCES users (id)",
                 "CHECK (price IS NULL OR price >= 0)"
         );
     }
@@ -290,12 +303,19 @@ class CanonicalSchemaConsistencyTest {
                 "Table adoption_post_likes",
                 "(user_id, post_id) [unique, name: \"uk_adoption_post_likes_user_post\"]",
                 "adopter_user_id bigint",
+                "reserved_by_user_id bigint",
+                "reserved_at timestamp",
                 "age int",
                 "health text",
                 "price bigint",
                 "adopted_at timestamp",
+                "verification_step1_completed boolean",
+                "verification_step2_completed boolean",
+                "verification_step3_completed boolean",
                 "adopter_user_id [name: \"idx_adoption_posts_adopter_user_id\"]",
-                "(adopter_user_id, status, adopted_at) [name: \"idx_adoption_posts_adopter_status_adopted_at\"]"
+                "(adopter_user_id, status, adopted_at) [name: \"idx_adoption_posts_adopter_status_adopted_at\"]",
+                "reserved_by_user_id [name: \"idx_adoption_posts_reserved_by_user_id\"]",
+                "(reserved_by_user_id, status, reserved_at) [name: \"idx_adoption_posts_reserved_status_reserved_at\"]"
         );
         assertThat(dbmlEnumValues(dbml, "dog_status"))
                 .containsExactly("PENDING", "REGISTERED", "DUPLICATE_SUSPECTED", "REVIEW_REQUIRED", "REJECTED", "ADOPTED", "INACTIVE");

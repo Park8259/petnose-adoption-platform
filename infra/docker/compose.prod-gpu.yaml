@@ -1,0 +1,40 @@
+# GPU override for AWS g4dn.xlarge real-model deployment.
+# Use last, after compose.prod-real-model.yaml:
+#   docker compose --env-file infra/docker/.env \
+#     -f infra/docker/compose.yaml \
+#     -f infra/docker/compose.prod.yaml \
+#     -f infra/docker/compose.prod-real-model.yaml \
+#     -f infra/docker/compose.prod-gpu.yaml \
+#     up -d --no-build
+
+services:
+  python-embed:
+    image: ${PYTHON_EMBED_GPU_REAL_IMAGE:?Set PYTHON_EMBED_GPU_REAL_IMAGE in infra/docker/.env}
+    environment:
+      EMBED_MODEL: dog-nose-identification2
+      EMBED_VECTOR_DIM: "2048"
+      DOG_NOSE_RUNTIME: torch
+      DOG_NOSE_EXTRACT_ENABLED: "false"
+      EMBED_DEVICE: "cuda:0"
+      EMBED_DEVICE_REQUIRED: "true"
+      DOG_NOSE_MODEL_DIR: /models/dog_nose_identification2
+      DOG_NOSE_MODEL_PATH: ${DOG_NOSE_MODEL_PATH:-}
+      MAX_BATCH_IMAGES: "5"
+      MAX_BATCH_TOTAL_BYTES: "83886080"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready', timeout=3)\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s

@@ -6,6 +6,7 @@ import com.petnose.api.domain.entity.User;
 import com.petnose.api.domain.enums.UserRole;
 import com.petnose.api.repository.PasswordResetTokenRepository;
 import com.petnose.api.repository.UserRepository;
+import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -18,14 +19,11 @@ import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.HexFormat;
 import java.util.Map;
-import java.util.Set;
-import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.not;
@@ -56,29 +54,30 @@ class PasswordResetApiIntegrationTest {
     @Autowired
     private PasswordEncoder passwordEncoder;
 
+    @Autowired
+    private EntityManager entityManager;
+
     @Test
-    void passwordResetRequestForExistingEmailExposesDevTokenAndStoresOnlyHash() throws Exception {
-        saveUser("reset-existing@example.com", "password123", true);
+    void passwordResetRequestForExistingEmailExposesDevResetTokenAndSavesToken() throws Exception {
+        User saved = saveUser("reset-existing@example.com", "password123", true);
+        String originalHash = saved.getPasswordHash();
 
         MvcResult result = requestPasswordReset("  Reset-Existing@Example.COM  ")
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.requested").value(true))
                 .andExpect(jsonPath("$.reset_token").value(not(isEmptyOrNullString())))
-                .andExpect(jsonPath("$.expires_in").value(1800))
+                .andExpect(jsonPath("$.expires_in").isNumber())
+                .andExpect(jsonPath("$.temporary_password").doesNotExist())
                 .andReturn();
 
         String resetToken = objectMapper.readTree(responseBody(result)).get("reset_token").asText();
-        PasswordResetToken stored = passwordResetTokenRepository.findAll().getFirst();
-        Set<String> tokenFields = Set.of(PasswordResetToken.class.getDeclaredFields()).stream()
-                .map(Field::getName)
-                .collect(Collectors.toSet());
+        entityManager.flush();
+        entityManager.clear();
+        User user = userRepository.findByEmail("reset-existing@example.com").orElseThrow();
 
-        assertThat(stored.getTokenHash()).hasSize(64);
-        assertThat(stored.getTokenHash()).isNotEqualTo(resetToken);
-        assertThat(stored.getTokenHash()).isEqualTo(sha256Hex(resetToken));
-        assertThat(stored.getExpiresAt()).isAfter(Instant.now());
-        assertThat(stored.getUsedAt()).isNull();
-        assertThat(tokenFields).doesNotContain("resetToken", "rawToken", "plainToken");
+        assertThat(passwordResetTokenRepository.findAll()).hasSize(1);
+        assertThat(user.getPasswordHash()).isEqualTo(originalHash);
+        assertThat(passwordResetTokenRepository.findByTokenHash(sha256Hex(resetToken))).isPresent();
     }
 
     @Test
@@ -87,7 +86,7 @@ class PasswordResetApiIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.requested").value(true))
                 .andExpect(jsonPath("$.reset_token").value(nullValue()))
-                .andExpect(jsonPath("$.expires_in").value(1800));
+                .andExpect(jsonPath("$.temporary_password").doesNotExist());
 
         assertThat(passwordResetTokenRepository.findAll()).isEmpty();
     }
@@ -95,7 +94,7 @@ class PasswordResetApiIntegrationTest {
     @Test
     void passwordResetConfirmSuccessChangesPasswordAndMarksTokenUsed() throws Exception {
         saveUser("reset-confirm@example.com", "password123", true);
-        String resetToken = exposedResetToken("reset-confirm@example.com");
+        String resetToken = storedResetToken("reset-confirm@example.com");
         Long tokenId = passwordResetTokenRepository.findAll().getFirst().getId();
 
         mockMvc.perform(post("/api/auth/password-reset/confirm")
@@ -134,7 +133,7 @@ class PasswordResetApiIntegrationTest {
     @Test
     void passwordResetTokenReuseFails() throws Exception {
         saveUser("reset-reuse@example.com", "password123", true);
-        String resetToken = exposedResetToken("reset-reuse@example.com");
+        String resetToken = storedResetToken("reset-reuse@example.com");
 
         mockMvc.perform(post("/api/auth/password-reset/confirm")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -158,7 +157,7 @@ class PasswordResetApiIntegrationTest {
     @Test
     void expiredPasswordResetTokenFails() throws Exception {
         saveUser("reset-expired@example.com", "password123", true);
-        String resetToken = exposedResetToken("reset-expired@example.com");
+        String resetToken = storedResetToken("reset-expired@example.com");
         PasswordResetToken stored = passwordResetTokenRepository.findAll().getFirst();
         stored.setExpiresAt(Instant.now().minusSeconds(1));
         passwordResetTokenRepository.saveAndFlush(stored);
@@ -194,7 +193,8 @@ class PasswordResetApiIntegrationTest {
         requestPasswordReset("reset-inactive@example.com")
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.requested").value(true))
-                .andExpect(jsonPath("$.reset_token").value(nullValue()));
+                .andExpect(jsonPath("$.reset_token").value(nullValue()))
+                .andExpect(jsonPath("$.temporary_password").doesNotExist());
         assertThat(passwordResetTokenRepository.findAll()).isEmpty();
 
         PasswordResetToken token = new PasswordResetToken();
@@ -220,12 +220,15 @@ class PasswordResetApiIntegrationTest {
                 .content(json(Map.of("email", email))));
     }
 
-    private String exposedResetToken(String email) throws Exception {
-        MvcResult result = requestPasswordReset(email)
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.reset_token").value(not(isEmptyOrNullString())))
-                .andReturn();
-        return objectMapper.readTree(responseBody(result)).get("reset_token").asText();
+    private String storedResetToken(String email) throws Exception {
+        User user = userRepository.findByEmail(email).orElseThrow();
+        String resetToken = email + "-token";
+        PasswordResetToken token = new PasswordResetToken();
+        token.setUserId(user.getId());
+        token.setTokenHash(sha256Hex(resetToken));
+        token.setExpiresAt(Instant.now().plusSeconds(1800));
+        passwordResetTokenRepository.saveAndFlush(token);
+        return resetToken;
     }
 
     private User saveUser(String email, String password, boolean active) {

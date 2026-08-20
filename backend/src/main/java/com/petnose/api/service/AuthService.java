@@ -38,7 +38,6 @@ import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
@@ -57,7 +56,7 @@ public class AuthService {
     private static final int MAX_PROFILE_REGION_LENGTH = 100;
     private static final int MIN_PASSWORD_LENGTH = 8;
     private static final int MAX_PASSWORD_LENGTH = 255;
-    private static final int PASSWORD_RESET_TOKEN_BYTES = 32;
+    private static final int RESET_TOKEN_BYTE_LENGTH = 32;
     private static final String SHA_256 = "SHA-256";
     private static final Pattern PROFILE_DISPLAY_NAME_PATTERN = Pattern.compile("^[가-힣A-Za-z0-9]{2,10}$");
     private static final Pattern PROFILE_CONTACT_PHONE_PATTERN = Pattern.compile("^010[0-9]{8}$");
@@ -199,24 +198,28 @@ public class AuthService {
         }
         String email = normalizeEmail(request.email());
         User user = userRepository.findByEmail(email).orElse(null);
-        String resetToken = null;
+        String rawToken = null;
         Instant now = Instant.now();
 
         if (user != null && user.isActive()) {
-            passwordResetTokenRepository.markUnusedTokensUsedByUserId(user.getId(), now);
-            resetToken = generatePasswordResetToken();
-
-            PasswordResetToken token = new PasswordResetToken();
-            token.setUserId(user.getId());
-            token.setTokenHash(sha256Hex(resetToken));
+            rawToken = generateResetToken();
             Instant expiresAt = now.plusSeconds(passwordResetTokenTtlSeconds);
-            token.setExpiresAt(expiresAt);
-            passwordResetTokenRepository.save(token);
-            schedulePasswordResetEmailAfterCommit(user, resetToken, expiresAt);
+
+            PasswordResetToken resetToken = new PasswordResetToken();
+            resetToken.setUserId(user.getId());
+            resetToken.setTokenHash(sha256Hex(rawToken));
+            resetToken.setExpiresAt(expiresAt);
+
+            // markUnusedTokensUsedByUserId has flushAutomatically=true so it flushes
+            // pending changes and clears the context; save the new token after.
+            passwordResetTokenRepository.markUnusedTokensUsedByUserId(user.getId(), now);
+            passwordResetTokenRepository.save(resetToken);
+
+            schedulePasswordResetEmailAfterCommit(user.getEmail(), rawToken, expiresAt);
         }
 
         if (exposePasswordResetTokenInResponse) {
-            return PasswordResetRequestResponse.exposed(resetToken, passwordResetTokenTtlSeconds);
+            return PasswordResetRequestResponse.exposed(rawToken, passwordResetTokenTtlSeconds);
         }
         return PasswordResetRequestResponse.hidden();
     }
@@ -251,16 +254,16 @@ public class AuthService {
         return new PasswordResetConfirmResponse(true);
     }
 
-    private void schedulePasswordResetEmailAfterCommit(User user, String resetToken, Instant expiresAt) {
+    private void schedulePasswordResetEmailAfterCommit(String email, String rawToken, Instant expiresAt) {
         if (!passwordResetEmailProperties.isEmailEnabled()) {
             return;
         }
 
         Runnable sendTask = () -> {
             try {
-                passwordResetEmailService.sendPasswordResetEmailAsync(user.getEmail(), resetToken, expiresAt);
+                passwordResetEmailService.sendPasswordResetEmailAsync(email, rawToken, expiresAt);
             } catch (RuntimeException e) {
-                log.warn("Password reset email scheduling failed for user_id={}: {}", user.getId(), e.getMessage());
+                log.warn("Password reset email scheduling failed: {}", e.getMessage());
             }
         };
 
@@ -464,10 +467,10 @@ public class AuthService {
         return new ApiException(HttpStatus.BAD_REQUEST, "INVALID_RESET_TOKEN", "유효하지 않은 비밀번호 재설정 token입니다.");
     }
 
-    private String generatePasswordResetToken() {
-        byte[] bytes = new byte[PASSWORD_RESET_TOKEN_BYTES];
+    private String generateResetToken() {
+        byte[] bytes = new byte[RESET_TOKEN_BYTE_LENGTH];
         secureRandom.nextBytes(bytes);
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+        return HexFormat.of().formatHex(bytes);
     }
 
     private String sha256Hex(String value) {
