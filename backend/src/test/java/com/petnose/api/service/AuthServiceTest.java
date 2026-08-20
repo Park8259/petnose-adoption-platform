@@ -1,6 +1,7 @@
 package com.petnose.api.service;
 
 import com.petnose.api.config.PasswordResetEmailProperties;
+import com.petnose.api.domain.entity.PasswordResetToken;
 import com.petnose.api.domain.entity.User;
 import com.petnose.api.domain.enums.UserRole;
 import com.petnose.api.dto.auth.PasswordResetRequest;
@@ -99,12 +100,12 @@ class AuthServiceTest {
     }
 
     @Test
-    void requestPasswordResetChangesToTemporaryPasswordAndSchedulesEmailOnlyAfterCommitForActiveUser() {
+    void requestPasswordResetSavesTokenAndSchedulesEmailOnlyAfterCommitForActiveUser() {
         User user = user(10L);
         user.setEmail("reset@example.com");
         when(userRepository.findByEmail("reset@example.com")).thenReturn(Optional.of(user));
         when(passwordResetEmailProperties.isEmailEnabled()).thenReturn(true);
-        when(passwordEncoder.encode(anyString())).thenReturn("encoded-temporary-password");
+        String originalHash = user.getPasswordHash();
 
         TransactionSynchronizationManager.initSynchronization();
         try {
@@ -113,8 +114,8 @@ class AuthServiceTest {
             assertThat(response.requested()).isTrue();
             assertThat(response.exposedFields()).isEmpty();
             verify(passwordResetEmailService, never())
-                    .sendTemporaryPasswordEmailAsync(anyString(), anyString());
-            assertThat(user.getPasswordHash()).isEqualTo("encoded-temporary-password");
+                    .sendPasswordResetEmailAsync(anyString(), anyString(), any());
+            assertThat(user.getPasswordHash()).isEqualTo(originalHash);
 
             for (TransactionSynchronization synchronization : TransactionSynchronizationManager.getSynchronizations()) {
                 synchronization.afterCommit();
@@ -123,15 +124,17 @@ class AuthServiceTest {
             TransactionSynchronizationManager.clearSynchronization();
         }
 
-        ArgumentCaptor<String> temporaryPasswordCaptor = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<PasswordResetToken> tokenCaptor = ArgumentCaptor.forClass(PasswordResetToken.class);
         verify(passwordResetTokenRepository).markUnusedTokensUsedByUserId(eq(user.getId()), any(Instant.class));
-        verify(passwordResetTokenRepository, never()).save(any());
-        verify(passwordEncoder).encode(temporaryPasswordCaptor.capture());
-        verify(passwordResetEmailService).sendTemporaryPasswordEmailAsync(
+        verify(passwordResetTokenRepository).save(tokenCaptor.capture());
+        verify(passwordEncoder, never()).encode(anyString());
+        verify(passwordResetEmailService).sendPasswordResetEmailAsync(
                 eq("reset@example.com"),
-                eq(temporaryPasswordCaptor.getValue())
+                anyString(),
+                any(Instant.class)
         );
-        assertThat(temporaryPasswordCaptor.getValue()).hasSize(12);
+        assertThat(tokenCaptor.getValue().getUserId()).isEqualTo(user.getId());
+        assertThat(tokenCaptor.getValue().getTokenHash()).hasSize(64);
     }
 
     @Test

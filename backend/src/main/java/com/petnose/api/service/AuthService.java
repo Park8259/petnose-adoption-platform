@@ -56,9 +56,8 @@ public class AuthService {
     private static final int MAX_PROFILE_REGION_LENGTH = 100;
     private static final int MIN_PASSWORD_LENGTH = 8;
     private static final int MAX_PASSWORD_LENGTH = 255;
-    private static final int TEMPORARY_PASSWORD_LENGTH = 12;
+    private static final int RESET_TOKEN_BYTE_LENGTH = 32;
     private static final String SHA_256 = "SHA-256";
-    private static final String TEMPORARY_PASSWORD_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%";
     private static final Pattern PROFILE_DISPLAY_NAME_PATTERN = Pattern.compile("^[가-힣A-Za-z0-9]{2,10}$");
     private static final Pattern PROFILE_CONTACT_PHONE_PATTERN = Pattern.compile("^010[0-9]{8}$");
 
@@ -199,22 +198,28 @@ public class AuthService {
         }
         String email = normalizeEmail(request.email());
         User user = userRepository.findByEmail(email).orElse(null);
-        String temporaryPassword = null;
+        String rawToken = null;
         Instant now = Instant.now();
-        boolean canDeliverTemporaryPassword = passwordResetEmailProperties.isEmailEnabled()
-                || exposePasswordResetTokenInResponse;
 
-        if (user != null && user.isActive() && canDeliverTemporaryPassword) {
-            temporaryPassword = generateTemporaryPassword();
-            user.setPasswordHash(passwordEncoder.encode(temporaryPassword));
-            // markUnusedTokensUsedByUserId has flushAutomatically=true, so the hash
-            // update above is flushed to DB before the bulk update clears the context.
+        if (user != null && user.isActive()) {
+            rawToken = generateResetToken();
+            Instant expiresAt = now.plusSeconds(passwordResetTokenTtlSeconds);
+
+            PasswordResetToken resetToken = new PasswordResetToken();
+            resetToken.setUserId(user.getId());
+            resetToken.setTokenHash(sha256Hex(rawToken));
+            resetToken.setExpiresAt(expiresAt);
+
+            // markUnusedTokensUsedByUserId has flushAutomatically=true so it flushes
+            // pending changes and clears the context; save the new token after.
             passwordResetTokenRepository.markUnusedTokensUsedByUserId(user.getId(), now);
-            scheduleTemporaryPasswordEmailAfterCommit(user, temporaryPassword);
+            passwordResetTokenRepository.save(resetToken);
+
+            schedulePasswordResetEmailAfterCommit(user.getEmail(), rawToken, expiresAt);
         }
 
         if (exposePasswordResetTokenInResponse) {
-            return PasswordResetRequestResponse.exposedTemporaryPassword(temporaryPassword);
+            return PasswordResetRequestResponse.exposed(rawToken, passwordResetTokenTtlSeconds);
         }
         return PasswordResetRequestResponse.hidden();
     }
@@ -249,16 +254,16 @@ public class AuthService {
         return new PasswordResetConfirmResponse(true);
     }
 
-    private void scheduleTemporaryPasswordEmailAfterCommit(User user, String temporaryPassword) {
+    private void schedulePasswordResetEmailAfterCommit(String email, String rawToken, Instant expiresAt) {
         if (!passwordResetEmailProperties.isEmailEnabled()) {
             return;
         }
 
         Runnable sendTask = () -> {
             try {
-                passwordResetEmailService.sendTemporaryPasswordEmailAsync(user.getEmail(), temporaryPassword);
+                passwordResetEmailService.sendPasswordResetEmailAsync(email, rawToken, expiresAt);
             } catch (RuntimeException e) {
-                log.warn("Password reset email scheduling failed for user_id={}: {}", user.getId(), e.getMessage());
+                log.warn("Password reset email scheduling failed: {}", e.getMessage());
             }
         };
 
@@ -462,13 +467,10 @@ public class AuthService {
         return new ApiException(HttpStatus.BAD_REQUEST, "INVALID_RESET_TOKEN", "유효하지 않은 비밀번호 재설정 token입니다.");
     }
 
-    private String generateTemporaryPassword() {
-        StringBuilder password = new StringBuilder(TEMPORARY_PASSWORD_LENGTH);
-        for (int i = 0; i < TEMPORARY_PASSWORD_LENGTH; i++) {
-            int index = secureRandom.nextInt(TEMPORARY_PASSWORD_ALPHABET.length());
-            password.append(TEMPORARY_PASSWORD_ALPHABET.charAt(index));
-        }
-        return password.toString();
+    private String generateResetToken() {
+        byte[] bytes = new byte[RESET_TOKEN_BYTE_LENGTH];
+        secureRandom.nextBytes(bytes);
+        return HexFormat.of().formatHex(bytes);
     }
 
     private String sha256Hex(String value) {
