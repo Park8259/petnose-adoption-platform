@@ -1,0 +1,37 @@
+# CPU + ultralytics profile-nose-preview override.
+#
+# 기존 compose.prod-profile-first-yolo.yaml 은 GPU(g4dn) + yolov5_legacy 전용이라
+# 현재 CPU 운영 인스턴스(m7i-flex.large)에서 사용할 수 없다.
+# 이 파일은 동일 기능을 ultralytics 백엔드 + CPU 추론으로 제공한다.
+#
+# 사용:
+#   docker compose --env-file infra/docker/.env \
+#     -f infra/docker/compose.yaml \
+#     -f infra/docker/compose.prod.yaml \
+#     -f infra/docker/compose.prod-real-model.yaml \
+#     -f infra/docker/compose.prod-profile-nose-cpu.yaml \
+#     up -d --no-build
+#
+# 주의: profile-first 등록 플로우(PETNOSE_PROFILE_FIRST_ENABLED)는 켜지 않는다.
+#       기존 nose_images 5장 등록 경로를 그대로 유지하고, 코 검출 미리보기만 추가한다.
+
+services:
+  python-embed:
+    environment:
+      DOG_NOSE_EXTRACT_ENABLED: "true"
+      DOG_NOSE_DETECTOR_BACKEND: ultralytics
+      DOG_NOSE_DETECTOR_WEIGHTS: /models/yolo/best.pt
+      DOG_NOSE_DETECTOR_DEVICE: cpu
+      # 교차검증 결과 0.35는 눈/목줄 오탐이 발생하여 0.5로 상향
+      DOG_NOSE_DETECT_CONF_THRESHOLD: ${DOG_NOSE_DETECT_CONF_THRESHOLD:-0.5}
+      DOG_NOSE_CROP_SIZE: "224"
+      DOG_NOSE_BBOX_EXPAND: ${DOG_NOSE_BBOX_EXPAND:-1.40}
+      DOG_NOSE_CLASS_ID: "0"
+      DOG_NOSE_CLASS_NAMES: ${DOG_NOSE_CLASS_NAMES:-dog_nose}
+    volumes:
+      - ${DOG_NOSE_DETECTOR_WEIGHTS_HOST:?Set DOG_NOSE_DETECTOR_WEIGHTS_HOST to the host best.pt path}:/models/yolo/best.pt:ro
+
+  spring-api:
+    environment:
+      PROFILE_NOSE_PREVIEW_ENABLED: "true"
+      PYTHON_EMBED_RESPONSE_TIMEOUT_MS: "60000"
