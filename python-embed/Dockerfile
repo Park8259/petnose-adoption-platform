@@ -15,7 +15,15 @@ RUN if [ "$INSTALL_REAL_MODEL_DEPS" = "1" ]; then pip install --no-cache-dir -r 
 COPY requirements-onnx.txt .
 RUN if [ "$INSTALL_ONNX_RUNTIME_DEPS" = "1" ]; then pip install --no-cache-dir -r requirements-onnx.txt; fi
 COPY requirements-yolo.txt .
-RUN if [ "$INSTALL_YOLO_RUNTIME_DEPS" = "1" ]; then pip install --no-cache-dir -r requirements-yolo.txt; fi
+# ultralytics 의존성인 opencv-python 은 libGL/libglib 런타임을 요구한다.
+# python:3.11-slim 에는 없으므로 YOLO 런타임을 설치할 때만 함께 설치한다.
+# (기본 mock/real 이미지는 이 분기를 타지 않아 기존과 동일하게 유지된다.)
+RUN if [ "$INSTALL_YOLO_RUNTIME_DEPS" = "1" ]; then \
+      apt-get update && \
+      apt-get install -y --no-install-recommends libgl1 libglib2.0-0 && \
+      rm -rf /var/lib/apt/lists/* && \
+      pip install --no-cache-dir -r requirements-yolo.txt; \
+    fi
 
 # 앱 소스 복사
 COPY app ./app
