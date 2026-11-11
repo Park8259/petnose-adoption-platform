@@ -17,6 +17,9 @@
 
 services:
   python-embed:
+    # REAL(torch+timm) + YOLO(ultralytics) 의존성을 모두 포함한 CPU 이미지.
+    # 기본 petnose-python-embed-real 에는 ultralytics 런타임이 없어 검출기가 unavailable 이 된다.
+    image: ${PYTHON_EMBED_CPU_YOLO_IMAGE:?Set PYTHON_EMBED_CPU_YOLO_IMAGE in infra/docker/.env}
     environment:
       DOG_NOSE_EXTRACT_ENABLED: "true"
       DOG_NOSE_DETECTOR_BACKEND: ultralytics

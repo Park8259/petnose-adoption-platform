@@ -8,6 +8,7 @@ name: Publish Images to GHCR
 #   ghcr.io/<owner>/petnose-spring-api
 #   ghcr.io/<owner>/petnose-python-embed
 #   ghcr.io/<owner>/petnose-python-embed-real
+#   ghcr.io/<owner>/petnose-python-embed-cpu-yolo
 #   ghcr.io/<owner>/petnose-python-embed-gpu-real
 #
 # 태그 전략:
@@ -64,6 +65,14 @@ jobs:
             image_suffix: petnose-python-embed-real
             build_args: |
               INSTALL_REAL_MODEL_DEPS=1
+
+          - name: python-embed-cpu-yolo
+            context: ./python-embed
+            dockerfile: ./python-embed/Dockerfile
+            image_suffix: petnose-python-embed-cpu-yolo
+            build_args: |
+              INSTALL_REAL_MODEL_DEPS=1
+              INSTALL_YOLO_RUNTIME_DEPS=1
 
           - name: python-embed-gpu-real
             context: ./python-embed

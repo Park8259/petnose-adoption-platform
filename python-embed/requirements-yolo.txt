@@ -1,5 +1,16 @@
-# Optional dependencies for the legacy YOLOv5 profile-first demo runtime.
+# Optional dependencies for YOLO profile-nose runtime.
 # Keep these out of the default mock image; install only with INSTALL_YOLO_RUNTIME_DEPS=1.
+#
+# ultralytics: CPU profile-nose-preview 백엔드(DOG_NOSE_DETECTOR_BACKEND=ultralytics)용.
+#   학습 환경과 동일한 버전으로 고정한다. 버전이 어긋나면 .pt 체크포인트 로딩이 실패한다.
+# numpy/Pillow: requirements-real.txt 핀과 동일하게 고정한다.
+#   ultralytics 의존성(opencv/pandas/scipy)이 이들을 업그레이드하면
+#   비문 임베딩 결과가 달라질 수 있으므로 드리프트를 차단한다.
+
+ultralytics==8.2.48
+
+numpy==1.26.4
+Pillow==10.3.0
 
 opencv-python-headless==4.10.0.84
 pandas==2.2.2
